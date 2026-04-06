@@ -1,0 +1,146 @@
+from __future__ import annotations
+
+from io import BytesIO
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+import zipfile
+
+THIS_DIR = Path(__file__).resolve().parent
+SRC_ROOT = THIS_DIR.parent / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from document_processor import (
+    CellStyleInfo,
+    DocIR,
+    ParaStyleInfo,
+    RunStyleInfo,
+    SourceType,
+    StyleMap,
+    TableStyleInfo,
+    build_doc_ir_from_mapping,
+)
+
+
+class DocumentIRTests(unittest.TestCase):
+    def _sample_mapping(self) -> dict[str, str]:
+        return {
+            "s1.p1.r1": "Hello ",
+            "s1.p1.r2": "World",
+            "s1.p2.r1.tbl1.tr1.tc1.p1.r1": "A1",
+            "s1.p2.r1.tbl1.tr1.tc2.p1.r1": "B1",
+            "s1.p2.r1.tbl1.tr2.tc1.p1.r1": "A2",
+            "s1.p2.r1.tbl1.tr2.tc2.p1.r1": "B2",
+        }
+
+    def _sample_style_map(self) -> StyleMap:
+        return StyleMap(
+            runs={
+                "s1.p1.r1": RunStyleInfo(bold=True, size_pt=11.0),
+                "s1.p1.r2": RunStyleInfo(italic=True, size_pt=11.0),
+            },
+            paragraphs={
+                "s1.p1": ParaStyleInfo(align="center"),
+            },
+            cells={
+                "s1.p2.r1.tbl1.tr1.tc1": CellStyleInfo(background="#ffeeaa"),
+            },
+            tables={
+                "s1.p2.r1.tbl1": TableStyleInfo(row_count=2, col_count=2),
+            },
+        )
+
+    def test_hierarchy_construction(self) -> None:
+        doc_ir = build_doc_ir_from_mapping(self._sample_mapping())
+
+        self.assertEqual(len(doc_ir.paragraphs), 2)
+        self.assertEqual(doc_ir.paragraphs[0].text, "Hello World")
+        self.assertEqual(doc_ir.paragraphs[1].source_type, SourceType.TABLE_BLOCK)
+        self.assertEqual(doc_ir.paragraphs[1].tables[0].row_count, 2)
+        self.assertEqual(doc_ir.paragraphs[1].tables[0].col_count, 2)
+
+    def test_style_embedding(self) -> None:
+        doc_ir = build_doc_ir_from_mapping(self._sample_mapping(), style_map=self._sample_style_map())
+        self.assertEqual(doc_ir.paragraphs[0].para_style.align, "center")
+        self.assertTrue(doc_ir.paragraphs[0].runs[0].run_style.bold)
+        self.assertEqual(doc_ir.paragraphs[1].tables[0].cells[0].cell_style.background, "#ffeeaa")
+
+    def test_docir_subclass_from_mapping(self) -> None:
+        class DocumentLM(DocIR):
+            custom_field: int = 0
+
+        doc = DocumentLM.from_mapping({"s1.p1.r1": "X"}, custom_field=7)
+        self.assertIsInstance(doc, DocumentLM)
+        self.assertEqual(doc.custom_field, 7)
+
+    def test_from_file_docx_path_and_file_object(self) -> None:
+        from docx import Document
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            docx_path = Path(tmp_dir) / "sample.docx"
+
+            doc = Document()
+            doc.add_paragraph("Hello")
+            doc.save(str(docx_path))
+
+            from_path = DocIR.from_file(docx_path)
+            with docx_path.open("rb") as handle:
+                from_file_object = DocIR.from_file(handle)
+
+        self.assertEqual(from_path.source_doc_type, "docx")
+        self.assertEqual(from_path.source_path, str(docx_path))
+        self.assertEqual(from_path.paragraphs[0].text, "Hello")
+        self.assertEqual(from_file_object.source_doc_type, "docx")
+        self.assertEqual(from_file_object.paragraphs[0].text, "Hello")
+
+    def test_from_file_hwpx_bytes_and_file_object(self) -> None:
+        hwpx_bytes_io = BytesIO()
+        with zipfile.ZipFile(hwpx_bytes_io, "w") as zf:
+            zf.writestr(
+                "Contents/header.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core" />
+""",
+            )
+            zf.writestr(
+                "Contents/section0.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p><hp:run><hp:t>Hello HWPX</hp:t></hp:run></hp:p>
+</hs:sec>
+""",
+            )
+        hwpx_bytes = hwpx_bytes_io.getvalue()
+
+        from_bytes = DocIR.from_file(hwpx_bytes, doc_type="hwpx")
+        from_file_object = DocIR.from_file(BytesIO(hwpx_bytes), doc_type="hwpx")
+
+        self.assertEqual(from_bytes.source_doc_type, "hwpx")
+        self.assertEqual(from_bytes.paragraphs[0].text, "Hello HWPX")
+        self.assertEqual(from_file_object.paragraphs[0].text, "Hello HWPX")
+
+    def test_from_file_hwp_file_object_materializes_temp_path(self) -> None:
+        fake_hwp = b"fake-hwp"
+
+        with (
+            patch("document_processor.core.structured_mapping_exporter.export_structured_mapping") as export_mapping,
+            patch("document_processor.core.style_extractor.extract_styles") as extract_styles,
+        ):
+            export_mapping.return_value = {"s1.p1.r1": "Converted"}
+            extract_styles.return_value = StyleMap()
+
+            doc = DocIR.from_file(BytesIO(fake_hwp), doc_type="hwp")
+
+        self.assertEqual(doc.source_doc_type, "hwp")
+        self.assertEqual(doc.paragraphs[0].text, "Converted")
+        mapping_source = export_mapping.call_args.kwargs.get("source", export_mapping.call_args.args[0])
+        self.assertTrue(isinstance(mapping_source, Path))
+        self.assertEqual(mapping_source.suffix, ".hwp")
+
+
+if __name__ == "__main__":
+    unittest.main()
+

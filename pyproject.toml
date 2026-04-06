@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "document-processor"
+version = "0.1.0"
+description = "Batteries-included structural document IR parser for HWP, HWPX, and DOCX."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "jpype1>=1.6.0",
+    "pydantic>=2.12.0",
+    "python-docx>=1.2.0",
+    "python-hwpx",
+]
+
+[project.optional-dependencies]
+viz = [
+    "erdantic>=1.0.0",
+]
+
+[project.scripts]
+document-processor-diagram = "document_processor.diagram:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/document_processor"]
