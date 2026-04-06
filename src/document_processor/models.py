@@ -204,6 +204,12 @@ class DocIR(BaseModel):
             **doc_kwargs,
         )
 
+    def to_html(self, *, title: str | None = None) -> str:
+        """Render this document IR as styled HTML."""
+        from .html_exporter import export_html
+
+        return export_html(self, title=title)
+
 
 __all__ = [
     "DocIR",

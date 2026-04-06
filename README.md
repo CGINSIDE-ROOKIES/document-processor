@@ -50,3 +50,14 @@ from document_processor import draw_model_diagram
 
 draw_model_diagram(out="docir.svg")
 ```
+
+## Exporting HTML
+
+Render a parsed document to styled HTML:
+
+```python
+from document_processor import DocIR
+
+doc = DocIR.from_file("/path/to/file.docx")
+html = doc.to_html(title="Preview")
+```
