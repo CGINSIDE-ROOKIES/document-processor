@@ -204,6 +204,24 @@ def _iter_cell_paragraphs(cell_el: ET.Element) -> list[ET.Element]:
     return cell_el.findall(f".//{_HP}p")
 
 
+def _logical_table_cells(row_el: ET.Element) -> list[tuple[int, ET.Element]]:
+    """Return logical 1-based column indices for row cells."""
+    logical_cells: list[tuple[int, ET.Element]] = []
+    fallback_col = 1
+
+    for cell_el in row_el.findall(f"{_HP}tc"):
+        cell_addr = cell_el.find(f"{_HP}cellAddr")
+        col_addr = _safe_int(cell_addr.get("colAddr")) if cell_addr is not None else None
+        logical_col = (col_addr + 1) if col_addr is not None else fallback_col
+        logical_cells.append((logical_col, cell_el))
+
+        cell_span = cell_el.find(f"{_HP}cellSpan")
+        colspan = _safe_int(cell_span.get("colSpan")) if cell_span is not None else None
+        fallback_col = max(fallback_col, logical_col + max(colspan or 1, 1))
+
+    return logical_cells
+
+
 def _section_roots_from_bytes(source: bytes) -> list[ET.Element]:
     section_name_pattern = re.compile(r"^Contents/section\d+\.xml$")
 
@@ -314,13 +332,25 @@ def _extract_styles_hwpx_from_roots(
             for t_idx, table_el in enumerate(_iter_paragraph_tables(para_el), start=1):
                 table_id = f"{paragraph_id}.r1.tbl{t_idx}"
                 row_els = table_el.findall(f"{_HP}tr")
+                table_row_count = 0
+                table_col_count = 0
+                for row_el in row_els:
+                    for logical_col, cell_el in _logical_table_cells(row_el):
+                        cell_addr = cell_el.find(f"{_HP}cellAddr")
+                        row_addr = _safe_int(cell_addr.get("rowAddr")) if cell_addr is not None else None
+                        logical_row = (row_addr + 1) if row_addr is not None else 1
+                        cell_span = cell_el.find(f"{_HP}cellSpan")
+                        rowspan = _safe_int(cell_span.get("rowSpan")) if cell_span is not None else None
+                        colspan = _safe_int(cell_span.get("colSpan")) if cell_span is not None else None
+                        table_row_count = max(table_row_count, logical_row + max(rowspan or 1, 1) - 1)
+                        table_col_count = max(table_col_count, logical_col + max(colspan or 1, 1) - 1)
                 style_map.tables[table_id] = TableStyleInfo(
-                    row_count=len(row_els),
-                    col_count=max((len(row.findall(f"{_HP}tc")) for row in row_els), default=0),
+                    row_count=table_row_count or len(row_els),
+                    col_count=table_col_count,
                 )
 
                 for tr_idx, row_el in enumerate(row_els, start=1):
-                    for tc_idx, cell_el in enumerate(row_el.findall(f"{_HP}tc"), start=1):
+                    for tc_idx, cell_el in _logical_table_cells(row_el):
                         cell_id = f"{table_id}.tr{tr_idx}.tc{tc_idx}"
                         style_map.cells[cell_id] = _hwpx_cell_style(
                             cell_el,

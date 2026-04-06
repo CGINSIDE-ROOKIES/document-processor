@@ -23,6 +23,7 @@ from document_processor import (
     TableStyleInfo,
     build_doc_ir_from_mapping,
 )
+from document_processor.core.hwpx_structured_exporter import export_hwpx_structured_mapping
 
 
 class DocumentIRTests(unittest.TestCase):
@@ -140,7 +141,44 @@ class DocumentIRTests(unittest.TestCase):
         self.assertTrue(isinstance(mapping_source, Path))
         self.assertEqual(mapping_source.suffix, ".hwp")
 
+    def test_hwpx_vertical_merge_uses_logical_column_ids(self) -> None:
+        hwpx_bytes_io = BytesIO()
+        with zipfile.ZipFile(hwpx_bytes_io, "w") as zf:
+            zf.writestr(
+                "Contents/header.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core" />
+""",
+            )
+            zf.writestr(
+                "Contents/section0.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p>
+    <hp:run>
+      <hp:tbl>
+        <hp:tr>
+          <hp:tc><hp:subList><hp:p><hp:run><hp:t>Main</hp:t></hp:run></hp:p></hp:subList><hp:cellAddr colAddr="0" rowAddr="0"/><hp:cellSpan colSpan="1" rowSpan="4"/></hp:tc>
+          <hp:tc><hp:subList><hp:p><hp:run><hp:t>관</hp:t></hp:run></hp:p></hp:subList><hp:cellAddr colAddr="1" rowAddr="0"/><hp:cellSpan colSpan="1" rowSpan="1"/></hp:tc>
+          <hp:tc><hp:subList><hp:p><hp:run><hp:t>A</hp:t></hp:run></hp:p></hp:subList><hp:cellAddr colAddr="2" rowAddr="0"/><hp:cellSpan colSpan="1" rowSpan="1"/></hp:tc>
+        </hp:tr>
+        <hp:tr>
+          <hp:tc><hp:subList><hp:p><hp:run><hp:t>항</hp:t></hp:run></hp:p></hp:subList><hp:cellAddr colAddr="1" rowAddr="1"/><hp:cellSpan colSpan="1" rowSpan="1"/></hp:tc>
+          <hp:tc><hp:subList><hp:p><hp:run><hp:t>B</hp:t></hp:run></hp:p></hp:subList><hp:cellAddr colAddr="2" rowAddr="1"/><hp:cellSpan colSpan="1" rowSpan="1"/></hp:tc>
+        </hp:tr>
+      </hp:tbl>
+    </hp:run>
+  </hp:p>
+</hs:sec>
+""",
+            )
+        mapping = export_hwpx_structured_mapping(hwpx_bytes_io.getvalue())
+
+        self.assertIn("s1.p1.r1.tbl1.tr1.tc2.p1.r1", mapping)
+        self.assertIn("s1.p1.r1.tbl1.tr2.tc2.p1.r1", mapping)
+        self.assertIn("s1.p1.r1.tbl1.tr2.tc3.p1.r1", mapping)
+        self.assertNotIn("s1.p1.r1.tbl1.tr2.tc1.p1.r1", mapping)
+
 
 if __name__ == "__main__":
     unittest.main()
-

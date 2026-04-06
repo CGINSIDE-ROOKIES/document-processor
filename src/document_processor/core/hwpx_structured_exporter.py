@@ -46,6 +46,38 @@ def _iter_cell_paragraphs(cell_el: ET.Element) -> list[ET.Element]:
     return cell_el.findall(f".//{_HP}p")
 
 
+def _safe_int(value: str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _logical_table_cells(row_el: ET.Element) -> list[tuple[int, ET.Element]]:
+    """Return logical 1-based column indices for row cells.
+
+    HWPX may omit vertically merged placeholder cells from later rows.
+    In those cases the physical `tc` order no longer matches the logical
+    table column. Prefer `cellAddr.colAddr` when present.
+    """
+    logical_cells: list[tuple[int, ET.Element]] = []
+    fallback_col = 1
+
+    for cell_el in row_el.findall(f"{_HP}tc"):
+        cell_addr = cell_el.find(f"{_HP}cellAddr")
+        col_addr = _safe_int(cell_addr.get("colAddr")) if cell_addr is not None else None
+        logical_col = (col_addr + 1) if col_addr is not None else fallback_col
+        logical_cells.append((logical_col, cell_el))
+
+        cell_span = cell_el.find(f"{_HP}cellSpan")
+        colspan = _safe_int(cell_span.get("colSpan")) if cell_span is not None else None
+        fallback_col = max(fallback_col, logical_col + max(colspan or 1, 1))
+
+    return logical_cells
+
+
 def _export_table_xml(
     mapping: dict[str, str],
     table_el: ET.Element,
@@ -54,7 +86,7 @@ def _export_table_xml(
     skip_empty: bool,
 ) -> None:
     for tr_idx, row_el in enumerate(table_el.findall(f"{_HP}tr"), start=1):
-        for tc_idx, cell_el in enumerate(row_el.findall(f"{_HP}tc"), start=1):
+        for tc_idx, cell_el in _logical_table_cells(row_el):
             cell_paragraphs = _iter_cell_paragraphs(cell_el)
             if not cell_paragraphs:
                 key = f"{tbl_root}.tr{tr_idx}.tc{tc_idx}.p1.r1"
@@ -155,4 +187,3 @@ def export_structured_mapping(
 
 
 __all__ = ["export_hwpx_structured_mapping", "export_structured_mapping"]
-

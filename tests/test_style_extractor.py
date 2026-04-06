@@ -109,6 +109,43 @@ class StyleExtractorTests(unittest.TestCase):
         self.assertEqual(rstyle.color, "#112233")
         self.assertAlmostEqual(rstyle.size_pt or 0.0, 12.0, places=3)
 
+    def test_extract_hwpx_vertical_merge_uses_logical_cell_ids(self) -> None:
+        hwpx_bytes_io = BytesIO()
+        with zipfile.ZipFile(hwpx_bytes_io, "w") as zf:
+            zf.writestr(
+                "Contents/header.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core" />
+""",
+            )
+            zf.writestr(
+                "Contents/section0.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p>
+    <hp:run>
+      <hp:tbl>
+        <hp:tr>
+          <hp:tc borderFillIDRef="1"><hp:subList vertAlign="CENTER"><hp:p><hp:run><hp:t>Main</hp:t></hp:run></hp:p></hp:subList><hp:cellAddr colAddr="0" rowAddr="0"/><hp:cellSpan colSpan="1" rowSpan="4"/></hp:tc>
+          <hp:tc borderFillIDRef="1"><hp:subList vertAlign="CENTER"><hp:p><hp:run><hp:t>관</hp:t></hp:run></hp:p></hp:subList><hp:cellAddr colAddr="1" rowAddr="0"/><hp:cellSpan colSpan="1" rowSpan="1"/></hp:tc>
+        </hp:tr>
+        <hp:tr>
+          <hp:tc borderFillIDRef="1"><hp:subList vertAlign="CENTER"><hp:p><hp:run><hp:t>항</hp:t></hp:run></hp:p></hp:subList><hp:cellAddr colAddr="1" rowAddr="1"/><hp:cellSpan colSpan="1" rowSpan="1"/></hp:tc>
+        </hp:tr>
+      </hp:tbl>
+    </hp:run>
+  </hp:p>
+</hs:sec>
+""",
+            )
+        style_map = extract_styles_hwpx(hwpx_bytes_io.getvalue())
+
+        self.assertIn("s1.p1.r1.tbl1.tr1.tc2", style_map.cells)
+        self.assertIn("s1.p1.r1.tbl1.tr2.tc2", style_map.cells)
+        self.assertNotIn("s1.p1.r1.tbl1.tr2.tc1", style_map.cells)
+        self.assertEqual(style_map.tables["s1.p1.r1.tbl1"].row_count, 4)
+        self.assertEqual(style_map.tables["s1.p1.r1.tbl1"].col_count, 2)
+
 
 if __name__ == "__main__":
     unittest.main()
