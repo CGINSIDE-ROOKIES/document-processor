@@ -110,6 +110,21 @@ def _cell_css(style: CellStyleInfo | None) -> str:
     return ";".join(parts)
 
 
+def _table_css(para_style: ParaStyleInfo | None) -> str:
+    align = para_style.align if para_style is not None else None
+    if align in (None, "justify", ""):
+        align = "center"
+
+    parts = ["border-collapse:collapse", "margin-top:8px", "margin-bottom:12px"]
+    if align == "center":
+        parts.extend(["margin-left:auto", "margin-right:auto"])
+    elif align == "right":
+        parts.extend(["margin-left:auto", "margin-right:0"])
+    else:
+        parts.extend(["margin-left:0", "margin-right:auto"])
+    return ";".join(parts)
+
+
 def _render_cell_paragraph(paragraph: TableCellParagraphIR) -> str:
     return _flush_paragraph([_wrap_run(run) for run in paragraph.runs], paragraph.para_style)
 
@@ -130,16 +145,16 @@ def _render_cell(cell: TableCellIR) -> str:
     return f"<td {' '.join(attrs)}>{content}</td>"
 
 
-def _render_table(table: TableIR) -> str:
+def _render_table(table: TableIR, para_style: ParaStyleInfo | None = None) -> str:
     if not table.cells:
-        return '<table style="border-collapse:collapse;margin:8px 0"></table>'
+        return f'<table style="{_table_css(para_style)}"></table>'
 
     covered: set[tuple[int, int]] = set()
     cells_by_pos = {(cell.row_index, cell.col_index): cell for cell in table.cells}
     max_row = max(cell.row_index for cell in table.cells)
     max_col = max(cell.col_index for cell in table.cells)
 
-    lines = ['<table style="border-collapse:collapse;margin:8px 0">']
+    lines = [f'<table style="{_table_css(para_style)}">']
     for row in range(1, max_row + 1):
         lines.append("  <tr>")
         for col in range(1, max_col + 1):
@@ -178,7 +193,7 @@ def _render_paragraph(paragraph: ParagraphIR) -> str:
         parts.append(_flush_paragraph([], paragraph.para_style))
 
     for table in paragraph.tables:
-        parts.append(_render_table(table))
+        parts.append(_render_table(table, paragraph.para_style))
 
     return "\n".join(parts)
 

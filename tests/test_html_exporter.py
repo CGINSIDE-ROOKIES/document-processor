@@ -105,6 +105,42 @@ class HtmlExporterTests(unittest.TestCase):
         self.assertIn("text-align:center", html)
         self.assertIn("A1", html)
         self.assertIn("B1", html)
+        self.assertIn("margin-left:auto", html)
+        self.assertIn("margin-right:auto", html)
+
+    def test_export_html_centers_table_when_paragraph_align_is_justify(self) -> None:
+        doc = DocIR(
+            paragraphs=[
+                ParagraphIR(
+                    unit_id="s1.p1",
+                    para_style=ParaStyleInfo(align="justify"),
+                    tables=[
+                        TableIR(
+                            unit_id="s1.p1.r1.tbl1",
+                            cells=[
+                                TableCellIR(
+                                    unit_id="s1.p1.r1.tbl1.tr1.tc1",
+                                    row_index=1,
+                                    col_index=1,
+                                    paragraphs=[
+                                        TableCellParagraphIR(
+                                            unit_id="s1.p1.r1.tbl1.tr1.tc1.p1",
+                                            runs=[RunIR(unit_id="x", text="Cell")],
+                                        )
+                                    ],
+                                )
+                            ],
+                        )
+                    ],
+                )
+            ]
+        )
+
+        html = export_html(doc)
+
+        self.assertIn("<table", html)
+        self.assertIn("margin-left:auto", html)
+        self.assertIn("margin-right:auto", html)
 
 
 if __name__ == "__main__":
