@@ -22,6 +22,7 @@ from document_processor import (
     RunIR,
     RunStyleInfo,
     StyleMap,
+    TableCellIR,
     TableIR,
     TableStyleInfo,
     build_doc_ir_from_mapping,
@@ -268,6 +269,90 @@ class DocumentIRTests(unittest.TestCase):
             outer_cell_paragraph.tables[0].cells[0].paragraphs[0].runs[0].text,
             "Inner",
         )
+
+    def test_table_markdown_repeats_merged_cells(self) -> None:
+        table = TableIR(
+            unit_id="s1.p1.tbl1",
+            cells=[
+                TableCellIR(
+                    unit_id="s1.p1.tbl1.tr1.tc1",
+                    row_index=1,
+                    col_index=1,
+                    cell_style=CellStyleInfo(rowspan=2, colspan=2),
+                    paragraphs=[ParagraphIR(unit_id="s1.p1.tbl1.tr1.tc1.p1", content=[RunIR(unit_id="x", text="Merged")])],
+                ),
+                TableCellIR(
+                    unit_id="s1.p1.tbl1.tr1.tc3",
+                    row_index=1,
+                    col_index=3,
+                    paragraphs=[ParagraphIR(unit_id="s1.p1.tbl1.tr1.tc3.p1", content=[RunIR(unit_id="y", text="Right")])],
+                ),
+                TableCellIR(
+                    unit_id="s1.p1.tbl1.tr2.tc3",
+                    row_index=2,
+                    col_index=3,
+                    paragraphs=[ParagraphIR(unit_id="s1.p1.tbl1.tr2.tc3.p1", content=[RunIR(unit_id="z", text="Bottom")])],
+                ),
+            ],
+        )
+
+        markdown = table.markdown
+
+        self.assertIn("| col1 | col2 | col3 |", markdown)
+        self.assertIn("| Merged | Merged | Right |", markdown)
+        self.assertIn("| Merged | Merged | Bottom |", markdown)
+
+    def test_table_markdown_appends_nested_tables_by_reference(self) -> None:
+        nested = TableIR(
+            unit_id="s1.p1.tbl1.tr1.tc2.p1.tbl1",
+            cells=[
+                TableCellIR(
+                    unit_id="s1.p1.tbl1.tr1.tc2.p1.tbl1.tr1.tc1",
+                    row_index=1,
+                    col_index=1,
+                    paragraphs=[
+                        ParagraphIR(
+                            unit_id="s1.p1.tbl1.tr1.tc2.p1.tbl1.tr1.tc1.p1",
+                            content=[RunIR(unit_id="inner", text="Inner")],
+                        )
+                    ],
+                )
+            ],
+        )
+        outer = TableIR(
+            unit_id="s1.p1.tbl1",
+            cells=[
+                TableCellIR(
+                    unit_id="s1.p1.tbl1.tr1.tc1",
+                    row_index=1,
+                    col_index=1,
+                    paragraphs=[
+                        ParagraphIR(
+                            unit_id="s1.p1.tbl1.tr1.tc1.p1",
+                            content=[RunIR(unit_id="outer", text="Outer")],
+                        )
+                    ],
+                ),
+                TableCellIR(
+                    unit_id="s1.p1.tbl1.tr1.tc2",
+                    row_index=1,
+                    col_index=2,
+                    paragraphs=[
+                        ParagraphIR(
+                            unit_id="s1.p1.tbl1.tr1.tc2.p1",
+                            content=[nested],
+                        )
+                    ],
+                ),
+            ],
+        )
+
+        markdown = outer.markdown
+
+        self.assertIn("| Outer | [tbl:s1.p1.tbl1.tr1.tc2.p1.tbl1] |", markdown)
+        self.assertIn("[tbl:s1.p1.tbl1.tr1.tc2.p1.tbl1]", markdown)
+        self.assertIn("| col1 |", markdown)
+        self.assertIn("| Inner |", markdown)
 
     def test_docx_nested_tables_are_parsed(self) -> None:
         from docx import Document

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import base64
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, BinaryIO, Generic, TypeAlias, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 from .io_utils import TemporarySourcePath, coerce_source_to_supported_value, get_source_name, infer_doc_type
 from .style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
@@ -71,6 +72,8 @@ class ImageIR(BaseModel, Generic[T]):
     title: str | None = None
     display_width_pt: float | None = None
     display_height_pt: float | None = None
+
+
 class ParagraphIR(BaseModel, Generic[T]):
     """Structural paragraph unit used both at the document level and inside table cells."""
 
@@ -152,6 +155,11 @@ class TableIR(BaseModel, Generic[T]):
     col_count: int = 0
     table_style: TableStyleInfo | None = None
     cells: list[TableCellIR] = Field(default_factory=list)
+
+    @computed_field
+    @property
+    def markdown(self) -> str:
+        return _render_table_markdown(self)
 
 
 class DocIR(BaseModel, Generic[T]):
@@ -272,6 +280,110 @@ ParagraphContentNode: TypeAlias = RunIR | ImageIR | TableIR
 ParagraphIR.model_rebuild()
 TableCellIR.model_rebuild()
 TableIR.model_rebuild()
+
+
+def _cell_rowspan(cell: TableCellIR) -> int:
+    if cell.cell_style is None or cell.cell_style.rowspan is None:
+        return 1
+    return max(cell.cell_style.rowspan, 1)
+
+
+def _cell_colspan(cell: TableCellIR) -> int:
+    if cell.cell_style is None or cell.cell_style.colspan is None:
+        return 1
+    return max(cell.cell_style.colspan, 1)
+
+
+def _image_markdown_placeholder(image: ImageIR) -> str:
+    label = image.alt_text or image.title or image.image_id
+    return f"[image:{label}]"
+
+
+def _paragraph_markdown_text(
+    paragraph: ParagraphIR,
+    *,
+    nested_tables: "OrderedDict[str, TableIR]",
+) -> str:
+    parts: list[str] = []
+    for node in paragraph.content:
+        if isinstance(node, RunIR):
+            parts.append(node.text)
+        elif isinstance(node, ImageIR):
+            parts.append(_image_markdown_placeholder(node))
+        elif isinstance(node, TableIR):
+            nested_tables.setdefault(node.unit_id, node)
+            parts.append(f"[tbl:{node.unit_id}]")
+    return "".join(parts).strip()
+
+
+def _escape_markdown_cell_text(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("|", "\\|").replace("\n", "<br>")
+
+
+def _cell_markdown_text(
+    cell: TableCellIR,
+    *,
+    nested_tables: "OrderedDict[str, TableIR]",
+) -> str:
+    paragraph_texts = [
+        text
+        for paragraph in cell.paragraphs
+        if (text := _paragraph_markdown_text(paragraph, nested_tables=nested_tables))
+    ]
+    return _escape_markdown_cell_text("<br><br>".join(paragraph_texts))
+
+
+def _table_grid(table: TableIR) -> tuple[list[list[TableCellIR | None]], int, int]:
+    if not table.cells:
+        return [], 0, 0
+
+    max_row = max(cell.row_index + _cell_rowspan(cell) - 1 for cell in table.cells)
+    max_col = max(cell.col_index + _cell_colspan(cell) - 1 for cell in table.cells)
+    grid: list[list[TableCellIR | None]] = [[None for _ in range(max_col)] for _ in range(max_row)]
+
+    for cell in sorted(table.cells, key=lambda c: (c.row_index, c.col_index, c.unit_id)):
+        for row in range(cell.row_index - 1, cell.row_index - 1 + _cell_rowspan(cell)):
+            for col in range(cell.col_index - 1, cell.col_index - 1 + _cell_colspan(cell)):
+                grid[row][col] = cell
+
+    return grid, max_row, max_col
+
+
+def _render_table_markdown(
+    table: TableIR,
+    *,
+    visited: set[str] | None = None,
+) -> str:
+    seen = visited if visited is not None else set()
+    if table.unit_id in seen:
+        return f"[tbl:{table.unit_id}]"
+    seen.add(table.unit_id)
+
+    grid, _max_row, max_col = _table_grid(table)
+    if max_col == 0:
+        return ""
+
+    nested_tables: OrderedDict[str, TableIR] = OrderedDict()
+    headers = [f"col{idx}" for idx in range(1, max_col + 1)]
+    lines = [
+        f"| {' | '.join(headers)} |",
+        f"| {' | '.join('---' for _ in headers)} |",
+    ]
+
+    for row in grid:
+        cells = [
+            _cell_markdown_text(cell, nested_tables=nested_tables) if cell is not None else ""
+            for cell in row
+        ]
+        lines.append(f"| {' | '.join(cells)} |")
+
+    sections = ["\n".join(lines)]
+    for nested_table in nested_tables.values():
+        nested_markdown = _render_table_markdown(nested_table, visited=seen)
+        if nested_markdown:
+            sections.append(f"[tbl:{nested_table.unit_id}]\n{nested_markdown}")
+
+    return "\n\n".join(section for section in sections if section)
 
 
 __all__ = [
