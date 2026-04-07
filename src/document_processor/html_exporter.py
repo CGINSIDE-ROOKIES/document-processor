@@ -5,7 +5,7 @@ from __future__ import annotations
 from html import escape
 import re
 
-from .models import DocIR, ImageIR, ParagraphIR, RunIR, TableCellIR, TableCellParagraphIR, TableIR
+from .models import DocIR, ImageIR, ParagraphContentNode, ParagraphIR, RunIR, TableCellIR, TableIR
 from .style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo
 
 
@@ -165,7 +165,7 @@ def _table_css(table: TableIR, para_style: ParaStyleInfo | None) -> str:
 
 def _render_paragraph_like(
     doc_ir: DocIR,
-    content: list[object],
+    content: list[ParagraphContentNode],
     para_style: ParaStyleInfo | None,
     *,
     clamp_negative_first_line_indent: bool = False,
@@ -214,8 +214,7 @@ def _render_paragraph_like(
     return "\n".join(parts)
 
 
-def _render_cell_paragraph(doc_ir: DocIR, paragraph: TableCellParagraphIR) -> str:
-    paragraph.sync_content()
+def _render_cell_paragraph(doc_ir: DocIR, paragraph: ParagraphIR) -> str:
     return _render_paragraph_like(
         doc_ir,
         paragraph.content,
@@ -281,7 +280,6 @@ def _render_table(doc_ir: DocIR, table: TableIR, para_style: ParaStyleInfo | Non
 
 
 def _render_paragraph(doc_ir: DocIR, paragraph: ParagraphIR) -> str:
-    paragraph.sync_content()
     return _render_paragraph_like(doc_ir, paragraph.content, paragraph.para_style)
 
 

@@ -10,7 +10,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from document_processor import DocIR
-from document_processor.models import ImageAsset, ImageIR, ParagraphIR, RunIR, TableCellIR, TableCellParagraphIR, TableIR
+from document_processor.models import ImageAsset, ImageIR, ParagraphIR, RunIR, TableCellIR, TableIR
 from document_processor.style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
 
 
@@ -22,7 +22,7 @@ class HtmlExporterTests(unittest.TestCase):
                 ParagraphIR(
                     unit_id="s1.p1",
                     para_style=ParaStyleInfo(align="center", first_line_indent_pt=12.0),
-                    runs=[
+                    content=[
                         RunIR(
                             unit_id="s1.p1.r1",
                             text="Hello  world",
@@ -55,7 +55,7 @@ class HtmlExporterTests(unittest.TestCase):
             paragraphs=[
                 ParagraphIR(
                     unit_id="s1.p1",
-                    tables=[
+                    content=[
                         TableIR(
                             unit_id="s1.p1.r1.tbl1",
                             table_style=TableStyleInfo(width_pt=240.0),
@@ -76,9 +76,9 @@ class HtmlExporterTests(unittest.TestCase):
                                         colspan=2,
                                     ),
                                     paragraphs=[
-                                        TableCellParagraphIR(
+                                        ParagraphIR(
                                             unit_id="s1.p1.r1.tbl1.tr1.tc1.p1",
-                                            runs=[RunIR(unit_id="x", text="A1")],
+                                            content=[RunIR(unit_id="x", text="A1")],
                                         )
                                     ],
                                 ),
@@ -87,9 +87,9 @@ class HtmlExporterTests(unittest.TestCase):
                                     row_index=2,
                                     col_index=1,
                                     paragraphs=[
-                                        TableCellParagraphIR(
+                                        ParagraphIR(
                                             unit_id="s1.p1.r1.tbl1.tr2.tc1.p1",
-                                            runs=[RunIR(unit_id="y", text="B1")],
+                                            content=[RunIR(unit_id="y", text="B1")],
                                         )
                                     ],
                                 ),
@@ -120,7 +120,7 @@ class HtmlExporterTests(unittest.TestCase):
                 ParagraphIR(
                     unit_id="s1.p1",
                     para_style=ParaStyleInfo(align="justify"),
-                    tables=[
+                    content=[
                         TableIR(
                             unit_id="s1.p1.r1.tbl1",
                             cells=[
@@ -129,9 +129,9 @@ class HtmlExporterTests(unittest.TestCase):
                                     row_index=1,
                                     col_index=1,
                                     paragraphs=[
-                                        TableCellParagraphIR(
+                                        ParagraphIR(
                                             unit_id="s1.p1.r1.tbl1.tr1.tc1.p1",
-                                            runs=[RunIR(unit_id="x", text="Cell")],
+                                            content=[RunIR(unit_id="x", text="Cell")],
                                         )
                                     ],
                                 )
@@ -163,7 +163,7 @@ class HtmlExporterTests(unittest.TestCase):
             paragraphs=[
                 ParagraphIR(
                     unit_id="s1.p1",
-                    images=[
+                    content=[
                         ImageIR(
                             unit_id="s1.p1.img1",
                             image_id="img1",
@@ -186,7 +186,7 @@ class HtmlExporterTests(unittest.TestCase):
             paragraphs=[
                 ParagraphIR(
                     unit_id="s1.p1",
-                    tables=[
+                    content=[
                         TableIR(
                             unit_id="s1.p1.r1.tbl1",
                             cells=[
@@ -195,13 +195,13 @@ class HtmlExporterTests(unittest.TestCase):
                                     row_index=1,
                                     col_index=1,
                                     paragraphs=[
-                                        TableCellParagraphIR(
+                                        ParagraphIR(
                                             unit_id="s1.p1.r1.tbl1.tr1.tc1.p1",
                                             para_style=ParaStyleInfo(
                                                 align="center",
                                                 first_line_indent_pt=-159.3,
                                             ),
-                                            runs=[RunIR(unit_id="x", text="스토리")],
+                                            content=[RunIR(unit_id="x", text="스토리")],
                                         )
                                     ],
                                 )
@@ -223,7 +223,7 @@ class HtmlExporterTests(unittest.TestCase):
                 ParagraphIR(
                     unit_id="s1.p1",
                     para_style=ParaStyleInfo(first_line_indent_pt=-27.6),
-                    runs=[RunIR(unit_id="s1.p1.r1", text="Bullet-like text")],
+                    content=[RunIR(unit_id="s1.p1.r1", text="Bullet-like text")],
                 )
             ]
         )
@@ -237,7 +237,7 @@ class HtmlExporterTests(unittest.TestCase):
             paragraphs=[
                 ParagraphIR(
                     unit_id="s1.p1",
-                    tables=[
+                    content=[
                         TableIR(
                             unit_id="s1.p1.r1.tbl1",
                             cells=[
@@ -246,10 +246,10 @@ class HtmlExporterTests(unittest.TestCase):
                                     row_index=1,
                                     col_index=1,
                                     paragraphs=[
-                                        TableCellParagraphIR(
+                                        ParagraphIR(
                                             unit_id="s1.p1.r1.tbl1.tr1.tc1.p1",
-                                            runs=[RunIR(unit_id="outer", text="Outer")],
-                                            tables=[
+                                            content=[
+                                                RunIR(unit_id="outer", text="Outer"),
                                                 TableIR(
                                                     unit_id="s1.p1.r1.tbl1.tr1.tc1.p1.tbl1",
                                                     cells=[
@@ -258,9 +258,9 @@ class HtmlExporterTests(unittest.TestCase):
                                                             row_index=1,
                                                             col_index=1,
                                                             paragraphs=[
-                                                                TableCellParagraphIR(
+                                                                ParagraphIR(
                                                                     unit_id="s1.p1.r1.tbl1.tr1.tc1.p1.tbl1.tr1.tc1.p1",
-                                                                    runs=[RunIR(unit_id="inner", text="Inner")],
+                                                                    content=[RunIR(unit_id="inner", text="Inner")],
                                                                 )
                                                             ],
                                                         )

@@ -13,7 +13,7 @@ import zipfile
 
 from ..builder import normalize_text_default
 from ..io_utils import coerce_source_to_supported_value
-from ..models import DocIR, ImageAsset, ImageIR, ParagraphIR, RunIR, SourceType, TableCellIR, TableCellParagraphIR, TableIR
+from ..models import DocIR, ImageAsset, ImageIR, ParagraphIR, RunIR, TableCellIR, TableIR
 from .docx_structured_exporter import _iter_blocks, _iter_blocks_from_element, _load_docx_source
 from .hwp_converter import convert_hwp_to_hwpx_bytes
 from .hwpx_structured_exporter import _HP, _logical_table_cells, _paragraph_text, _run_text, _safe_int, _section_roots_from_bytes
@@ -285,7 +285,7 @@ def _parse_docx_table(
             table_ir.cells.append(cell_ir)
 
             cp_idx = 0
-            current_paragraph: TableCellParagraphIR | None = None
+            current_paragraph: ParagraphIR | None = None
             nested_table_counter_by_paragraph: dict[str, int] = {}
 
             for block in _iter_blocks_from_element(
@@ -307,10 +307,8 @@ def _parse_docx_table(
                         assets=assets,
                         asset_lookup=asset_lookup,
                     )
-                    current_paragraph = TableCellParagraphIR(
+                    current_paragraph = ParagraphIR(
                         unit_id=paragraph_id,
-                        runs=runs,
-                        images=images,
                         content=content,
                     )
                     current_paragraph.recompute_text(normalizer=normalizer)
@@ -323,7 +321,7 @@ def _parse_docx_table(
 
                 if current_paragraph is None:
                     cp_idx += 1
-                    current_paragraph = TableCellParagraphIR(
+                    current_paragraph = ParagraphIR(
                         unit_id=f"{table_id}.tr{tr_idx}.tc{tc_idx}.p{cp_idx}",
                     )
                     cell_ir.paragraphs.append(current_paragraph)
@@ -343,9 +341,7 @@ def _parse_docx_table(
                     Paragraph=Paragraph,
                     Table=Table,
                 )
-                current_paragraph.tables.append(nested_table)
-                current_paragraph.content.append(nested_table)
-                current_paragraph.sync_content()
+                current_paragraph.append_content(nested_table)
                 current_paragraph.recompute_text(normalizer=normalizer)
 
             cell_ir.recompute_text(normalizer=normalizer)
@@ -399,8 +395,6 @@ def _build_docx_doc_ir(
             )
             paragraph_ir = ParagraphIR(
                 unit_id=paragraph_id,
-                runs=runs,
-                images=images,
                 content=content,
             )
             paragraph_ir.recompute_text(normalizer=normalize)
@@ -429,8 +423,6 @@ def _build_docx_doc_ir(
         )
         paragraph_ir = ParagraphIR(
             unit_id=paragraph_id,
-            source_type=SourceType.TABLE_BLOCK,
-            tables=[table_ir],
             content=[table_ir],
         )
         paragraph_ir.recompute_text(normalizer=normalize)
@@ -639,9 +631,9 @@ def _parse_hwpx_table(
             cell_paragraphs = _parse_hwpx_cell_paragraphs(cell_el)
             if not cell_paragraphs:
                 if not skip_empty:
-                    paragraph_ir = TableCellParagraphIR(
+                    paragraph_ir = ParagraphIR(
                         unit_id=f"{table_id}.tr{tr_idx}.tc{tc_idx}.p1",
-                        runs=[
+                        content=[
                             RunIR(
                                 unit_id=f"{table_id}.tr{tr_idx}.tc{tc_idx}.p1.r1",
                                 text="",
@@ -668,11 +660,8 @@ def _parse_hwpx_table(
                     assets=assets,
                     asset_lookup=asset_lookup,
                 )
-                paragraph_ir = TableCellParagraphIR(
+                paragraph_ir = ParagraphIR(
                     unit_id=paragraph_id,
-                    runs=runs,
-                    images=images,
-                    tables=tables,
                     content=content,
                 )
                 paragraph_ir.recompute_text(normalizer=normalizer)
@@ -731,13 +720,8 @@ def _build_hwpx_doc_ir(
                     asset_lookup=asset_lookup,
                 )
 
-                source_type = SourceType.TABLE_BLOCK if tables and not runs and not images else SourceType.PARAGRAPH
                 paragraph_ir = ParagraphIR(
                     unit_id=paragraph_id,
-                    source_type=source_type,
-                    runs=runs,
-                    images=images,
-                    tables=tables,
                     content=content,
                 )
                 paragraph_ir.recompute_text(normalizer=normalize)

@@ -16,10 +16,13 @@ if str(SRC_ROOT) not in sys.path:
 from document_processor import (
     CellStyleInfo,
     DocIR,
+    ImageIR,
     ParaStyleInfo,
+    ParagraphIR,
+    RunIR,
     RunStyleInfo,
-    SourceType,
     StyleMap,
+    TableIR,
     TableStyleInfo,
     build_doc_ir_from_mapping,
 )
@@ -59,7 +62,7 @@ class DocumentIRTests(unittest.TestCase):
 
         self.assertEqual(len(doc_ir.paragraphs), 2)
         self.assertEqual(doc_ir.paragraphs[0].text, "Hello World")
-        self.assertEqual(doc_ir.paragraphs[1].source_type, SourceType.TABLE_BLOCK)
+        self.assertEqual(doc_ir.paragraphs[1].content[0].unit_id, "s1.p2.r1.tbl1")
         self.assertEqual(doc_ir.paragraphs[1].tables[0].row_count, 2)
         self.assertEqual(doc_ir.paragraphs[1].tables[0].col_count, 2)
 
@@ -76,6 +79,34 @@ class DocumentIRTests(unittest.TestCase):
         doc = DocumentLM.from_mapping({"s1.p1.r1": "X"}, custom_field=7)
         self.assertIsInstance(doc, DocumentLM)
         self.assertEqual(doc.custom_field, 7)
+
+    def test_content_is_source_of_truth(self) -> None:
+        doc = DocIR(
+            paragraphs=[
+                ParagraphIR(
+                    unit_id="s1.p1",
+                    content=[
+                        RunIR(unit_id="s1.p1.r1", text="Hello"),
+                        ImageIR(unit_id="s1.p1.img1", image_id="img1"),
+                        TableIR(unit_id="s1.p1.tbl1"),
+                    ],
+                )
+            ]
+        )
+
+        paragraph = doc.paragraphs[0]
+        self.assertEqual(
+            [type(node).__name__ for node in paragraph.content],
+            ["RunIR", "ImageIR", "TableIR"],
+        )
+        self.assertEqual([run.text for run in paragraph.runs], ["Hello"])
+        self.assertEqual([image.image_id for image in paragraph.images], ["img1"])
+        self.assertEqual([table.unit_id for table in paragraph.tables], ["s1.p1.tbl1"])
+
+        content_annotation = ParagraphIR.model_fields["content"].annotation
+        self.assertIn("RunIR", str(content_annotation))
+        self.assertIn("ImageIR", str(content_annotation))
+        self.assertIn("TableIR", str(content_annotation))
 
     def test_from_file_docx_path_and_file_object(self) -> None:
         from docx import Document

@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import base64
-from enum import Enum
 from pathlib import Path
-from typing import Any, BinaryIO, Callable, Generic, TypeVar
+from typing import Any, BinaryIO, Callable, Generic, TypeAlias, TypeVar
 
 from pydantic import BaseModel, Field
 
@@ -15,15 +14,9 @@ from .style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo, TableStyleI
 T = TypeVar("T", bound=BaseModel)
 
 
-class SourceType(str, Enum):
-    """Structural paragraph source categories."""
-
-    PARAGRAPH = "paragraph"
-    TABLE_BLOCK = "table_block"
-
-
 class RunIR(BaseModel, Generic[T]):
     """Smallest style-preserving text unit."""
+
     model_config = {"validate_assignment": True}
     meta: T | None = None
 
@@ -72,6 +65,7 @@ class ImageAsset(BaseModel):
 
 class ImageIR(BaseModel, Generic[T]):
     """Image placement node inside paragraph-like content."""
+
     model_config = {"validate_assignment": True}
     meta: T | None = None
 
@@ -81,10 +75,9 @@ class ImageIR(BaseModel, Generic[T]):
     title: str | None = None
     display_width_pt: float | None = None
     display_height_pt: float | None = None
+class ParagraphIR(BaseModel, Generic[T]):
+    """Structural paragraph unit used both at the document level and inside table cells."""
 
-
-class TableCellParagraphIR(BaseModel, Generic[T]):
-    """Paragraph inside a table cell."""
     model_config = {"validate_assignment": True}
     meta: T | None = None
 
@@ -92,26 +85,28 @@ class TableCellParagraphIR(BaseModel, Generic[T]):
     text: str = ""
     normalized_text: str = ""
     para_style: ParaStyleInfo | None = None
-    runs: list[RunIR] = Field(default_factory=list)
-    images: list[ImageIR] = Field(default_factory=list)
-    tables: list["TableIR"] = Field(default_factory=list)
-    content: list[object] = Field(default_factory=list)
+    content: list["ParagraphContentNode"] = Field(default_factory=list)
 
-    def model_post_init(self, __context: Any) -> None:
-        self.sync_content()
+    @property
+    def runs(self) -> list[RunIR]:
+        return [item for item in self.content if isinstance(item, RunIR)]
 
-    def sync_content(self) -> None:
-        if self.content:
-            self.runs = [item for item in self.content if isinstance(item, RunIR)]
-            self.images = [item for item in self.content if isinstance(item, ImageIR)]
-            self.tables = [item for item in self.content if isinstance(item, TableIR)]
-            return
+    @property
+    def images(self) -> list[ImageIR]:
+        return [item for item in self.content if isinstance(item, ImageIR)]
 
-        content: list[object] = []
-        content.extend(self.runs)
-        content.extend(self.images)
-        content.extend(self.tables)
-        self.content = content
+    @property
+    def tables(self) -> list["TableIR"]:
+        return [item for item in self.content if isinstance(item, TableIR)]
+
+    def append_content(self, node: "ParagraphContentNode") -> None:
+        self.content.append(node)
+
+    def extend_content(self, nodes: list["ParagraphContentNode"]) -> None:
+        self.content.extend(nodes)
+
+    def sort_content(self, *, key) -> None:
+        self.content.sort(key=key)
 
     def iter_all_runs(self, *, include_table_runs: bool = True):
         yield from self.runs
@@ -124,7 +119,6 @@ class TableCellParagraphIR(BaseModel, Generic[T]):
 
     def recompute_text(self, *, normalizer: Callable[[str], str] | None = None) -> None:
         normalize = normalizer or (lambda s: s.strip())
-        self.sync_content()
 
         parts: list[str] = []
         if self.runs:
@@ -134,12 +128,13 @@ class TableCellParagraphIR(BaseModel, Generic[T]):
             if cell_texts:
                 parts.append("\n".join(cell_texts))
 
-        self.text = "\n".join(part for part in parts if part)
+        self.text = "\n".join(part for part in parts if part) if self.tables else "".join(run.text for run in self.runs)
         self.normalized_text = normalize(self.text)
 
 
 class TableCellIR(BaseModel, Generic[T]):
     """Table cell node."""
+
     model_config = {"validate_assignment": True}
     meta: T | None = None
 
@@ -149,7 +144,7 @@ class TableCellIR(BaseModel, Generic[T]):
     text: str = ""
     normalized_text: str = ""
     cell_style: CellStyleInfo | None = None
-    paragraphs: list[TableCellParagraphIR] = Field(default_factory=list)
+    paragraphs: list["ParagraphIR"] = Field(default_factory=list)
 
     def recompute_text(self, *, normalizer: Callable[[str], str] | None = None) -> None:
         normalize = normalizer or (lambda s: s.strip())
@@ -159,6 +154,7 @@ class TableCellIR(BaseModel, Generic[T]):
 
 class TableIR(BaseModel, Generic[T]):
     """Nested table node under a paragraph."""
+
     model_config = {"validate_assignment": True}
     meta: T | None = None
 
@@ -169,72 +165,15 @@ class TableIR(BaseModel, Generic[T]):
     cells: list[TableCellIR] = Field(default_factory=list)
 
 
-class ParagraphIR(BaseModel, Generic[T]):
-    """Structural paragraph unit."""
-    model_config = {"validate_assignment": True}
-    meta: T | None = None
-
-    unit_id: str
-    text: str = ""
-    normalized_text: str = ""
-    source_type: SourceType = SourceType.PARAGRAPH
-    para_style: ParaStyleInfo | None = None
-    runs: list[RunIR] = Field(default_factory=list)
-    images: list[ImageIR] = Field(default_factory=list)
-    tables: list[TableIR] = Field(default_factory=list)
-    content: list[object] = Field(default_factory=list)
-
-    def model_post_init(self, __context: Any) -> None:
-        self.sync_content()
-
-    def sync_content(self) -> None:
-        if self.content:
-            self.runs = [item for item in self.content if isinstance(item, RunIR)]
-            self.images = [item for item in self.content if isinstance(item, ImageIR)]
-            self.tables = [item for item in self.content if isinstance(item, TableIR)]
-            return
-
-        content: list[object] = []
-        content.extend(self.runs)
-        content.extend(self.images)
-        content.extend(self.tables)
-        self.content = content
-
-    def iter_all_runs(self, *, include_table_runs: bool = True):
-        yield from self.runs
-        if not include_table_runs:
-            return
-        for table in self.tables:
-            for cell in table.cells:
-                for cell_paragraph in cell.paragraphs:
-                    yield from cell_paragraph.iter_all_runs(include_table_runs=True)
-
-    def recompute_text(self, *, normalizer: Callable[[str], str] | None = None) -> None:
-        normalize = normalizer or (lambda s: s.strip())
-        self.sync_content()
-
-        if self.source_type == SourceType.TABLE_BLOCK and self.tables:
-            parts: list[str] = []
-            if self.runs:
-                parts.append("".join(run.text for run in self.runs))
-            for table in self.tables:
-                cell_texts = [cell.text for cell in table.cells if cell.text]
-                if cell_texts:
-                    parts.append("\n".join(cell_texts))
-            self.text = "\n".join(part for part in parts if part)
-        else:
-            self.text = "".join(run.text for run in self.runs)
-
-        self.normalized_text = normalize(self.text)
-
-
 class DocIR(BaseModel, Generic[T]):
     """Top-level structural document IR."""
+
     meta: T | None = None
 
     doc_id: str | None = None
     source_path: str | None = None
     source_doc_type: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
     assets: dict[str, ImageAsset] = Field(default_factory=dict)
     paragraphs: list[ParagraphIR] = Field(default_factory=list)
 
@@ -344,14 +283,20 @@ class DocIR(BaseModel, Generic[T]):
         return render_html_document(self, title=title)
 
 
+ParagraphContentNode: TypeAlias = RunIR | ImageIR | TableIR
+
+ParagraphIR.model_rebuild()
+TableCellIR.model_rebuild()
+TableIR.model_rebuild()
+
+
 __all__ = [
     "DocIR",
     "ImageAsset",
     "ImageIR",
+    "ParagraphContentNode",
     "ParagraphIR",
     "RunIR",
-    "SourceType",
     "TableCellIR",
-    "TableCellParagraphIR",
     "TableIR",
 ]
