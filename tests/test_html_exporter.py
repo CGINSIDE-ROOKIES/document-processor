@@ -114,6 +114,47 @@ class HtmlExporterTests(unittest.TestCase):
         self.assertIn("margin-left:0", html)
         self.assertIn("margin-right:auto", html)
 
+    def test_export_html_renders_cell_diagonal_borders(self) -> None:
+        doc = DocIR(
+            paragraphs=[
+                ParagraphIR(
+                    unit_id="s1.p1",
+                    content=[
+                        TableIR(
+                            unit_id="s1.p1.r1.tbl1",
+                            cells=[
+                                TableCellIR(
+                                    unit_id="s1.p1.r1.tbl1.tr1.tc1",
+                                    row_index=1,
+                                    col_index=1,
+                                    cell_style=CellStyleInfo(
+                                        diagonal_tl_br="1px solid #000000",
+                                        diagonal_tr_bl="1px dashed #ff0000",
+                                        border_top="1px solid #000000",
+                                        border_bottom="1px solid #000000",
+                                        border_left="1px solid #000000",
+                                        border_right="1px solid #000000",
+                                    ),
+                                    paragraphs=[
+                                        ParagraphIR(
+                                            unit_id="s1.p1.r1.tbl1.tr1.tc1.p1",
+                                            content=[RunIR(unit_id="x", text="Diag")],
+                                        )
+                                    ],
+                                )
+                            ],
+                        )
+                    ],
+                )
+            ]
+        )
+
+        html = doc.to_html()
+
+        self.assertIn("background-image:url(data:image/svg+xml;base64,", html)
+        self.assertNotIn('background-image:url("data:image/svg+xml,', html)
+        self.assertIn("Diag", html)
+
     def test_export_html_leaves_justify_table_left_aligned_by_default(self) -> None:
         doc = DocIR(
             paragraphs=[

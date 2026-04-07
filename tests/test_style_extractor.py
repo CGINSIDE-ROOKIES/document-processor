@@ -109,6 +109,41 @@ class StyleExtractorTests(unittest.TestCase):
         self.assertEqual(rstyle.color, "#112233")
         self.assertAlmostEqual(rstyle.size_pt or 0.0, 12.0, places=3)
 
+    def test_extract_hwpx_strikeout_ignores_3d_default_shape(self) -> None:
+        header_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core">
+  <hh:charProperties itemCnt="2">
+    <hh:charPr id="1" height="1000" textColor="#000000">
+      <hh:strikeout shape="3D" color="#000000" />
+    </hh:charPr>
+    <hh:charPr id="2" height="1000" textColor="#000000">
+      <hh:strikeout shape="SOLID" color="#000000" />
+    </hh:charPr>
+  </hh:charProperties>
+</hh:head>
+"""
+
+        section_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec
+  xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section"
+  xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p>
+    <hp:run charPrIDRef="1"><hp:t>A</hp:t></hp:run>
+    <hp:run charPrIDRef="2"><hp:t>B</hp:t></hp:run>
+  </hp:p>
+</hs:sec>
+"""
+
+        hwpx_bytes_io = BytesIO()
+        with zipfile.ZipFile(hwpx_bytes_io, "w") as zf:
+            zf.writestr("Contents/header.xml", header_xml)
+            zf.writestr("Contents/section0.xml", section_xml)
+
+        style_map = extract_styles_hwpx(hwpx_bytes_io.getvalue())
+
+        self.assertFalse(style_map.runs["s1.p1.r1"].strikethrough)
+        self.assertTrue(style_map.runs["s1.p1.r2"].strikethrough)
+
     def test_extract_hwpx_vertical_merge_uses_logical_cell_ids(self) -> None:
         hwpx_bytes_io = BytesIO()
         with zipfile.ZipFile(hwpx_bytes_io, "w") as zf:
@@ -219,6 +254,111 @@ class StyleExtractorTests(unittest.TestCase):
         self.assertAlmostEqual(first_cell.width_pt or 0.0, 72.0, places=1)
         self.assertAlmostEqual(second_cell.width_pt or 0.0, 144.0, places=1)
         self.assertAlmostEqual(first_cell.height_pt or 0.0, 24.0, places=1)
+
+    def test_extract_docx_cell_diagonal_borders(self) -> None:
+        from docx import Document
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            docx_path = Path(tmp_dir) / "diag.docx"
+            doc = Document()
+            table = doc.add_table(rows=1, cols=1)
+            cell = table.cell(0, 0)
+            cell.text = "Diag"
+
+            tc_pr = cell._tc.get_or_add_tcPr()
+            tc_borders = tc_pr.find(qn("w:tcBorders"))
+            if tc_borders is None:
+                tc_borders = OxmlElement("w:tcBorders")
+                tc_pr.append(tc_borders)
+
+            for side, value, color in (
+                ("w:tl2br", "single", "000000"),
+                ("w:tr2bl", "dashed", "FF0000"),
+            ):
+                border = OxmlElement(side)
+                border.set(qn("w:val"), value)
+                border.set(qn("w:sz"), "4")
+                border.set(qn("w:color"), color)
+                tc_borders.append(border)
+
+            doc.save(str(docx_path))
+
+            style_map = extract_styles_docx(docx_path)
+
+        cell_style = style_map.cells["s1.p1.r1.tbl1.tr1.tc1"]
+        self.assertEqual(cell_style.diagonal_tl_br, "1px solid #000000")
+        self.assertEqual(cell_style.diagonal_tr_bl, "1px dashed #FF0000")
+
+    def test_extract_hwpx_cell_diagonal_borders(self) -> None:
+        header_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core">
+  <hh:borderFills itemCnt="2">
+    <hh:borderFill id="1" threeD="0" shadow="0" centerLine="NONE" breakCellSeparateLine="0">
+      <hh:slash type="CENTER" Crooked="0" isCounter="0" />
+      <hh:backSlash type="NONE" Crooked="0" isCounter="0" />
+      <hh:leftBorder type="SOLID" width="0.12 mm" color="#000000" />
+      <hh:rightBorder type="SOLID" width="0.12 mm" color="#000000" />
+      <hh:topBorder type="SOLID" width="0.12 mm" color="#000000" />
+      <hh:bottomBorder type="SOLID" width="0.12 mm" color="#000000" />
+      <hh:diagonal type="SOLID" width="0.12 mm" color="#123456" />
+    </hh:borderFill>
+    <hh:borderFill id="2" threeD="0" shadow="0" centerLine="NONE" breakCellSeparateLine="0">
+      <hh:slash type="NONE" Crooked="0" isCounter="0" />
+      <hh:backSlash type="CENTER" Crooked="0" isCounter="0" />
+      <hh:leftBorder type="SOLID" width="0.12 mm" color="#000000" />
+      <hh:rightBorder type="SOLID" width="0.12 mm" color="#000000" />
+      <hh:topBorder type="SOLID" width="0.12 mm" color="#000000" />
+      <hh:bottomBorder type="SOLID" width="0.12 mm" color="#000000" />
+      <hh:diagonal type="DASH" width="0.12 mm" color="#654321" />
+    </hh:borderFill>
+  </hh:borderFills>
+</hh:head>
+"""
+
+        section_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec
+  xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section"
+  xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p>
+    <hp:run>
+      <hp:tbl>
+        <hp:tr>
+          <hp:tc borderFillIDRef="1">
+            <hp:subList vertAlign="CENTER">
+              <hp:p><hp:run><hp:t>A</hp:t></hp:run></hp:p>
+            </hp:subList>
+            <hp:cellAddr colAddr="0" rowAddr="0" />
+            <hp:cellSpan colSpan="1" rowSpan="1" />
+          </hp:tc>
+          <hp:tc borderFillIDRef="2">
+            <hp:subList vertAlign="CENTER">
+              <hp:p><hp:run><hp:t>B</hp:t></hp:run></hp:p>
+            </hp:subList>
+            <hp:cellAddr colAddr="1" rowAddr="0" />
+            <hp:cellSpan colSpan="1" rowSpan="1" />
+          </hp:tc>
+        </hp:tr>
+      </hp:tbl>
+    </hp:run>
+  </hp:p>
+</hs:sec>
+"""
+
+        hwpx_bytes_io = BytesIO()
+        with zipfile.ZipFile(hwpx_bytes_io, "w") as zf:
+            zf.writestr("Contents/header.xml", header_xml)
+            zf.writestr("Contents/section0.xml", section_xml)
+
+        style_map = extract_styles_hwpx(hwpx_bytes_io.getvalue())
+
+        slash_cell = style_map.cells["s1.p1.r1.tbl1.tr1.tc1"]
+        backslash_cell = style_map.cells["s1.p1.r1.tbl1.tr1.tc2"]
+        self.assertEqual(slash_cell.diagonal_tr_bl, "1px solid #123456")
+        self.assertIsNone(slash_cell.diagonal_tl_br)
+        self.assertEqual(backslash_cell.diagonal_tl_br, "1px dashed #654321")
+        self.assertIsNone(backslash_cell.diagonal_tr_bl)
 
     def test_extract_hwpx_nested_table_styles(self) -> None:
         hwpx_bytes_io = BytesIO()

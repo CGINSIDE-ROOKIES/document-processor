@@ -41,6 +41,8 @@ class CellStyleInfo(BaseModel):
     border_bottom: str | None = None
     border_left: str | None = None
     border_right: str | None = None
+    diagonal_tl_br: str | None = None
+    diagonal_tr_bl: str | None = None
     rowspan: int = 1
     colspan: int = 1
 

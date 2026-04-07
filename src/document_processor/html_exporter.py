@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from html import escape
 import re
 
@@ -134,6 +135,11 @@ def _cell_css(style: CellStyleInfo | None) -> str:
         parts.append(f"border-bottom:{style.border_bottom or 'none'}")
         parts.append(f"border-left:{style.border_left or 'none'}")
         parts.append(f"border-right:{style.border_right or 'none'}")
+        diagonal_background = _cell_diagonal_background(style)
+        if diagonal_background:
+            parts.append(f"background-image:url({diagonal_background})")
+            parts.append("background-repeat:no-repeat")
+            parts.append("background-size:100% 100%")
     else:
         parts.extend(
             [
@@ -145,6 +151,84 @@ def _cell_css(style: CellStyleInfo | None) -> str:
         )
     parts.append("padding:4px 6px")
     return ";".join(parts)
+
+
+def _parse_border_css(border_css: str | None) -> tuple[int, str, str] | None:
+    if not border_css:
+        return None
+    match = re.fullmatch(r"\s*(\d+)px\s+([a-zA-Z-]+)\s+(#[0-9A-Fa-f]{3,8})\s*", border_css)
+    if not match:
+        return None
+    return int(match.group(1)), match.group(2), match.group(3)
+
+
+def _svg_dasharray(style_name: str, stroke_width: int) -> str | None:
+    if style_name == "dashed":
+        return f"{max(stroke_width * 4, 4)} {max(stroke_width * 2, 2)}"
+    if style_name == "dotted":
+        return f"{max(stroke_width, 1)} {max(stroke_width * 2, 2)}"
+    return None
+
+
+def _svg_diagonal_lines(style: CellStyleInfo) -> str | None:
+    diagonals: list[tuple[str, int, str, str]] = []
+    for direction, border_css in (
+        ("tl_br", style.diagonal_tl_br),
+        ("tr_bl", style.diagonal_tr_bl),
+    ):
+        parsed = _parse_border_css(border_css)
+        if parsed is None:
+            continue
+        stroke_width, style_name, color = parsed
+        diagonals.append((direction, stroke_width, style_name, color))
+
+    if not diagonals:
+        return None
+
+    svg_parts = [
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" preserveAspectRatio="none">'
+    ]
+    for direction, stroke_width, style_name, color in diagonals:
+        dasharray = _svg_dasharray(style_name, stroke_width)
+        if direction == "tl_br":
+            coords = (0, 0, 100, 100)
+        else:
+            coords = (100, 0, 0, 100)
+
+        if style_name == "double":
+            offset = min(max(stroke_width * 1.2, 1.5), 5.0)
+            for delta in (-offset, offset):
+                if direction == "tl_br":
+                    x1, y1, x2, y2 = 0, max(0.0, delta), 100 - max(0.0, delta), 100
+                else:
+                    x1, y1, x2, y2 = 100, max(0.0, delta), max(0.0, delta), 100
+                svg_parts.append(
+                    f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{color}" stroke-width="{max(stroke_width / 2, 1)}" />'
+                )
+            continue
+
+        attrs = [
+            f'x1="{coords[0]}"',
+            f'y1="{coords[1]}"',
+            f'x2="{coords[2]}"',
+            f'y2="{coords[3]}"',
+            f'stroke="{color}"',
+            f'stroke-width="{stroke_width}"',
+        ]
+        if dasharray:
+            attrs.append(f'stroke-dasharray="{dasharray}"')
+        svg_parts.append(f"<line {' '.join(attrs)} />")
+
+    svg_parts.append("</svg>")
+    return "".join(svg_parts)
+
+
+def _cell_diagonal_background(style: CellStyleInfo) -> str | None:
+    svg = _svg_diagonal_lines(style)
+    if svg is None:
+        return None
+    svg_base64 = base64.b64encode(svg.encode("utf-8")).decode("ascii")
+    return f"data:image/svg+xml;base64,{svg_base64}"
 
 
 def _table_css(table: TableIR, para_style: ParaStyleInfo | None) -> str:

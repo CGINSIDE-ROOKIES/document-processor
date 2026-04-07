@@ -455,66 +455,74 @@
 <g id="node10" class="node">
 <title>document_processor.style_types.CellStyleInfo</title>
 <g id="a_node10"><a xlink:title="document_processor.style_types.CellStyleInfo&#10;&#10;Table cell formatting.&#10;">
-<polygon fill="none" stroke="black" points="1349.25,-753.5 1349.25,-776 1514.25,-776 1514.25,-753.5 1349.25,-753.5"/>
-<text xml:space="preserve" text-anchor="start" x="1393.88" y="-760.7" font-family="Times New Roman,Times,Liberation Serif,serif" font-weight="bold" font-size="14.00">CellStyleInfo</text>
-<polygon fill="none" stroke="black" points="1349.25,-731 1349.25,-753.5 1443.75,-753.5 1443.75,-731 1349.25,-731"/>
-<text xml:space="preserve" text-anchor="start" x="1364.62" y="-737.75" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">background</text>
-<polygon fill="none" stroke="black" points="1443.75,-731 1443.75,-753.5 1514.25,-753.5 1514.25,-731 1443.75,-731"/>
-<text xml:space="preserve" text-anchor="start" x="1452.38" y="-737.75" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">str | None</text>
-<polygon fill="none" stroke="black" points="1349.25,-708.5 1349.25,-731 1443.75,-731 1443.75,-708.5 1349.25,-708.5"/>
-<text xml:space="preserve" text-anchor="start" x="1359.38" y="-715.25" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">vertical_align</text>
-<polygon fill="none" stroke="black" points="1443.75,-708.5 1443.75,-731 1514.25,-731 1514.25,-708.5 1443.75,-708.5"/>
-<text xml:space="preserve" text-anchor="start" x="1452.38" y="-715.25" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">str | None</text>
-<polygon fill="none" stroke="black" points="1349.25,-686 1349.25,-708.5 1443.75,-708.5 1443.75,-686 1349.25,-686"/>
-<text xml:space="preserve" text-anchor="start" x="1352.25" y="-692.75" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">horizontal_align</text>
-<polygon fill="none" stroke="black" points="1443.75,-686 1443.75,-708.5 1514.25,-708.5 1514.25,-686 1443.75,-686"/>
-<text xml:space="preserve" text-anchor="start" x="1452.38" y="-692.75" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">str | None</text>
-<polygon fill="none" stroke="black" points="1349.25,-663.5 1349.25,-686 1443.75,-686 1443.75,-663.5 1349.25,-663.5"/>
-<text xml:space="preserve" text-anchor="start" x="1372.5" y="-670.25" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">width_pt</text>
-<polygon fill="none" stroke="black" points="1443.75,-663.5 1443.75,-686 1514.25,-686 1514.25,-663.5 1443.75,-663.5"/>
-<text xml:space="preserve" text-anchor="start" x="1446.75" y="-670.25" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">float | None</text>
-<polygon fill="none" stroke="black" points="1349.25,-641 1349.25,-663.5 1443.75,-663.5 1443.75,-641 1349.25,-641"/>
-<text xml:space="preserve" text-anchor="start" x="1371" y="-647.75" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">height_pt</text>
-<polygon fill="none" stroke="black" points="1443.75,-641 1443.75,-663.5 1514.25,-663.5 1514.25,-641 1443.75,-641"/>
-<text xml:space="preserve" text-anchor="start" x="1446.75" y="-647.75" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">float | None</text>
-<polygon fill="none" stroke="black" points="1349.25,-618.5 1349.25,-641 1443.75,-641 1443.75,-618.5 1349.25,-618.5"/>
-<text xml:space="preserve" text-anchor="start" x="1366.88" y="-625.25" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">border_top</text>
-<polygon fill="none" stroke="black" points="1443.75,-618.5 1443.75,-641 1514.25,-641 1514.25,-618.5 1443.75,-618.5"/>
-<text xml:space="preserve" text-anchor="start" x="1452.38" y="-625.25" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">str | None</text>
-<polygon fill="none" stroke="black" points="1349.25,-596 1349.25,-618.5 1443.75,-618.5 1443.75,-596 1349.25,-596"/>
-<text xml:space="preserve" text-anchor="start" x="1356" y="-602.75" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">border_bottom</text>
-<polygon fill="none" stroke="black" points="1443.75,-596 1443.75,-618.5 1514.25,-618.5 1514.25,-596 1443.75,-596"/>
-<text xml:space="preserve" text-anchor="start" x="1452.38" y="-602.75" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">str | None</text>
-<polygon fill="none" stroke="black" points="1349.25,-573.5 1349.25,-596 1443.75,-596 1443.75,-573.5 1349.25,-573.5"/>
-<text xml:space="preserve" text-anchor="start" x="1366.5" y="-580.25" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">border_left</text>
-<polygon fill="none" stroke="black" points="1443.75,-573.5 1443.75,-596 1514.25,-596 1514.25,-573.5 1443.75,-573.5"/>
-<text xml:space="preserve" text-anchor="start" x="1452.38" y="-580.25" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">str | None</text>
-<polygon fill="none" stroke="black" points="1349.25,-551 1349.25,-573.5 1443.75,-573.5 1443.75,-551 1349.25,-551"/>
-<text xml:space="preserve" text-anchor="start" x="1362.75" y="-557.75" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">border_right</text>
-<polygon fill="none" stroke="black" points="1443.75,-551 1443.75,-573.5 1514.25,-573.5 1514.25,-551 1443.75,-551"/>
-<text xml:space="preserve" text-anchor="start" x="1452.38" y="-557.75" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">str | None</text>
-<polygon fill="none" stroke="black" points="1349.25,-528.5 1349.25,-551 1443.75,-551 1443.75,-528.5 1349.25,-528.5"/>
-<text xml:space="preserve" text-anchor="start" x="1373.62" y="-535.25" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">rowspan</text>
-<polygon fill="none" stroke="black" points="1443.75,-528.5 1443.75,-551 1514.25,-551 1514.25,-528.5 1443.75,-528.5"/>
-<text xml:space="preserve" text-anchor="start" x="1471.88" y="-535.25" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">int</text>
-<polygon fill="none" stroke="black" points="1349.25,-506 1349.25,-528.5 1443.75,-528.5 1443.75,-506 1349.25,-506"/>
-<text xml:space="preserve" text-anchor="start" x="1375.88" y="-512.75" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">colspan</text>
-<polygon fill="none" stroke="black" points="1443.75,-506 1443.75,-528.5 1514.25,-528.5 1514.25,-506 1443.75,-506"/>
-<text xml:space="preserve" text-anchor="start" x="1471.88" y="-512.75" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">int</text>
+<polygon fill="none" stroke="black" points="1349.25,-754 1349.25,-776.5 1514.25,-776.5 1514.25,-754 1349.25,-754"/>
+<text xml:space="preserve" text-anchor="start" x="1393.88" y="-761.2" font-family="Times New Roman,Times,Liberation Serif,serif" font-weight="bold" font-size="14.00">CellStyleInfo</text>
+<polygon fill="none" stroke="black" points="1349.25,-731.5 1349.25,-754 1443.75,-754 1443.75,-731.5 1349.25,-731.5"/>
+<text xml:space="preserve" text-anchor="start" x="1364.62" y="-738.25" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">background</text>
+<polygon fill="none" stroke="black" points="1443.75,-731.5 1443.75,-754 1514.25,-754 1514.25,-731.5 1443.75,-731.5"/>
+<text xml:space="preserve" text-anchor="start" x="1452.38" y="-738.25" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">str | None</text>
+<polygon fill="none" stroke="black" points="1349.25,-709 1349.25,-731.5 1443.75,-731.5 1443.75,-709 1349.25,-709"/>
+<text xml:space="preserve" text-anchor="start" x="1359.38" y="-715.75" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">vertical_align</text>
+<polygon fill="none" stroke="black" points="1443.75,-709 1443.75,-731.5 1514.25,-731.5 1514.25,-709 1443.75,-709"/>
+<text xml:space="preserve" text-anchor="start" x="1452.38" y="-715.75" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">str | None</text>
+<polygon fill="none" stroke="black" points="1349.25,-686.5 1349.25,-709 1443.75,-709 1443.75,-686.5 1349.25,-686.5"/>
+<text xml:space="preserve" text-anchor="start" x="1352.25" y="-693.25" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">horizontal_align</text>
+<polygon fill="none" stroke="black" points="1443.75,-686.5 1443.75,-709 1514.25,-709 1514.25,-686.5 1443.75,-686.5"/>
+<text xml:space="preserve" text-anchor="start" x="1452.38" y="-693.25" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">str | None</text>
+<polygon fill="none" stroke="black" points="1349.25,-664 1349.25,-686.5 1443.75,-686.5 1443.75,-664 1349.25,-664"/>
+<text xml:space="preserve" text-anchor="start" x="1372.5" y="-670.75" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">width_pt</text>
+<polygon fill="none" stroke="black" points="1443.75,-664 1443.75,-686.5 1514.25,-686.5 1514.25,-664 1443.75,-664"/>
+<text xml:space="preserve" text-anchor="start" x="1446.75" y="-670.75" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">float | None</text>
+<polygon fill="none" stroke="black" points="1349.25,-641.5 1349.25,-664 1443.75,-664 1443.75,-641.5 1349.25,-641.5"/>
+<text xml:space="preserve" text-anchor="start" x="1371" y="-648.25" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">height_pt</text>
+<polygon fill="none" stroke="black" points="1443.75,-641.5 1443.75,-664 1514.25,-664 1514.25,-641.5 1443.75,-641.5"/>
+<text xml:space="preserve" text-anchor="start" x="1446.75" y="-648.25" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">float | None</text>
+<polygon fill="none" stroke="black" points="1349.25,-619 1349.25,-641.5 1443.75,-641.5 1443.75,-619 1349.25,-619"/>
+<text xml:space="preserve" text-anchor="start" x="1366.88" y="-625.75" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">border_top</text>
+<polygon fill="none" stroke="black" points="1443.75,-619 1443.75,-641.5 1514.25,-641.5 1514.25,-619 1443.75,-619"/>
+<text xml:space="preserve" text-anchor="start" x="1452.38" y="-625.75" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">str | None</text>
+<polygon fill="none" stroke="black" points="1349.25,-596.5 1349.25,-619 1443.75,-619 1443.75,-596.5 1349.25,-596.5"/>
+<text xml:space="preserve" text-anchor="start" x="1356" y="-603.25" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">border_bottom</text>
+<polygon fill="none" stroke="black" points="1443.75,-596.5 1443.75,-619 1514.25,-619 1514.25,-596.5 1443.75,-596.5"/>
+<text xml:space="preserve" text-anchor="start" x="1452.38" y="-603.25" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">str | None</text>
+<polygon fill="none" stroke="black" points="1349.25,-574 1349.25,-596.5 1443.75,-596.5 1443.75,-574 1349.25,-574"/>
+<text xml:space="preserve" text-anchor="start" x="1366.5" y="-580.75" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">border_left</text>
+<polygon fill="none" stroke="black" points="1443.75,-574 1443.75,-596.5 1514.25,-596.5 1514.25,-574 1443.75,-574"/>
+<text xml:space="preserve" text-anchor="start" x="1452.38" y="-580.75" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">str | None</text>
+<polygon fill="none" stroke="black" points="1349.25,-551.5 1349.25,-574 1443.75,-574 1443.75,-551.5 1349.25,-551.5"/>
+<text xml:space="preserve" text-anchor="start" x="1362.75" y="-558.25" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">border_right</text>
+<polygon fill="none" stroke="black" points="1443.75,-551.5 1443.75,-574 1514.25,-574 1514.25,-551.5 1443.75,-551.5"/>
+<text xml:space="preserve" text-anchor="start" x="1452.38" y="-558.25" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">str | None</text>
+<polygon fill="none" stroke="black" points="1349.25,-529 1349.25,-551.5 1443.75,-551.5 1443.75,-529 1349.25,-529"/>
+<text xml:space="preserve" text-anchor="start" x="1357.12" y="-535.75" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">diagonal_tl_br</text>
+<polygon fill="none" stroke="black" points="1443.75,-529 1443.75,-551.5 1514.25,-551.5 1514.25,-529 1443.75,-529"/>
+<text xml:space="preserve" text-anchor="start" x="1452.38" y="-535.75" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">str | None</text>
+<polygon fill="none" stroke="black" points="1349.25,-506.5 1349.25,-529 1443.75,-529 1443.75,-506.5 1349.25,-506.5"/>
+<text xml:space="preserve" text-anchor="start" x="1357.12" y="-513.25" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">diagonal_tr_bl</text>
+<polygon fill="none" stroke="black" points="1443.75,-506.5 1443.75,-529 1514.25,-529 1514.25,-506.5 1443.75,-506.5"/>
+<text xml:space="preserve" text-anchor="start" x="1452.38" y="-513.25" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">str | None</text>
+<polygon fill="none" stroke="black" points="1349.25,-484 1349.25,-506.5 1443.75,-506.5 1443.75,-484 1349.25,-484"/>
+<text xml:space="preserve" text-anchor="start" x="1373.62" y="-490.75" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">rowspan</text>
+<polygon fill="none" stroke="black" points="1443.75,-484 1443.75,-506.5 1514.25,-506.5 1514.25,-484 1443.75,-484"/>
+<text xml:space="preserve" text-anchor="start" x="1471.88" y="-490.75" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">int</text>
+<polygon fill="none" stroke="black" points="1349.25,-461.5 1349.25,-484 1443.75,-484 1443.75,-461.5 1349.25,-461.5"/>
+<text xml:space="preserve" text-anchor="start" x="1375.88" y="-468.25" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">colspan</text>
+<polygon fill="none" stroke="black" points="1443.75,-461.5 1443.75,-484 1514.25,-484 1514.25,-461.5 1443.75,-461.5"/>
+<text xml:space="preserve" text-anchor="start" x="1471.88" y="-468.25" font-family="Times New Roman,Times,Liberation Serif,serif" font-size="14.00">int</text>
 </a>
 </g>
 </g>
 <!-- document_processor.models.TableCellIR&#45;&gt;document_processor.style_types.CellStyleInfo -->
 <g id="edge9" class="edge">
 <title>document_processor.models.TableCellIR:e&#45;&gt;document_processor.style_types.CellStyleInfo:w</title>
-<path fill="none" stroke="black" d="M1251.12,-764.5C1286.32,-764.53 1301.05,-764.7 1334.33,-764.74"/>
-<polyline fill="none" stroke="black" points="1241.25,-764.5 1246.25,-764.5"/>
-<polyline fill="none" stroke="black" points="1246.25,-764.5 1251.25,-764.5"/>
-<polyline fill="none" stroke="black" points="1349.25,-764.75 1344.25,-764.75"/>
-<polygon fill="black" stroke="black" points="1343.25,-759.75 1343.25,-769.75 1341.25,-769.75 1341.25,-759.75 1343.25,-759.75"/>
-<polyline fill="none" stroke="black" points="1344.25,-764.75 1339.25,-764.74"/>
-<polygon fill="black" stroke="black" points="1338.25,-759.74 1338.25,-769.74 1336.25,-769.74 1336.25,-759.74 1338.25,-759.74"/>
-<polyline fill="none" stroke="black" points="1339.25,-764.74 1334.25,-764.74"/>
+<path fill="none" stroke="black" d="M1251.12,-764.51C1286.32,-764.59 1301.05,-765.1 1334.33,-765.22"/>
+<polyline fill="none" stroke="black" points="1241.25,-764.5 1246.25,-764.51"/>
+<polyline fill="none" stroke="black" points="1246.25,-764.51 1251.25,-764.51"/>
+<polyline fill="none" stroke="black" points="1349.25,-765.25 1344.25,-765.24"/>
+<polygon fill="black" stroke="black" points="1343.26,-760.24 1343.24,-770.24 1341.24,-770.24 1341.26,-760.24 1343.26,-760.24"/>
+<polyline fill="none" stroke="black" points="1344.25,-765.24 1339.25,-765.23"/>
+<polygon fill="black" stroke="black" points="1338.26,-760.23 1338.24,-770.23 1336.24,-770.23 1336.26,-760.23 1338.26,-760.23"/>
+<polyline fill="none" stroke="black" points="1339.25,-765.23 1334.25,-765.22"/>
 </g>
 </g>
 </svg>

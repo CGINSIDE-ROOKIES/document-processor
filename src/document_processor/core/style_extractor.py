@@ -54,6 +54,20 @@ _HWPX_VALIGN = {
 
 _DOCX_ALIGN = {0: "left", 1: "center", 2: "right", 3: "justify"}
 
+_HWPX_VISIBLE_LINE_SHAPES = {
+    "SOLID",
+    "DASH",
+    "DOT",
+    "DASH_DOT",
+    "DASH_DOT_DOT",
+    "LONG_DASH",
+    "CIRCLE",
+    "DOUBLE",
+    "SLIM_THICK",
+    "THICK_SLIM",
+    "SLIM_THICK_SLIM",
+}
+
 
 def _has_para_style(info: ParaStyleInfo) -> bool:
     return any(
@@ -149,6 +163,23 @@ def _hwpx_border_css(border_el: ET.Element | None) -> str | None:
     return f"{px}px {style} {color}"
 
 
+def _hwpx_diagonal_border_css(
+    border_fill_el: ET.Element,
+    *,
+    direction: Literal["slash", "backslash"],
+) -> str | None:
+    if direction == "slash":
+        direction_el = border_fill_el.find(f"{{{_NS_HH}}}slash")
+    else:
+        direction_el = border_fill_el.find(f"{{{_NS_HH}}}backSlash")
+
+    if direction_el is None or direction_el.get("type", "NONE") == "NONE":
+        return None
+
+    diagonal_el = border_fill_el.find(f"{{{_NS_HH}}}diagonal")
+    return _hwpx_border_css(diagonal_el)
+
+
 def _map_by_id(root: ET.Element | None, tag: str) -> dict[str, ET.Element]:
     if root is None:
         return {}
@@ -197,8 +228,13 @@ def _hwpx_run_style_from_char_pr(char_pr_el: ET.Element | None) -> RunStyleInfo:
         info.underline = True
 
     strike_el = char_pr_el.find(f"{{{_NS_HH}}}strikeout")
-    if strike_el is not None and strike_el.get("shape", "NONE") != "NONE":
-        info.strikethrough = True
+    if strike_el is not None:
+        strike_type = (strike_el.get("type") or "").upper()
+        strike_shape = (strike_el.get("shape") or "").upper()
+        if strike_type and strike_type != "NONE":
+            info.strikethrough = True
+        elif strike_shape in _HWPX_VISIBLE_LINE_SHAPES:
+            info.strikethrough = True
 
     color = char_pr_el.get("textColor")
     if color and color != "#000000":
@@ -394,6 +430,8 @@ def _hwpx_cell_style(
         info.border_bottom = _hwpx_border_css(border_fill.find(f"{{{_NS_HH}}}bottomBorder"))
         info.border_left = _hwpx_border_css(border_fill.find(f"{{{_NS_HH}}}leftBorder"))
         info.border_right = _hwpx_border_css(border_fill.find(f"{{{_NS_HH}}}rightBorder"))
+        info.diagonal_tr_bl = _hwpx_diagonal_border_css(border_fill, direction="slash")
+        info.diagonal_tl_br = _hwpx_diagonal_border_css(border_fill, direction="backslash")
 
         fill_brush = border_fill.find(f"{{{_NS_HH}}}fillBrush")
         if fill_brush is None:
@@ -759,6 +797,8 @@ def _docx_cell_style(
         col_count=col_count,
         table_border_defaults=table_border_defaults,
     )
+    info.diagonal_tl_br = _docx_border_css(tc_borders, "tl2br")
+    info.diagonal_tr_bl = _docx_border_css(tc_borders, "tr2bl")
     return info
 
 
