@@ -86,6 +86,31 @@ def _length_to_pt(value) -> float | None:
         return None
 
 
+def _docx_measure_to_pt(raw_value: str | None, measurement_type: str | None) -> float | None:
+    if raw_value is None:
+        return None
+    try:
+        number = float(raw_value)
+    except (TypeError, ValueError):
+        return None
+
+    normalized_type = (measurement_type or "dxa").lower()
+    if normalized_type == "dxa":
+        return number / 20.0
+    if normalized_type == "nil":
+        return 0.0
+    return None
+
+
+def _hwp_numeric_to_pt(raw_value: str | None) -> float | None:
+    if raw_value is None:
+        return None
+    try:
+        return float(raw_value) / _HWPUNIT_PER_PT
+    except (TypeError, ValueError):
+        return None
+
+
 def _hwp_margin_value_to_pt(el: ET.Element | None) -> float | None:
     if el is None:
         return None
@@ -222,6 +247,96 @@ def _logical_table_cells(row_el: ET.Element) -> list[tuple[int, ET.Element]]:
     return logical_cells
 
 
+def _hwpx_table_dimensions(table_el: ET.Element) -> tuple[int, int]:
+    row_els = table_el.findall(f"{_HP}tr")
+    table_row_count = 0
+    table_col_count = 0
+    for row_el in row_els:
+        for logical_col, cell_el in _logical_table_cells(row_el):
+            cell_addr = cell_el.find(f"{_HP}cellAddr")
+            row_addr = _safe_int(cell_addr.get("rowAddr")) if cell_addr is not None else None
+            logical_row = (row_addr + 1) if row_addr is not None else 1
+            cell_span = cell_el.find(f"{_HP}cellSpan")
+            rowspan = _safe_int(cell_span.get("rowSpan")) if cell_span is not None else None
+            colspan = _safe_int(cell_span.get("colSpan")) if cell_span is not None else None
+            table_row_count = max(table_row_count, logical_row + max(rowspan or 1, 1) - 1)
+            table_col_count = max(table_col_count, logical_col + max(colspan or 1, 1) - 1)
+    return table_row_count or len(row_els), table_col_count
+
+
+def _hwpx_table_size(table_el: ET.Element) -> tuple[float | None, float | None]:
+    size_el = table_el.find(f"{_HP}sz")
+    if size_el is None:
+        return None, None
+    return (
+        _hwp_numeric_to_pt(size_el.get("width")),
+        _hwp_numeric_to_pt(size_el.get("height")),
+    )
+
+
+def _extract_hwpx_table_styles(
+    style_map: StyleMap,
+    table_el: ET.Element,
+    table_id: str,
+    *,
+    para_pr_map: dict[str, ET.Element],
+    char_pr_map: dict[str, ET.Element],
+    border_fill_map: dict[str, ET.Element],
+) -> None:
+    row_count, col_count = _hwpx_table_dimensions(table_el)
+    width_pt, height_pt = _hwpx_table_size(table_el)
+    style_map.tables[table_id] = TableStyleInfo(
+        row_count=row_count,
+        col_count=col_count,
+        width_pt=width_pt,
+        height_pt=height_pt,
+    )
+
+    for tr_idx, row_el in enumerate(table_el.findall(f"{_HP}tr"), start=1):
+        for tc_idx, cell_el in _logical_table_cells(row_el):
+            cell_id = f"{table_id}.tr{tr_idx}.tc{tc_idx}"
+            style_map.cells[cell_id] = _hwpx_cell_style(
+                cell_el,
+                para_pr_map=para_pr_map,
+                border_fill_map=border_fill_map,
+            )
+
+            cell_paragraphs = _iter_cell_paragraphs(cell_el)
+            if not cell_paragraphs:
+                style_map.runs[f"{cell_id}.p1.r1"] = RunStyleInfo()
+                continue
+
+            for cp_idx, cell_para_el in enumerate(cell_paragraphs, start=1):
+                cell_paragraph_id = f"{cell_id}.p{cp_idx}"
+                cell_para_pr_ref = cell_para_el.get("paraPrIDRef")
+                if cell_para_pr_ref and cell_para_pr_ref in para_pr_map:
+                    cp_style = _hwpx_para_style_from_pr(para_pr_map[cell_para_pr_ref])
+                    if cp_style is not None:
+                        style_map.paragraphs[cell_paragraph_id] = cp_style
+
+                cell_run_els = cell_para_el.findall(f"{_HP}run")
+                if not cell_run_els:
+                    style_map.runs[f"{cell_paragraph_id}.r1"] = RunStyleInfo()
+                else:
+                    for cr_idx, cell_run_el in enumerate(cell_run_els, start=1):
+                        char_pr_ref = cell_run_el.get("charPrIDRef")
+                        char_pr_el = char_pr_map.get(char_pr_ref) if char_pr_ref else None
+                        style_map.runs[f"{cell_paragraph_id}.r{cr_idx}"] = (
+                            _hwpx_run_style_from_char_pr(char_pr_el)
+                        )
+
+                for nested_t_idx, nested_table_el in enumerate(_iter_paragraph_tables(cell_para_el), start=1):
+                    nested_table_id = f"{cell_paragraph_id}.tbl{nested_t_idx}"
+                    _extract_hwpx_table_styles(
+                        style_map,
+                        nested_table_el,
+                        nested_table_id,
+                        para_pr_map=para_pr_map,
+                        char_pr_map=char_pr_map,
+                        border_fill_map=border_fill_map,
+                    )
+
+
 def _section_roots_from_bytes(source: bytes) -> list[ET.Element]:
     section_name_pattern = re.compile(r"^Contents/section\d+\.xml$")
 
@@ -294,6 +409,11 @@ def _hwpx_cell_style(
             if face_color and face_color.lower() not in ("none", "#ffffff", "transparent"):
                 info.background = face_color
 
+    cell_size = cell_el.find(f"{_HP}cellSz")
+    if cell_size is not None:
+        info.width_pt = _hwp_numeric_to_pt(cell_size.get("width"))
+        info.height_pt = _hwp_numeric_to_pt(cell_size.get("height"))
+
     return info
 
 
@@ -331,58 +451,14 @@ def _extract_styles_hwpx_from_roots(
 
             for t_idx, table_el in enumerate(_iter_paragraph_tables(para_el), start=1):
                 table_id = f"{paragraph_id}.r1.tbl{t_idx}"
-                row_els = table_el.findall(f"{_HP}tr")
-                table_row_count = 0
-                table_col_count = 0
-                for row_el in row_els:
-                    for logical_col, cell_el in _logical_table_cells(row_el):
-                        cell_addr = cell_el.find(f"{_HP}cellAddr")
-                        row_addr = _safe_int(cell_addr.get("rowAddr")) if cell_addr is not None else None
-                        logical_row = (row_addr + 1) if row_addr is not None else 1
-                        cell_span = cell_el.find(f"{_HP}cellSpan")
-                        rowspan = _safe_int(cell_span.get("rowSpan")) if cell_span is not None else None
-                        colspan = _safe_int(cell_span.get("colSpan")) if cell_span is not None else None
-                        table_row_count = max(table_row_count, logical_row + max(rowspan or 1, 1) - 1)
-                        table_col_count = max(table_col_count, logical_col + max(colspan or 1, 1) - 1)
-                style_map.tables[table_id] = TableStyleInfo(
-                    row_count=table_row_count or len(row_els),
-                    col_count=table_col_count,
+                _extract_hwpx_table_styles(
+                    style_map,
+                    table_el,
+                    table_id,
+                    para_pr_map=para_pr_map,
+                    char_pr_map=char_pr_map,
+                    border_fill_map=border_fill_map,
                 )
-
-                for tr_idx, row_el in enumerate(row_els, start=1):
-                    for tc_idx, cell_el in _logical_table_cells(row_el):
-                        cell_id = f"{table_id}.tr{tr_idx}.tc{tc_idx}"
-                        style_map.cells[cell_id] = _hwpx_cell_style(
-                            cell_el,
-                            para_pr_map=para_pr_map,
-                            border_fill_map=border_fill_map,
-                        )
-
-                        cell_paragraphs = _iter_cell_paragraphs(cell_el)
-                        if not cell_paragraphs:
-                            run_id = f"{cell_id}.p1.r1"
-                            style_map.runs[run_id] = RunStyleInfo()
-                            continue
-
-                        for cp_idx, cell_para_el in enumerate(cell_paragraphs, start=1):
-                            cell_paragraph_id = f"{cell_id}.p{cp_idx}"
-                            cell_para_pr_ref = cell_para_el.get("paraPrIDRef")
-                            if cell_para_pr_ref and cell_para_pr_ref in para_pr_map:
-                                cp_style = _hwpx_para_style_from_pr(para_pr_map[cell_para_pr_ref])
-                                if cp_style is not None:
-                                    style_map.paragraphs[cell_paragraph_id] = cp_style
-
-                            cell_run_els = cell_para_el.findall(f"{_HP}run")
-                            if not cell_run_els:
-                                style_map.runs[f"{cell_paragraph_id}.r1"] = RunStyleInfo()
-                                continue
-
-                            for cr_idx, cell_run_el in enumerate(cell_run_els, start=1):
-                                char_pr_ref = cell_run_el.get("charPrIDRef")
-                                char_pr_el = char_pr_map.get(char_pr_ref) if char_pr_ref else None
-                                style_map.runs[f"{cell_paragraph_id}.r{cr_idx}"] = (
-                                    _hwpx_run_style_from_char_pr(char_pr_el)
-                                )
 
     return style_map
 
@@ -480,12 +556,135 @@ def _docx_border_css(tc_borders, side: str) -> str | None:
     except (TypeError, ValueError):
         px = 1
     color = el.get(qn("w:color"), "000000")
+    if color.lower() == "auto":
+        color = "000000"
     style_map = {"single": "solid", "double": "double", "dashed": "dashed", "dotted": "dotted"}
     css_style = style_map.get(val, "solid")
     return f"{px}px {css_style} #{color}"
 
 
-def _docx_cell_style(cell) -> CellStyleInfo:
+def _docx_table_style_border_defaults(
+    style_id: str | None,
+    *,
+    style_elements: dict[str, object],
+    cache: dict[str, dict[str, str | None]],
+) -> dict[str, str | None]:
+    from docx.oxml.ns import qn
+
+    if not style_id:
+        return {}
+    cached = cache.get(style_id)
+    if cached is not None:
+        return dict(cached)
+
+    style_el = style_elements.get(style_id)
+    if style_el is None:
+        cache[style_id] = {}
+        return {}
+
+    based_on_el = style_el.find(qn("w:basedOn"))
+    base_style_id = based_on_el.get(qn("w:val")) if based_on_el is not None else None
+    merged = _docx_table_style_border_defaults(
+        base_style_id,
+        style_elements=style_elements,
+        cache=cache,
+    )
+
+    tbl_pr = style_el.find(qn("w:tblPr"))
+    tbl_borders = tbl_pr.find(qn("w:tblBorders")) if tbl_pr is not None else None
+    if tbl_borders is not None:
+        for border_name, border_key in (
+            ("top", "top"),
+            ("bottom", "bottom"),
+            ("left", "left"),
+            ("right", "right"),
+            ("insideH", "inside_h"),
+            ("insideV", "inside_v"),
+        ):
+            border_css = _docx_border_css(tbl_borders, border_name)
+            if border_css is not None:
+                merged[border_key] = border_css
+
+    cache[style_id] = dict(merged)
+    return merged
+
+
+def _docx_default_cell_border(
+    side: str,
+    *,
+    row_index: int,
+    col_index: int,
+    row_count: int,
+    col_count: int,
+    table_border_defaults: dict[str, str | None],
+) -> str | None:
+    if side == "top":
+        return table_border_defaults.get("top") if row_index == 1 else table_border_defaults.get("inside_h")
+    if side == "bottom":
+        return table_border_defaults.get("bottom") if row_index == row_count else table_border_defaults.get("inside_h")
+    if side == "left":
+        return table_border_defaults.get("left") if col_index == 1 else table_border_defaults.get("inside_v")
+    if side == "right":
+        return table_border_defaults.get("right") if col_index == col_count else table_border_defaults.get("inside_v")
+    return None
+
+
+def _docx_table_size(table) -> tuple[float | None, float | None]:
+    from docx.oxml.ns import qn
+
+    table_width_pt: float | None = None
+    table_height_pt: float | None = None
+
+    tbl_pr = table._tbl.find(qn("w:tblPr"))
+    if tbl_pr is not None:
+        tbl_w = tbl_pr.find(qn("w:tblW"))
+        if tbl_w is not None:
+            table_width_pt = _docx_measure_to_pt(
+                tbl_w.get(qn("w:w")),
+                tbl_w.get(qn("w:type")),
+            )
+
+    if table_width_pt is None:
+        tbl_grid = table._tbl.find(qn("w:tblGrid"))
+        if tbl_grid is not None:
+            grid_width_pt = 0.0
+            has_grid = False
+            for grid_col in tbl_grid.findall(qn("w:gridCol")):
+                width_pt = _docx_measure_to_pt(grid_col.get(qn("w:w")), "dxa")
+                if width_pt is not None:
+                    has_grid = True
+                    grid_width_pt += width_pt
+            if has_grid:
+                table_width_pt = grid_width_pt
+
+    row_height_total = 0.0
+    has_row_height = False
+    for row in table.rows:
+        tr_pr = row._tr.find(qn("w:trPr"))
+        tr_height = tr_pr.find(qn("w:trHeight")) if tr_pr is not None else None
+        if tr_height is None:
+            continue
+        height_pt = _docx_measure_to_pt(tr_height.get(qn("w:val")), "dxa")
+        if height_pt is None:
+            continue
+        has_row_height = True
+        row_height_total += height_pt
+    if has_row_height:
+        table_height_pt = row_height_total
+
+    return table_width_pt, table_height_pt
+
+
+def _docx_cell_style(
+    cell,
+    *,
+    row_index: int,
+    col_index: int,
+    row_count: int,
+    col_count: int,
+    row_height_pt: float | None = None,
+    table_border_defaults: dict[str, str | None] | None = None,
+) -> CellStyleInfo:
     from docx.oxml.ns import qn
 
     info = CellStyleInfo()
@@ -511,6 +710,15 @@ def _docx_cell_style(cell) -> CellStyleInfo:
         if pstyle is not None and pstyle.align is not None:
             info.horizontal_align = pstyle.align
 
+    tc_width = tc_pr.find(qn("w:tcW"))
+    if tc_width is not None:
+        info.width_pt = _docx_measure_to_pt(
+            tc_width.get(qn("w:w")),
+            tc_width.get(qn("w:type")),
+        )
+    if row_height_pt is not None:
+        info.height_pt = row_height_pt
+
     shd = tc_pr.find(qn("w:shd"))
     if shd is not None:
         fill = shd.get(qn("w:fill"))
@@ -518,10 +726,39 @@ def _docx_cell_style(cell) -> CellStyleInfo:
             info.background = f"#{fill}"
 
     tc_borders = tc_pr.find(qn("w:tcBorders"))
-    info.border_top = _docx_border_css(tc_borders, "top")
-    info.border_bottom = _docx_border_css(tc_borders, "bottom")
-    info.border_left = _docx_border_css(tc_borders, "left")
-    info.border_right = _docx_border_css(tc_borders, "right")
+    table_border_defaults = table_border_defaults or {}
+    info.border_top = _docx_border_css(tc_borders, "top") or _docx_default_cell_border(
+        "top",
+        row_index=row_index,
+        col_index=col_index,
+        row_count=row_count,
+        col_count=col_count,
+        table_border_defaults=table_border_defaults,
+    )
+    info.border_bottom = _docx_border_css(tc_borders, "bottom") or _docx_default_cell_border(
+        "bottom",
+        row_index=row_index,
+        col_index=col_index,
+        row_count=row_count,
+        col_count=col_count,
+        table_border_defaults=table_border_defaults,
+    )
+    info.border_left = _docx_border_css(tc_borders, "left") or _docx_default_cell_border(
+        "left",
+        row_index=row_index,
+        col_index=col_index,
+        row_count=row_count,
+        col_count=col_count,
+        table_border_defaults=table_border_defaults,
+    )
+    info.border_right = _docx_border_css(tc_borders, "right") or _docx_default_cell_border(
+        "right",
+        row_index=row_index,
+        col_index=col_index,
+        row_count=row_count,
+        col_count=col_count,
+        table_border_defaults=table_border_defaults,
+    )
     return info
 
 
@@ -539,7 +776,7 @@ def extract_styles_docx(
     from docx.table import Table
     from docx.text.paragraph import Paragraph
 
-    from .docx_structured_exporter import _iter_blocks
+    from .docx_structured_exporter import _iter_blocks, _iter_blocks_from_element
 
     if isinstance(source, DocxDocument):
         doc = source
@@ -549,10 +786,112 @@ def extract_styles_docx(
         doc = load_docx(str(source))
 
     style_map = StyleMap()
+    style_elements: dict[str, object] = {}
+    border_defaults_cache: dict[str, dict[str, str | None]] = {}
+
+    for style_el in doc.styles.element.findall(qn("w:style")):
+        if style_el.get(qn("w:type")) != "table":
+            continue
+        style_id = style_el.get(qn("w:styleId"))
+        if style_id:
+            style_elements[style_id] = style_el
 
     p_idx = 0
     tbl_counter = 0
-    vmerge_starts: dict[tuple[str, int], str] = {}
+
+    def _extract_docx_table_styles(table, table_id: str) -> None:
+        vmerge_starts: dict[tuple[str, int], str] = {}
+        table_style_id = table.style.style_id if table.style is not None else None
+        table_border_defaults = _docx_table_style_border_defaults(
+            table_style_id,
+            style_elements=style_elements,
+            cache=border_defaults_cache,
+        )
+        table_width_pt, table_height_pt = _docx_table_size(table)
+
+        style_map.tables[table_id] = TableStyleInfo(
+            row_count=len(table.rows),
+            col_count=len(table.columns),
+            width_pt=table_width_pt,
+            height_pt=table_height_pt,
+        )
+
+        for tr_idx, row in enumerate(table.rows, start=1):
+            tr_pr = row._tr.find(qn("w:trPr"))
+            tr_height = tr_pr.find(qn("w:trHeight")) if tr_pr is not None else None
+            row_height_pt = None
+            if tr_height is not None:
+                row_height_pt = _docx_measure_to_pt(
+                    tr_height.get(qn("w:val")),
+                    "dxa",
+                )
+            for tc_idx, cell in enumerate(row.cells, start=1):
+                cell_id = f"{table_id}.tr{tr_idx}.tc{tc_idx}"
+
+                tc_pr = cell._tc.find(qn("w:tcPr"))
+                if tc_pr is not None:
+                    v_merge = tc_pr.find(qn("w:vMerge"))
+                    if v_merge is not None:
+                        val = v_merge.get(qn("w:val"), "")
+                        col_key = (table_id, tc_idx)
+                        if val == "restart":
+                            vmerge_starts[col_key] = cell_id
+                        elif col_key in vmerge_starts:
+                            start_cell_id = vmerge_starts[col_key]
+                            start_style = style_map.cells.get(start_cell_id)
+                            if start_style is not None:
+                                start_style.rowspan += 1
+                            continue
+                    else:
+                        vmerge_starts.pop((table_id, tc_idx), None)
+
+                style_map.cells[cell_id] = _docx_cell_style(
+                    cell,
+                    row_index=tr_idx,
+                    col_index=tc_idx,
+                    row_count=len(table.rows),
+                    col_count=len(table.columns),
+                    row_height_pt=row_height_pt,
+                    table_border_defaults=table_border_defaults,
+                )
+
+                cp_idx = 0
+                current_paragraph_id: str | None = None
+                nested_table_counter_by_paragraph: dict[str, int] = {}
+
+                for block in _iter_blocks_from_element(
+                    cell,
+                    cell._tc,
+                    CT_P=CT_P,
+                    CT_Tbl=CT_Tbl,
+                    Paragraph=Paragraph,
+                    Table=Table,
+                ):
+                    if isinstance(block, Paragraph):
+                        cp_idx += 1
+                        current_paragraph_id = f"{cell_id}.p{cp_idx}"
+                        cp_style = _docx_para_style(block)
+                        if cp_style is not None:
+                            style_map.paragraphs[current_paragraph_id] = cp_style
+
+                        if not block.runs:
+                            style_map.runs[f"{current_paragraph_id}.r1"] = RunStyleInfo()
+                            continue
+
+                        for cr_idx, cell_run in enumerate(block.runs, start=1):
+                            style_map.runs[f"{current_paragraph_id}.r{cr_idx}"] = _docx_run_style(
+                                cell_run
+                            )
+                        continue
+
+                    if current_paragraph_id is None:
+                        cp_idx += 1
+                        current_paragraph_id = f"{cell_id}.p{cp_idx}"
+
+                    nested_tbl_counter = nested_table_counter_by_paragraph.get(current_paragraph_id, 0) + 1
+                    nested_table_counter_by_paragraph[current_paragraph_id] = nested_tbl_counter
+                    nested_table_id = f"{current_paragraph_id}.tbl{nested_tbl_counter}"
+                    _extract_docx_table_styles(block, nested_table_id)
 
     for block in _iter_blocks(
         doc,
@@ -582,52 +921,7 @@ def extract_styles_docx(
         tbl_counter += 1
         p_idx += 1
         table_id = f"s1.p{p_idx}.r1.tbl{tbl_counter}"
-        style_map.tables[table_id] = TableStyleInfo(
-            row_count=len(block.rows),
-            col_count=len(block.columns),
-        )
-
-        for tr_idx, row in enumerate(block.rows, start=1):
-            for tc_idx, cell in enumerate(row.cells, start=1):
-                cell_id = f"{table_id}.tr{tr_idx}.tc{tc_idx}"
-
-                tc_pr = cell._tc.find(qn("w:tcPr"))
-                if tc_pr is not None:
-                    v_merge = tc_pr.find(qn("w:vMerge"))
-                    if v_merge is not None:
-                        val = v_merge.get(qn("w:val"), "")
-                        col_key = (table_id, tc_idx)
-                        if val == "restart":
-                            vmerge_starts[col_key] = cell_id
-                        elif col_key in vmerge_starts:
-                            start_cell_id = vmerge_starts[col_key]
-                            start_style = style_map.cells.get(start_cell_id)
-                            if start_style is not None:
-                                start_style.rowspan += 1
-                            continue
-                    else:
-                        vmerge_starts.pop((table_id, tc_idx), None)
-
-                style_map.cells[cell_id] = _docx_cell_style(cell)
-
-                if not cell.paragraphs:
-                    style_map.runs[f"{cell_id}.p1.r1"] = RunStyleInfo()
-                    continue
-
-                for cp_idx, cell_para in enumerate(cell.paragraphs, start=1):
-                    cell_paragraph_id = f"{cell_id}.p{cp_idx}"
-                    cp_style = _docx_para_style(cell_para)
-                    if cp_style is not None:
-                        style_map.paragraphs[cell_paragraph_id] = cp_style
-
-                    if not cell_para.runs:
-                        style_map.runs[f"{cell_paragraph_id}.r1"] = RunStyleInfo()
-                        continue
-
-                    for cr_idx, cell_run in enumerate(cell_para.runs, start=1):
-                        style_map.runs[f"{cell_paragraph_id}.r{cr_idx}"] = _docx_run_style(
-                            cell_run
-                        )
+        _extract_docx_table_styles(block, table_id)
 
     return style_map
 

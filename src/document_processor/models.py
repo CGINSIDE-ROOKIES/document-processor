@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import base64
 from enum import Enum
 from pathlib import Path
-from typing import Any, BinaryIO, Callable, TypeVar, Generic
+from typing import Any, BinaryIO, Callable, Generic, TypeVar
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field
 
 from .io_utils import TemporarySourcePath, coerce_source_to_supported_value, get_source_name, infer_doc_type
 from .style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
@@ -32,6 +33,56 @@ class RunIR(BaseModel, Generic[T]):
     run_style: RunStyleInfo | None = None
 
 
+class ImageAsset(BaseModel):
+    """Binary image asset stored once per document."""
+
+    image_id: str
+    mime_type: str
+    filename: str | None = None
+    data_base64: str
+    intrinsic_width_px: int | None = None
+    intrinsic_height_px: int | None = None
+
+    @classmethod
+    def from_bytes(
+        cls,
+        *,
+        image_id: str,
+        data: bytes,
+        mime_type: str,
+        filename: str | None = None,
+        intrinsic_width_px: int | None = None,
+        intrinsic_height_px: int | None = None,
+    ) -> "ImageAsset":
+        return cls(
+            image_id=image_id,
+            mime_type=mime_type,
+            filename=filename,
+            data_base64=base64.b64encode(data).decode("ascii"),
+            intrinsic_width_px=intrinsic_width_px,
+            intrinsic_height_px=intrinsic_height_px,
+        )
+
+    def bytes_data(self) -> bytes:
+        return base64.b64decode(self.data_base64.encode("ascii"))
+
+    def as_data_url(self) -> str:
+        return f"data:{self.mime_type};base64,{self.data_base64}"
+
+
+class ImageIR(BaseModel, Generic[T]):
+    """Image placement node inside paragraph-like content."""
+    model_config = {"validate_assignment": True}
+    meta: T | None = None
+
+    unit_id: str
+    image_id: str
+    alt_text: str | None = None
+    title: str | None = None
+    display_width_pt: float | None = None
+    display_height_pt: float | None = None
+
+
 class TableCellParagraphIR(BaseModel, Generic[T]):
     """Paragraph inside a table cell."""
     model_config = {"validate_assignment": True}
@@ -42,6 +93,49 @@ class TableCellParagraphIR(BaseModel, Generic[T]):
     normalized_text: str = ""
     para_style: ParaStyleInfo | None = None
     runs: list[RunIR] = Field(default_factory=list)
+    images: list[ImageIR] = Field(default_factory=list)
+    tables: list["TableIR"] = Field(default_factory=list)
+    content: list[object] = Field(default_factory=list)
+
+    def model_post_init(self, __context: Any) -> None:
+        self.sync_content()
+
+    def sync_content(self) -> None:
+        if self.content:
+            self.runs = [item for item in self.content if isinstance(item, RunIR)]
+            self.images = [item for item in self.content if isinstance(item, ImageIR)]
+            self.tables = [item for item in self.content if isinstance(item, TableIR)]
+            return
+
+        content: list[object] = []
+        content.extend(self.runs)
+        content.extend(self.images)
+        content.extend(self.tables)
+        self.content = content
+
+    def iter_all_runs(self, *, include_table_runs: bool = True):
+        yield from self.runs
+        if not include_table_runs:
+            return
+        for table in self.tables:
+            for cell in table.cells:
+                for cell_paragraph in cell.paragraphs:
+                    yield from cell_paragraph.iter_all_runs(include_table_runs=True)
+
+    def recompute_text(self, *, normalizer: Callable[[str], str] | None = None) -> None:
+        normalize = normalizer or (lambda s: s.strip())
+        self.sync_content()
+
+        parts: list[str] = []
+        if self.runs:
+            parts.append("".join(run.text for run in self.runs))
+        for table in self.tables:
+            cell_texts = [cell.text for cell in table.cells if cell.text]
+            if cell_texts:
+                parts.append("\n".join(cell_texts))
+
+        self.text = "\n".join(part for part in parts if part)
+        self.normalized_text = normalize(self.text)
 
 
 class TableCellIR(BaseModel, Generic[T]):
@@ -86,7 +180,25 @@ class ParagraphIR(BaseModel, Generic[T]):
     source_type: SourceType = SourceType.PARAGRAPH
     para_style: ParaStyleInfo | None = None
     runs: list[RunIR] = Field(default_factory=list)
+    images: list[ImageIR] = Field(default_factory=list)
     tables: list[TableIR] = Field(default_factory=list)
+    content: list[object] = Field(default_factory=list)
+
+    def model_post_init(self, __context: Any) -> None:
+        self.sync_content()
+
+    def sync_content(self) -> None:
+        if self.content:
+            self.runs = [item for item in self.content if isinstance(item, RunIR)]
+            self.images = [item for item in self.content if isinstance(item, ImageIR)]
+            self.tables = [item for item in self.content if isinstance(item, TableIR)]
+            return
+
+        content: list[object] = []
+        content.extend(self.runs)
+        content.extend(self.images)
+        content.extend(self.tables)
+        self.content = content
 
     def iter_all_runs(self, *, include_table_runs: bool = True):
         yield from self.runs
@@ -95,10 +207,11 @@ class ParagraphIR(BaseModel, Generic[T]):
         for table in self.tables:
             for cell in table.cells:
                 for cell_paragraph in cell.paragraphs:
-                    yield from cell_paragraph.runs
+                    yield from cell_paragraph.iter_all_runs(include_table_runs=True)
 
     def recompute_text(self, *, normalizer: Callable[[str], str] | None = None) -> None:
         normalize = normalizer or (lambda s: s.strip())
+        self.sync_content()
 
         if self.source_type == SourceType.TABLE_BLOCK and self.tables:
             parts: list[str] = []
@@ -122,7 +235,7 @@ class DocIR(BaseModel, Generic[T]):
     doc_id: str | None = None
     source_path: str | None = None
     source_doc_type: str | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    assets: dict[str, ImageAsset] = Field(default_factory=dict)
     paragraphs: list[ParagraphIR] = Field(default_factory=list)
 
     @classmethod
@@ -139,8 +252,7 @@ class DocIR(BaseModel, Generic[T]):
         **doc_kwargs: Any,
     ) -> "DocIR":
         """Build document IR from a path, bytes, or binary file object."""
-        from .builder import build_doc_ir_from_mapping
-        from .core.structured_mapping_exporter import export_structured_mapping
+        from .core.document_ir_parser import build_doc_ir_from_file
         from .core.style_extractor import extract_styles
 
         resolved_doc_type = infer_doc_type(source, doc_type)  # type: ignore[arg-type]
@@ -152,11 +264,17 @@ class DocIR(BaseModel, Generic[T]):
 
         if resolved_doc_type == "hwp":
             with TemporarySourcePath(source, suffix=".hwp") as source_path:
-                mapping = export_structured_mapping(
+                doc_ir = build_doc_ir_from_file(
                     source_path,
                     doc_type="hwp",
                     skip_empty=skip_empty,
                     include_tables=include_tables,
+                    source_path=resolved_source_path,
+                    metadata=metadata,
+                    normalizer=normalizer,
+                    doc_id=doc_id,
+                    doc_cls=cls,
+                    **doc_kwargs,
                 )
                 style_map = extract_styles(
                     source_path,
@@ -165,11 +283,17 @@ class DocIR(BaseModel, Generic[T]):
                 )
         else:
             supported_source = coerce_source_to_supported_value(source, doc_type=resolved_doc_type)
-            mapping = export_structured_mapping(
+            doc_ir = build_doc_ir_from_file(
                 supported_source,
                 doc_type=resolved_doc_type,
                 skip_empty=skip_empty,
                 include_tables=include_tables,
+                source_path=resolved_source_path,
+                metadata=metadata,
+                normalizer=normalizer,
+                doc_id=doc_id,
+                doc_cls=cls,
+                **doc_kwargs,
             )
             style_map = extract_styles(
                 supported_source,
@@ -177,17 +301,13 @@ class DocIR(BaseModel, Generic[T]):
                 include_tables=include_tables,
             )
 
-        return build_doc_ir_from_mapping(
-            mapping,
-            style_map=style_map,
-            source_path=resolved_source_path,
-            source_doc_type=resolved_doc_type,
-            metadata=metadata,
-            normalizer=normalizer,
-            doc_id=doc_id,
-            doc_cls=cls,
-            **doc_kwargs,
-        )
+        from .builder import apply_style_map_to_doc_ir
+
+        apply_style_map_to_doc_ir(doc_ir, style_map)
+        doc_ir.source_doc_type = resolved_doc_type
+        if resolved_source_path is not None:
+            doc_ir.source_path = resolved_source_path
+        return doc_ir
 
     @classmethod
     def from_mapping(
@@ -226,6 +346,8 @@ class DocIR(BaseModel, Generic[T]):
 
 __all__ = [
     "DocIR",
+    "ImageAsset",
+    "ImageIR",
     "ParagraphIR",
     "RunIR",
     "SourceType",

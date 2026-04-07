@@ -13,6 +13,21 @@ The package focuses on:
 - document parsing
 - style extraction
 - structural IR creation
+- embedded image extraction for `docx` and `hwpx`
+
+
+## Images in the IR
+
+Parsed image binaries are stored once on `DocIR.assets`, and paragraph-like nodes keep ordered
+`content` entries so text, tables, and images can be rendered in source order.
+
+```python
+from document_processor import DocIR
+
+doc = DocIR.from_file("/path/to/file.docx")
+first_asset = next(iter(doc.assets.values()))
+html = doc.to_html()
+```
 
 
 ## Exporting HTML

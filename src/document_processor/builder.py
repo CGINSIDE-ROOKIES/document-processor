@@ -6,22 +6,14 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from .models import ParagraphIR, RunIR, SourceType, TableCellIR, TableCellParagraphIR, TableIR
+from .models import DocIR, ParagraphIR, RunIR, SourceType, TableCellIR, TableCellParagraphIR, TableIR
 
 if TYPE_CHECKING:
-    from .models import DocIR
     from .style_types import StyleMap
 
 
 _LEGACY_NUM_RE = re.compile(r"\d+")
 _PARAGRAPH_KEY_RE = re.compile(r"^(s\d+\.p\d+)")
-_BODY_RUN_RE = re.compile(r"^(s\d+\.p\d+)\.r(\d+)$")
-_TABLE_RUN_RE = re.compile(
-    r"^(s\d+\.p\d+)\.r\d+\.tbl(\d+)\.tr(\d+)\.tc(\d+)\.p(\d+)(?:\.r(\d+))?$"
-)
-_TABLE_ROOT_RE = re.compile(r"^(s\d+\.p\d+\.r\d+\.tbl\d+)")
-
-
 def normalize_text_default(text: str) -> str:
     """Default minimal normalization policy."""
     return text.strip()
@@ -48,6 +40,261 @@ def _safe_para_for_id(
     return paragraph
 
 
+def _is_token(token: str, prefix: str) -> bool:
+    return token.startswith(prefix) and token[len(prefix):].isdigit()
+
+
+def _get_or_create_table(
+    parent,
+    table_id: str,
+    *,
+    style_map: "StyleMap | None",
+    table_map: dict[str, TableIR],
+) -> TableIR:
+    table = table_map.get(table_id)
+    if table is not None:
+        return table
+
+    table_style = style_map.tables.get(table_id) if style_map else None
+    table = TableIR(
+        unit_id=table_id,
+        row_count=table_style.row_count if table_style else 0,
+        col_count=table_style.col_count if table_style else 0,
+        table_style=table_style,
+    )
+    table_map[table_id] = table
+    parent.tables.append(table)
+    return table
+
+
+def _get_or_create_cell(
+    table: TableIR,
+    table_id: str,
+    row_index: int,
+    col_index: int,
+    *,
+    style_map: "StyleMap | None",
+    cell_map: dict[tuple[str, int, int], TableCellIR],
+) -> TableCellIR:
+    cell_bucket_key = (table_id, row_index, col_index)
+    cell = cell_map.get(cell_bucket_key)
+    if cell is not None:
+        return cell
+
+    cell_id = f"{table_id}.tr{row_index}.tc{col_index}"
+    cell_style = style_map.cells.get(cell_id) if style_map else None
+    cell = TableCellIR(
+        unit_id=cell_id,
+        row_index=row_index,
+        col_index=col_index,
+        cell_style=cell_style,
+    )
+    cell_map[cell_bucket_key] = cell
+    table.cells.append(cell)
+    return cell
+
+
+def _get_or_create_cell_paragraph(
+    cell: TableCellIR,
+    table_id: str,
+    row_index: int,
+    col_index: int,
+    paragraph_index: int,
+    *,
+    style_map: "StyleMap | None",
+    cell_paragraph_map: dict[tuple[str, int, int, int], TableCellParagraphIR],
+) -> TableCellParagraphIR:
+    cell_paragraph_bucket_key = (table_id, row_index, col_index, paragraph_index)
+    cell_paragraph = cell_paragraph_map.get(cell_paragraph_bucket_key)
+    if cell_paragraph is not None:
+        return cell_paragraph
+
+    cell_paragraph_id = f"{table_id}.tr{row_index}.tc{col_index}.p{paragraph_index}"
+    para_style = style_map.paragraphs.get(cell_paragraph_id) if style_map else None
+    cell_paragraph = TableCellParagraphIR(
+        unit_id=cell_paragraph_id,
+        para_style=para_style,
+    )
+    cell_paragraph_map[cell_paragraph_bucket_key] = cell_paragraph
+    cell.paragraphs.append(cell_paragraph)
+    return cell_paragraph
+
+
+def _attach_run(
+    container,
+    container_id: str,
+    run_token: str,
+    text: str,
+    *,
+    style_map: "StyleMap | None",
+    normalizer: Callable[[str], str],
+) -> None:
+    run_id = f"{container_id}.{run_token}"
+    run_style = style_map.runs.get(run_id) if style_map else None
+    container.runs.append(
+        RunIR(
+            unit_id=run_id,
+            text=text,
+            normalized_text=normalizer(text),
+            run_style=run_style,
+        )
+    )
+
+
+def _ingest_table_tokens(
+    table: TableIR,
+    table_id: str,
+    tokens: list[str],
+    text: str,
+    *,
+    style_map: "StyleMap | None",
+    normalizer: Callable[[str], str],
+    table_map: dict[str, TableIR],
+    cell_map: dict[tuple[str, int, int], TableCellIR],
+    cell_paragraph_map: dict[tuple[str, int, int, int], TableCellParagraphIR],
+) -> None:
+    if len(tokens) < 3 or not _is_token(tokens[0], "tr") or not _is_token(tokens[1], "tc") or not _is_token(tokens[2], "p"):
+        return
+
+    row_index = int(tokens[0][2:])
+    col_index = int(tokens[1][2:])
+    paragraph_index = int(tokens[2][1:])
+
+    cell = _get_or_create_cell(
+        table,
+        table_id,
+        row_index,
+        col_index,
+        style_map=style_map,
+        cell_map=cell_map,
+    )
+    cell_paragraph = _get_or_create_cell_paragraph(
+        cell,
+        table_id,
+        row_index,
+        col_index,
+        paragraph_index,
+        style_map=style_map,
+        cell_paragraph_map=cell_paragraph_map,
+    )
+    _ingest_paragraph_like_tokens(
+        cell_paragraph,
+        cell_paragraph.unit_id,
+        tokens[3:],
+        text,
+        style_map=style_map,
+        normalizer=normalizer,
+        table_map=table_map,
+        cell_map=cell_map,
+        cell_paragraph_map=cell_paragraph_map,
+        allow_legacy_table_anchor=False,
+    )
+
+
+def _ingest_paragraph_like_tokens(
+    container,
+    container_id: str,
+    tokens: list[str],
+    text: str,
+    *,
+    style_map: "StyleMap | None",
+    normalizer: Callable[[str], str],
+    table_map: dict[str, TableIR],
+    cell_map: dict[tuple[str, int, int], TableCellIR],
+    cell_paragraph_map: dict[tuple[str, int, int, int], TableCellParagraphIR],
+    allow_legacy_table_anchor: bool,
+) -> None:
+    if not tokens:
+        return
+
+    token = tokens[0]
+    if _is_token(token, "r"):
+        if len(tokens) == 1:
+            _attach_run(
+                container,
+                container_id,
+                token,
+                text,
+                style_map=style_map,
+                normalizer=normalizer,
+            )
+            return
+
+        if allow_legacy_table_anchor and len(tokens) >= 2 and _is_token(tokens[1], "tbl"):
+            table_id = f"{container_id}.{token}.{tokens[1]}"
+            table = _get_or_create_table(
+                container,
+                table_id,
+                style_map=style_map,
+                table_map=table_map,
+            )
+            if isinstance(container, ParagraphIR):
+                container.source_type = SourceType.TABLE_BLOCK
+            _ingest_table_tokens(
+                table,
+                table_id,
+                tokens[2:],
+                text,
+                style_map=style_map,
+                normalizer=normalizer,
+                table_map=table_map,
+                cell_map=cell_map,
+                cell_paragraph_map=cell_paragraph_map,
+            )
+            return
+
+    if _is_token(token, "tbl"):
+        table_id = f"{container_id}.{token}"
+        table = _get_or_create_table(
+            container,
+            table_id,
+            style_map=style_map,
+            table_map=table_map,
+        )
+        _ingest_table_tokens(
+            table,
+            table_id,
+            tokens[1:],
+            text,
+            style_map=style_map,
+            normalizer=normalizer,
+            table_map=table_map,
+            cell_map=cell_map,
+            cell_paragraph_map=cell_paragraph_map,
+        )
+
+
+def _finalize_table(
+    table: TableIR,
+    *,
+    normalizer: Callable[[str], str],
+) -> None:
+    table.cells.sort(key=lambda cell: (cell.row_index, cell.col_index))
+
+    max_row = 0
+    max_col = 0
+    for cell in table.cells:
+        max_row = max(max_row, cell.row_index)
+        max_col = max(max_col, cell.col_index)
+
+        cell.paragraphs.sort(key=lambda cp: _legacy_id_sort_key(cp.unit_id))
+        for cell_paragraph in cell.paragraphs:
+            cell_paragraph.runs.sort(key=lambda run: _legacy_id_sort_key(run.unit_id))
+            cell_paragraph.images.sort(key=lambda image: _legacy_id_sort_key(image.unit_id))
+            cell_paragraph.tables.sort(key=lambda nested: _legacy_id_sort_key(nested.unit_id))
+            for nested_table in cell_paragraph.tables:
+                _finalize_table(nested_table, normalizer=normalizer)
+            cell_paragraph.sync_content()
+            cell_paragraph.recompute_text(normalizer=normalizer)
+
+        cell.recompute_text(normalizer=normalizer)
+
+    if table.row_count <= 0:
+        table.row_count = max_row
+    if table.col_count <= 0:
+        table.col_count = max_col
+
+
 def _infer_source_doc_type(source_path: str | Path | None) -> str | None:
     if source_path is None:
         return None
@@ -55,6 +302,46 @@ def _infer_source_doc_type(source_path: str | Path | None) -> str | None:
     if suffix.startswith("."):
         suffix = suffix[1:]
     return suffix or None
+
+
+def apply_style_map_to_doc_ir(doc_ir: "DocIR", style_map: "StyleMap | None") -> "DocIR":
+    """Attach styles to an existing structural document IR."""
+    if style_map is None:
+        return doc_ir
+
+    def _apply_table_styles(table: TableIR) -> None:
+        if table.unit_id in style_map.tables:
+            table_style = style_map.tables[table.unit_id]
+            table.table_style = table_style
+            if table.row_count <= 0:
+                table.row_count = table_style.row_count
+            if table.col_count <= 0:
+                table.col_count = table_style.col_count
+
+        for cell in table.cells:
+            if cell.unit_id in style_map.cells:
+                cell.cell_style = style_map.cells[cell.unit_id]
+            for paragraph in cell.paragraphs:
+                if paragraph.unit_id in style_map.paragraphs:
+                    paragraph.para_style = style_map.paragraphs[paragraph.unit_id]
+                for run in paragraph.runs:
+                    if run.unit_id in style_map.runs:
+                        run.run_style = style_map.runs[run.unit_id]
+                for nested_table in paragraph.tables:
+                    _apply_table_styles(nested_table)
+                paragraph.sync_content()
+
+    for paragraph in doc_ir.paragraphs:
+        if paragraph.unit_id in style_map.paragraphs:
+            paragraph.para_style = style_map.paragraphs[paragraph.unit_id]
+        for run in paragraph.runs:
+            if run.unit_id in style_map.runs:
+                run.run_style = style_map.runs[run.unit_id]
+        for table in paragraph.tables:
+            _apply_table_styles(table)
+        paragraph.sync_content()
+
+    return doc_ir
 
 
 def build_doc_ir_from_mapping(
@@ -70,8 +357,6 @@ def build_doc_ir_from_mapping(
     **doc_kwargs: Any,
 ) -> "DocIR":
     """Build document IR from a legacy run-level structural mapping."""
-    from .models import DocIR
-
     normalize = normalizer or normalize_text_default
 
     paragraph_map: dict[str, ParagraphIR] = {}
@@ -89,111 +374,30 @@ def build_doc_ir_from_mapping(
         paragraph_id = paragraph_match.group(1)
         paragraph = _safe_para_for_id(paragraph_map, paragraph_id, style_map=style_map)
 
-        table_run_match = _TABLE_RUN_RE.match(unit_id)
-        if table_run_match:
-            table_root_match = _TABLE_ROOT_RE.match(unit_id)
-            if table_root_match is None:
-                continue
-
-            table_root = table_root_match.group(1)
-            _, _, tr_s, tc_s, cp_s, run_s = table_run_match.groups()
-            tr = int(tr_s)
-            tc = int(tc_s)
-            cp = int(cp_s)
-            run_idx = int(run_s or "1")
-            run_id = unit_id if run_s is not None else f"{table_root}.tr{tr}.tc{tc}.p{cp}.r{run_idx}"
-
-            paragraph.source_type = SourceType.TABLE_BLOCK
-
-            table = table_map.get(table_root)
-            if table is None:
-                table_style = style_map.tables.get(table_root) if style_map else None
-                table = TableIR(
-                    unit_id=table_root,
-                    row_count=table_style.row_count if table_style else 0,
-                    col_count=table_style.col_count if table_style else 0,
-                    table_style=table_style,
-                )
-                table_map[table_root] = table
-                paragraph.tables.append(table)
-
-            cell_bucket_key = (table_root, tr, tc)
-            cell = cell_map.get(cell_bucket_key)
-            if cell is None:
-                cell_id = f"{table_root}.tr{tr}.tc{tc}"
-                cell_style = style_map.cells.get(cell_id) if style_map else None
-                cell = TableCellIR(
-                    unit_id=cell_id,
-                    row_index=tr,
-                    col_index=tc,
-                    cell_style=cell_style,
-                )
-                cell_map[cell_bucket_key] = cell
-                table.cells.append(cell)
-
-            cell_paragraph_bucket_key = (table_root, tr, tc, cp)
-            cell_paragraph = cell_paragraph_map.get(cell_paragraph_bucket_key)
-            if cell_paragraph is None:
-                cell_paragraph_id = f"{table_root}.tr{tr}.tc{tc}.p{cp}"
-                para_style = style_map.paragraphs.get(cell_paragraph_id) if style_map else None
-                cell_paragraph = TableCellParagraphIR(
-                    unit_id=cell_paragraph_id,
-                    para_style=para_style,
-                )
-                cell_paragraph_map[cell_paragraph_bucket_key] = cell_paragraph
-                cell.paragraphs.append(cell_paragraph)
-
-            run_style = style_map.runs.get(run_id) if style_map else None
-            run = RunIR(
-                unit_id=run_id,
-                text=text,
-                normalized_text=normalize(text),
-                run_style=run_style,
-            )
-            cell_paragraph.runs.append(run)
-            continue
-
-        body_run_match = _BODY_RUN_RE.match(unit_id)
-        if body_run_match:
-            run_style = style_map.runs.get(unit_id) if style_map else None
-            paragraph.runs.append(
-                RunIR(
-                    unit_id=unit_id,
-                    text=text,
-                    normalized_text=normalize(text),
-                    run_style=run_style,
-                )
-            )
+        _ingest_paragraph_like_tokens(
+            paragraph,
+            paragraph_id,
+            unit_id.split(".")[2:],
+            text,
+            style_map=style_map,
+            normalizer=normalize,
+            table_map=table_map,
+            cell_map=cell_map,
+            cell_paragraph_map=cell_paragraph_map,
+            allow_legacy_table_anchor=True,
+        )
 
     paragraphs = sorted(paragraph_map.values(), key=lambda p: _legacy_id_sort_key(p.unit_id))
 
     for paragraph in paragraphs:
         paragraph.runs.sort(key=lambda run: _legacy_id_sort_key(run.unit_id))
+        paragraph.images.sort(key=lambda image: _legacy_id_sort_key(image.unit_id))
         paragraph.tables.sort(key=lambda table: _legacy_id_sort_key(table.unit_id))
 
         for table in paragraph.tables:
-            table.cells.sort(key=lambda cell: (cell.row_index, cell.col_index))
+            _finalize_table(table, normalizer=normalize)
 
-            max_row = 0
-            max_col = 0
-
-            for cell in table.cells:
-                max_row = max(max_row, cell.row_index)
-                max_col = max(max_col, cell.col_index)
-
-                cell.paragraphs.sort(key=lambda cp: _legacy_id_sort_key(cp.unit_id))
-                for cell_paragraph in cell.paragraphs:
-                    cell_paragraph.runs.sort(key=lambda run: _legacy_id_sort_key(run.unit_id))
-                    cell_paragraph.text = "".join(run.text for run in cell_paragraph.runs)
-                    cell_paragraph.normalized_text = normalize(cell_paragraph.text)
-
-                cell.recompute_text(normalizer=normalize)
-
-            if table.row_count <= 0:
-                table.row_count = max_row
-            if table.col_count <= 0:
-                table.col_count = max_col
-
+        paragraph.sync_content()
         paragraph.recompute_text(normalizer=normalize)
 
     resolved_source_path = str(source_path) if source_path is not None else None
@@ -203,7 +407,7 @@ def build_doc_ir_from_mapping(
         resolved_doc_id = Path(source_path).stem
 
     resolved_doc_cls = doc_cls or DocIR
-    return resolved_doc_cls(
+    doc_ir = resolved_doc_cls(
         doc_id=resolved_doc_id,
         source_path=resolved_source_path,
         source_doc_type=resolved_doc_type,
@@ -211,6 +415,7 @@ def build_doc_ir_from_mapping(
         paragraphs=paragraphs,
         **doc_kwargs,
     )
+    return apply_style_map_to_doc_ir(doc_ir, style_map)
 
 
-__all__ = ["build_doc_ir_from_mapping", "normalize_text_default"]
+__all__ = ["apply_style_map_to_doc_ir", "build_doc_ir_from_mapping", "normalize_text_default"]

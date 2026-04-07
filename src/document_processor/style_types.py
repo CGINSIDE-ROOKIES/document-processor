@@ -35,6 +35,8 @@ class CellStyleInfo(BaseModel):
     background: str | None = None
     vertical_align: str | None = None
     horizontal_align: str | None = None
+    width_pt: float | None = None
+    height_pt: float | None = None
     border_top: str | None = None
     border_bottom: str | None = None
     border_left: str | None = None
@@ -48,6 +50,8 @@ class TableStyleInfo(BaseModel):
 
     row_count: int = 0
     col_count: int = 0
+    width_pt: float | None = None
+    height_pt: float | None = None
 
 
 class StyleMap(BaseModel):
@@ -66,4 +70,3 @@ __all__ = [
     "TableStyleInfo",
     "StyleMap",
 ]
-

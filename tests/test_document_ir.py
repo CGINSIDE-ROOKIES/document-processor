@@ -127,19 +127,35 @@ class DocumentIRTests(unittest.TestCase):
         fake_hwp = b"fake-hwp"
 
         with (
-            patch("document_processor.core.structured_mapping_exporter.export_structured_mapping") as export_mapping,
+            patch("document_processor.core.document_ir_parser.convert_hwp_to_hwpx_bytes") as convert_hwp,
             patch("document_processor.core.style_extractor.extract_styles") as extract_styles,
         ):
-            export_mapping.return_value = {"s1.p1.r1": "Converted"}
+            hwpx_bytes_io = BytesIO()
+            with zipfile.ZipFile(hwpx_bytes_io, "w") as zf:
+                zf.writestr(
+                    "Contents/header.xml",
+                    """<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core" />
+""",
+                )
+                zf.writestr(
+                    "Contents/section0.xml",
+                    """<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p><hp:run><hp:t>Converted</hp:t></hp:run></hp:p>
+</hs:sec>
+""",
+                )
+            convert_hwp.return_value = hwpx_bytes_io.getvalue()
             extract_styles.return_value = StyleMap()
 
             doc = DocIR.from_file(BytesIO(fake_hwp), doc_type="hwp")
 
         self.assertEqual(doc.source_doc_type, "hwp")
         self.assertEqual(doc.paragraphs[0].text, "Converted")
-        mapping_source = export_mapping.call_args.kwargs.get("source", export_mapping.call_args.args[0])
-        self.assertTrue(isinstance(mapping_source, Path))
-        self.assertEqual(mapping_source.suffix, ".hwp")
+        convert_source = convert_hwp.call_args.kwargs.get("hwp_path", convert_hwp.call_args.args[0])
+        self.assertTrue(isinstance(convert_source, Path))
+        self.assertEqual(convert_source.suffix, ".hwp")
 
     def test_hwpx_vertical_merge_uses_logical_column_ids(self) -> None:
         hwpx_bytes_io = BytesIO()
@@ -178,6 +194,103 @@ class DocumentIRTests(unittest.TestCase):
         self.assertIn("s1.p1.r1.tbl1.tr2.tc2.p1.r1", mapping)
         self.assertIn("s1.p1.r1.tbl1.tr2.tc3.p1.r1", mapping)
         self.assertNotIn("s1.p1.r1.tbl1.tr2.tc1.p1.r1", mapping)
+
+    def test_builder_supports_nested_tables_in_cell_paragraphs(self) -> None:
+        mapping = {
+            "s1.p1.r1.tbl1.tr1.tc1.p1.r1": "Outer",
+            "s1.p1.r1.tbl1.tr1.tc1.p1.tbl1.tr1.tc1.p1.r1": "Inner",
+        }
+
+        doc = DocIR.from_mapping(mapping)
+        outer_cell_paragraph = doc.paragraphs[0].tables[0].cells[0].paragraphs[0]
+
+        self.assertEqual(outer_cell_paragraph.text, "Outer\nInner")
+        self.assertEqual(len(outer_cell_paragraph.tables), 1)
+        self.assertEqual(outer_cell_paragraph.tables[0].unit_id, "s1.p1.r1.tbl1.tr1.tc1.p1.tbl1")
+        self.assertEqual(
+            outer_cell_paragraph.tables[0].cells[0].paragraphs[0].runs[0].text,
+            "Inner",
+        )
+
+    def test_docx_nested_tables_are_parsed(self) -> None:
+        from docx import Document
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            docx_path = Path(tmp_dir) / "nested.docx"
+            doc = Document()
+            table = doc.add_table(rows=1, cols=1)
+            cell = table.cell(0, 0)
+            cell.text = "Outer"
+            nested = cell.add_table(rows=1, cols=1)
+            nested.cell(0, 0).text = "Inner"
+            doc.save(str(docx_path))
+
+            parsed = DocIR.from_file(docx_path)
+
+        outer_cell_paragraph = parsed.paragraphs[0].tables[0].cells[0].paragraphs[0]
+        self.assertEqual(outer_cell_paragraph.runs[0].text, "Outer")
+        self.assertEqual(len(outer_cell_paragraph.tables), 1)
+        self.assertEqual(
+            outer_cell_paragraph.tables[0].cells[0].paragraphs[0].runs[0].text,
+            "Inner",
+        )
+
+    def test_hwpx_nested_tables_are_parsed(self) -> None:
+        hwpx_bytes_io = BytesIO()
+        with zipfile.ZipFile(hwpx_bytes_io, "w") as zf:
+            zf.writestr(
+                "Contents/header.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core" />
+""",
+            )
+            zf.writestr(
+                "Contents/section0.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p>
+    <hp:run>
+      <hp:tbl>
+        <hp:tr>
+          <hp:tc>
+            <hp:subList>
+              <hp:p>
+                <hp:run><hp:t>Outer</hp:t></hp:run>
+                <hp:run>
+                  <hp:tbl>
+                    <hp:tr>
+                      <hp:tc>
+                        <hp:subList>
+                          <hp:p><hp:run><hp:t>Inner</hp:t></hp:run></hp:p>
+                        </hp:subList>
+                        <hp:cellAddr colAddr="0" rowAddr="0"/>
+                        <hp:cellSpan colSpan="1" rowSpan="1"/>
+                      </hp:tc>
+                    </hp:tr>
+                  </hp:tbl>
+                </hp:run>
+              </hp:p>
+            </hp:subList>
+            <hp:cellAddr colAddr="0" rowAddr="0"/>
+            <hp:cellSpan colSpan="1" rowSpan="1"/>
+          </hp:tc>
+        </hp:tr>
+      </hp:tbl>
+    </hp:run>
+  </hp:p>
+</hs:sec>
+""",
+            )
+
+        parsed = DocIR.from_file(hwpx_bytes_io.getvalue(), doc_type="hwpx")
+
+        outer_cell_paragraph = parsed.paragraphs[0].tables[0].cells[0].paragraphs[0]
+        self.assertEqual(outer_cell_paragraph.runs[0].text, "Outer")
+        self.assertEqual(len(outer_cell_paragraph.tables), 1)
+        self.assertEqual(
+            outer_cell_paragraph.tables[0].cells[0].paragraphs[0].runs[0].text,
+            "Inner",
+        )
 
 
 if __name__ == "__main__":

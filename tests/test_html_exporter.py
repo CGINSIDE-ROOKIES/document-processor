@@ -10,8 +10,8 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from document_processor import DocIR
-from document_processor.models import ParagraphIR, RunIR, TableCellIR, TableCellParagraphIR, TableIR
-from document_processor.style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo
+from document_processor.models import ImageAsset, ImageIR, ParagraphIR, RunIR, TableCellIR, TableCellParagraphIR, TableIR
+from document_processor.style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
 
 
 class HtmlExporterTests(unittest.TestCase):
@@ -58,6 +58,7 @@ class HtmlExporterTests(unittest.TestCase):
                     tables=[
                         TableIR(
                             unit_id="s1.p1.r1.tbl1",
+                            table_style=TableStyleInfo(width_pt=240.0),
                             cells=[
                                 TableCellIR(
                                     unit_id="s1.p1.r1.tbl1.tr1.tc1",
@@ -66,6 +67,8 @@ class HtmlExporterTests(unittest.TestCase):
                                     cell_style=CellStyleInfo(
                                         background="#ffeeaa",
                                         horizontal_align="center",
+                                        width_pt=120.0,
+                                        height_pt=36.0,
                                         border_top="1px solid #000",
                                         border_bottom="1px solid #000",
                                         border_left="1px solid #000",
@@ -105,10 +108,13 @@ class HtmlExporterTests(unittest.TestCase):
         self.assertIn("text-align:center", html)
         self.assertIn("A1", html)
         self.assertIn("B1", html)
-        self.assertIn("margin-left:auto", html)
+        self.assertIn("width:240.0pt", html)
+        self.assertIn("width:120.0pt", html)
+        self.assertIn("height:36.0pt", html)
+        self.assertIn("margin-left:0", html)
         self.assertIn("margin-right:auto", html)
 
-    def test_export_html_centers_table_when_paragraph_align_is_justify(self) -> None:
+    def test_export_html_leaves_justify_table_left_aligned_by_default(self) -> None:
         doc = DocIR(
             paragraphs=[
                 ParagraphIR(
@@ -139,8 +145,143 @@ class HtmlExporterTests(unittest.TestCase):
         html = doc.to_html()
 
         self.assertIn("<table", html)
-        self.assertIn("margin-left:auto", html)
+        self.assertIn("margin-left:0", html)
         self.assertIn("margin-right:auto", html)
+
+    def test_export_html_uses_image_display_size(self) -> None:
+        doc = DocIR(
+            assets={
+                "img1": ImageAsset(
+                    image_id="img1",
+                    mime_type="image/png",
+                    filename="x.png",
+                    data_base64="AAAA",
+                    intrinsic_width_px=1,
+                    intrinsic_height_px=1,
+                )
+            },
+            paragraphs=[
+                ParagraphIR(
+                    unit_id="s1.p1",
+                    images=[
+                        ImageIR(
+                            unit_id="s1.p1.img1",
+                            image_id="img1",
+                            display_width_pt=72.0,
+                            display_height_pt=36.0,
+                        )
+                    ],
+                )
+            ],
+        )
+
+        html = doc.to_html()
+
+        self.assertIn("<img ", html)
+        self.assertIn("width:72.0pt", html)
+        self.assertIn("height:36.0pt", html)
+
+    def test_export_html_clamps_negative_first_line_indent_inside_table_cells(self) -> None:
+        doc = DocIR(
+            paragraphs=[
+                ParagraphIR(
+                    unit_id="s1.p1",
+                    tables=[
+                        TableIR(
+                            unit_id="s1.p1.r1.tbl1",
+                            cells=[
+                                TableCellIR(
+                                    unit_id="s1.p1.r1.tbl1.tr1.tc1",
+                                    row_index=1,
+                                    col_index=1,
+                                    paragraphs=[
+                                        TableCellParagraphIR(
+                                            unit_id="s1.p1.r1.tbl1.tr1.tc1.p1",
+                                            para_style=ParaStyleInfo(
+                                                align="center",
+                                                first_line_indent_pt=-159.3,
+                                            ),
+                                            runs=[RunIR(unit_id="x", text="스토리")],
+                                        )
+                                    ],
+                                )
+                            ],
+                        )
+                    ],
+                )
+            ]
+        )
+
+        html = doc.to_html()
+
+        self.assertIn("text-indent:0.0pt", html)
+        self.assertNotIn("text-indent:-159.3pt", html)
+
+    def test_export_html_preserves_negative_first_line_indent_for_top_level_paragraphs(self) -> None:
+        doc = DocIR(
+            paragraphs=[
+                ParagraphIR(
+                    unit_id="s1.p1",
+                    para_style=ParaStyleInfo(first_line_indent_pt=-27.6),
+                    runs=[RunIR(unit_id="s1.p1.r1", text="Bullet-like text")],
+                )
+            ]
+        )
+
+        html = doc.to_html()
+
+        self.assertIn("text-indent:-27.6pt", html)
+
+    def test_export_html_renders_nested_tables(self) -> None:
+        doc = DocIR(
+            paragraphs=[
+                ParagraphIR(
+                    unit_id="s1.p1",
+                    tables=[
+                        TableIR(
+                            unit_id="s1.p1.r1.tbl1",
+                            cells=[
+                                TableCellIR(
+                                    unit_id="s1.p1.r1.tbl1.tr1.tc1",
+                                    row_index=1,
+                                    col_index=1,
+                                    paragraphs=[
+                                        TableCellParagraphIR(
+                                            unit_id="s1.p1.r1.tbl1.tr1.tc1.p1",
+                                            runs=[RunIR(unit_id="outer", text="Outer")],
+                                            tables=[
+                                                TableIR(
+                                                    unit_id="s1.p1.r1.tbl1.tr1.tc1.p1.tbl1",
+                                                    cells=[
+                                                        TableCellIR(
+                                                            unit_id="s1.p1.r1.tbl1.tr1.tc1.p1.tbl1.tr1.tc1",
+                                                            row_index=1,
+                                                            col_index=1,
+                                                            paragraphs=[
+                                                                TableCellParagraphIR(
+                                                                    unit_id="s1.p1.r1.tbl1.tr1.tc1.p1.tbl1.tr1.tc1.p1",
+                                                                    runs=[RunIR(unit_id="inner", text="Inner")],
+                                                                )
+                                                            ],
+                                                        )
+                                                    ],
+                                                )
+                                            ],
+                                        )
+                                    ],
+                                )
+                            ],
+                        )
+                    ],
+                )
+            ]
+        )
+
+        html = doc.to_html()
+
+        self.assertGreaterEqual(html.count("<table"), 2)
+        self.assertIn("Outer", html)
+        self.assertIn("Inner", html)
 
 
 if __name__ == "__main__":

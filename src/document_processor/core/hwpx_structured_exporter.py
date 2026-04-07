@@ -78,6 +78,34 @@ def _logical_table_cells(row_el: ET.Element) -> list[tuple[int, ET.Element]]:
     return logical_cells
 
 
+def _export_runs_for_paragraph(
+    mapping: dict[str, str],
+    paragraph_el: ET.Element,
+    paragraph_id: str,
+    *,
+    skip_empty: bool,
+) -> None:
+    run_els = paragraph_el.findall(f"{_HP}run")
+    if not run_els:
+        _emit_run(mapping, f"{paragraph_id}.r1", _paragraph_text(paragraph_el), skip_empty)
+        return
+
+    for r_idx, run_el in enumerate(run_els, start=1):
+        _emit_run(mapping, f"{paragraph_id}.r{r_idx}", _run_text(run_el), skip_empty)
+
+
+def _export_nested_tables_for_paragraph(
+    mapping: dict[str, str],
+    paragraph_el: ET.Element,
+    paragraph_id: str,
+    *,
+    skip_empty: bool,
+) -> None:
+    for t_idx, table_el in enumerate(_iter_paragraph_tables(paragraph_el), start=1):
+        tbl_root = f"{paragraph_id}.tbl{t_idx}"
+        _export_table_xml(mapping, table_el, tbl_root, skip_empty=skip_empty)
+
+
 def _export_table_xml(
     mapping: dict[str, str],
     table_el: ET.Element,
@@ -94,15 +122,19 @@ def _export_table_xml(
                 continue
 
             for cp_idx, cp_el in enumerate(cell_paragraphs, start=1):
-                runs = cp_el.findall(f"{_HP}run")
-                if not runs:
-                    key = f"{tbl_root}.tr{tr_idx}.tc{tc_idx}.p{cp_idx}.r1"
-                    _emit_run(mapping, key, _paragraph_text(cp_el), skip_empty)
-                    continue
-
-                for cr_idx, run_el in enumerate(runs, start=1):
-                    key = f"{tbl_root}.tr{tr_idx}.tc{tc_idx}.p{cp_idx}.r{cr_idx}"
-                    _emit_run(mapping, key, _run_text(run_el), skip_empty)
+                paragraph_id = f"{tbl_root}.tr{tr_idx}.tc{tc_idx}.p{cp_idx}"
+                _export_runs_for_paragraph(
+                    mapping,
+                    cp_el,
+                    paragraph_id,
+                    skip_empty=skip_empty,
+                )
+                _export_nested_tables_for_paragraph(
+                    mapping,
+                    cp_el,
+                    paragraph_id,
+                    skip_empty=skip_empty,
+                )
 
 
 def _export_from_section_roots(section_roots: list[ET.Element], *, skip_empty: bool) -> dict[str, str]:
@@ -111,13 +143,7 @@ def _export_from_section_roots(section_roots: list[ET.Element], *, skip_empty: b
     for s_idx, section_root in enumerate(section_roots, start=1):
         for p_idx, para_el in enumerate(_iter_section_paragraphs(section_root), start=1):
             base = f"s{s_idx}.p{p_idx}"
-            run_els = para_el.findall(f"{_HP}run")
-
-            if not run_els:
-                _emit_run(mapping, f"{base}.r1", _paragraph_text(para_el), skip_empty)
-            else:
-                for r_idx, run_el in enumerate(run_els, start=1):
-                    _emit_run(mapping, f"{base}.r{r_idx}", _run_text(run_el), skip_empty)
+            _export_runs_for_paragraph(mapping, para_el, base, skip_empty=skip_empty)
 
             for t_idx, table_el in enumerate(_iter_paragraph_tables(para_el), start=1):
                 tbl_root = f"{base}.r1.tbl{t_idx}"
