@@ -24,7 +24,7 @@ def _emit_run(mapping: dict[str, str], key: str, text: str | None, skip_empty: b
 
 
 def _run_text(run_el: ET.Element) -> str:
-    return "".join((t.text or "") for t in run_el.findall(f"{_HP}t"))
+    return "".join("".join(t.itertext()) for t in run_el.findall(f"{_HP}t"))
 
 
 def _paragraph_text(paragraph_el: ET.Element) -> str:

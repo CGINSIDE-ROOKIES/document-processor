@@ -154,6 +154,32 @@ class DocumentIRTests(unittest.TestCase):
         self.assertEqual(from_bytes.paragraphs[0].text, "Hello HWPX")
         self.assertEqual(from_file_object.paragraphs[0].text, "Hello HWPX")
 
+    def test_from_file_hwpx_reads_mixed_content_inside_hp_t(self) -> None:
+        hwpx_bytes_io = BytesIO()
+        with zipfile.ZipFile(hwpx_bytes_io, "w") as zf:
+            zf.writestr(
+                "Contents/header.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core" />
+""",
+            )
+            zf.writestr(
+                "Contents/section0.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p>
+    <hp:run>
+      <hp:t>&lt;<hp:fwSpace />수요기업 협업 규모 및 분야<hp:fwSpace />&gt;</hp:t>
+    </hp:run>
+  </hp:p>
+</hs:sec>
+""",
+            )
+
+        doc = DocIR.from_file(hwpx_bytes_io.getvalue(), doc_type="hwpx")
+
+        self.assertEqual(doc.paragraphs[0].text, "<수요기업 협업 규모 및 분야>")
+
     def test_from_file_hwp_file_object_materializes_temp_path(self) -> None:
         fake_hwp = b"fake-hwp"
 
