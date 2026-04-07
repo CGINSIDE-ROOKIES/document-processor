@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from .models import DocIR, ParagraphIR, RunIR, TableCellIR, TableIR
 
@@ -14,9 +14,6 @@ if TYPE_CHECKING:
 
 _LEGACY_NUM_RE = re.compile(r"\d+")
 _PARAGRAPH_KEY_RE = re.compile(r"^(s\d+\.p\d+)")
-def normalize_text_default(text: str) -> str:
-    """Default minimal normalization policy."""
-    return text.strip()
 
 
 def _legacy_id_sort_key(unit_id: str) -> tuple[tuple[int, ...], str]:
@@ -127,7 +124,6 @@ def _attach_run(
     text: str,
     *,
     style_map: "StyleMap | None",
-    normalizer: Callable[[str], str],
 ) -> None:
     run_id = f"{container_id}.{run_token}"
     run_style = style_map.runs.get(run_id) if style_map else None
@@ -135,7 +131,6 @@ def _attach_run(
         RunIR(
             unit_id=run_id,
             text=text,
-            normalized_text=normalizer(text),
             run_style=run_style,
         )
     )
@@ -148,7 +143,6 @@ def _ingest_table_tokens(
     text: str,
     *,
     style_map: "StyleMap | None",
-    normalizer: Callable[[str], str],
     table_map: dict[str, TableIR],
     cell_map: dict[tuple[str, int, int], TableCellIR],
     cell_paragraph_map: dict[tuple[str, int, int, int], ParagraphIR],
@@ -183,7 +177,6 @@ def _ingest_table_tokens(
         tokens[3:],
         text,
         style_map=style_map,
-        normalizer=normalizer,
         table_map=table_map,
         cell_map=cell_map,
         cell_paragraph_map=cell_paragraph_map,
@@ -198,7 +191,6 @@ def _ingest_paragraph_like_tokens(
     text: str,
     *,
     style_map: "StyleMap | None",
-    normalizer: Callable[[str], str],
     table_map: dict[str, TableIR],
     cell_map: dict[tuple[str, int, int], TableCellIR],
     cell_paragraph_map: dict[tuple[str, int, int, int], ParagraphIR],
@@ -216,7 +208,6 @@ def _ingest_paragraph_like_tokens(
                 token,
                 text,
                 style_map=style_map,
-                normalizer=normalizer,
             )
             return
 
@@ -234,7 +225,6 @@ def _ingest_paragraph_like_tokens(
                 tokens[2:],
                 text,
                 style_map=style_map,
-                normalizer=normalizer,
                 table_map=table_map,
                 cell_map=cell_map,
                 cell_paragraph_map=cell_paragraph_map,
@@ -255,7 +245,6 @@ def _ingest_paragraph_like_tokens(
             tokens[1:],
             text,
             style_map=style_map,
-            normalizer=normalizer,
             table_map=table_map,
             cell_map=cell_map,
             cell_paragraph_map=cell_paragraph_map,
@@ -264,8 +253,6 @@ def _ingest_paragraph_like_tokens(
 
 def _finalize_table(
     table: TableIR,
-    *,
-    normalizer: Callable[[str], str],
 ) -> None:
     table.cells.sort(key=lambda cell: (cell.row_index, cell.col_index))
 
@@ -279,10 +266,10 @@ def _finalize_table(
         for cell_paragraph in cell.paragraphs:
             cell_paragraph.sort_content(key=lambda node: _legacy_id_sort_key(node.unit_id))
             for nested_table in cell_paragraph.tables:
-                _finalize_table(nested_table, normalizer=normalizer)
-            cell_paragraph.recompute_text(normalizer=normalizer)
+                _finalize_table(nested_table)
+            cell_paragraph.recompute_text()
 
-        cell.recompute_text(normalizer=normalizer)
+        cell.recompute_text()
 
     if table.row_count <= 0:
         table.row_count = max_row
@@ -344,13 +331,11 @@ def build_doc_ir_from_mapping(
     source_path: str | Path | None = None,
     source_doc_type: str | None = None,
     metadata: dict[str, Any] | None = None,
-    normalizer: Callable[[str], str] | None = None,
     doc_id: str | None = None,
     doc_cls: type["DocIR"] | None = None,
     **doc_kwargs: Any,
 ) -> "DocIR":
     """Build document IR from a legacy run-level structural mapping."""
-    normalize = normalizer or normalize_text_default
 
     paragraph_map: dict[str, ParagraphIR] = {}
     table_map: dict[str, TableIR] = {}
@@ -373,7 +358,6 @@ def build_doc_ir_from_mapping(
             unit_id.split(".")[2:],
             text,
             style_map=style_map,
-            normalizer=normalize,
             table_map=table_map,
             cell_map=cell_map,
             cell_paragraph_map=cell_paragraph_map,
@@ -386,9 +370,9 @@ def build_doc_ir_from_mapping(
         paragraph.sort_content(key=lambda node: _legacy_id_sort_key(node.unit_id))
 
         for table in paragraph.tables:
-            _finalize_table(table, normalizer=normalize)
+            _finalize_table(table)
 
-        paragraph.recompute_text(normalizer=normalize)
+        paragraph.recompute_text()
 
     resolved_source_path = str(source_path) if source_path is not None else None
     resolved_doc_type = source_doc_type or _infer_source_doc_type(source_path)
@@ -407,5 +391,4 @@ def build_doc_ir_from_mapping(
     )
     return apply_style_map_to_doc_ir(doc_ir, style_map)
 
-
-__all__ = ["apply_style_map_to_doc_ir", "build_doc_ir_from_mapping", "normalize_text_default"]
+__all__ = ["apply_style_map_to_doc_ir", "build_doc_ir_from_mapping"]

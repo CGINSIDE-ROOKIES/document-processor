@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Any, Callable, Literal
 from xml.etree import ElementTree as ET
 import zipfile
 
-from ..builder import normalize_text_default
 from ..io_utils import coerce_source_to_supported_value
 from ..models import DocIR, ImageAsset, ImageIR, ParagraphIR, RunIR, TableCellIR, TableIR
 from .docx_structured_exporter import _iter_blocks, _iter_blocks_from_element, _load_docx_source
@@ -110,7 +109,6 @@ def _register_image_asset(
     image_id = f"img{len(assets) + 1}"
     intrinsic_width_px, intrinsic_height_px = _image_dimensions_from_bytes(data)
     assets[image_id] = ImageAsset.from_bytes(
-        image_id=image_id,
         data=data,
         mime_type=mime_type,
         filename=filename,
@@ -215,7 +213,6 @@ def _parse_docx_paragraph_content(
     paragraph_id: str,
     *,
     skip_empty: bool,
-    normalizer: Callable[[str], str],
     assets: dict[str, ImageAsset],
     asset_lookup: dict[tuple[str, str], str],
 ) -> tuple[list[RunIR], list[ImageIR], list[object]]:
@@ -230,7 +227,6 @@ def _parse_docx_paragraph_content(
             run = RunIR(
                 unit_id=f"{paragraph_id}.r1",
                 text=text,
-                normalized_text=normalizer(text),
             )
             runs.append(run)
             content.append(run)
@@ -249,7 +245,6 @@ def _parse_docx_paragraph_content(
             run_ir = RunIR(
                 unit_id=f"{paragraph_id}.r{run_index}",
                 text=text,
-                normalized_text=normalizer(text),
             )
             runs.append(run_ir)
             content.append(run_ir)
@@ -265,7 +260,6 @@ def _parse_docx_table(
     *,
     include_tables: bool,
     skip_empty: bool,
-    normalizer: Callable[[str], str],
     assets: dict[str, ImageAsset],
     asset_lookup: dict[tuple[str, str], str],
     CT_P,
@@ -303,7 +297,6 @@ def _parse_docx_table(
                         block,
                         paragraph_id,
                         skip_empty=skip_empty,
-                        normalizer=normalizer,
                         assets=assets,
                         asset_lookup=asset_lookup,
                     )
@@ -311,7 +304,7 @@ def _parse_docx_table(
                         unit_id=paragraph_id,
                         content=content,
                     )
-                    current_paragraph.recompute_text(normalizer=normalizer)
+                    current_paragraph.recompute_text()
                     if current_paragraph.content or current_paragraph.text or not skip_empty:
                         cell_ir.paragraphs.append(current_paragraph)
                     continue
@@ -333,7 +326,6 @@ def _parse_docx_table(
                     f"{current_paragraph.unit_id}.tbl{table_counter}",
                     include_tables=include_tables,
                     skip_empty=skip_empty,
-                    normalizer=normalizer,
                     assets=assets,
                     asset_lookup=asset_lookup,
                     CT_P=CT_P,
@@ -342,9 +334,9 @@ def _parse_docx_table(
                     Table=Table,
                 )
                 current_paragraph.append_content(nested_table)
-                current_paragraph.recompute_text(normalizer=normalizer)
+                current_paragraph.recompute_text()
 
-            cell_ir.recompute_text(normalizer=normalizer)
+            cell_ir.recompute_text()
 
     return table_ir
 
@@ -356,7 +348,6 @@ def _build_docx_doc_ir(
     skip_empty: bool,
     source_path: str | Path | None,
     metadata: dict[str, Any] | None,
-    normalizer: Callable[[str], str] | None,
     doc_id: str | None,
     doc_cls: type[DocIR] | None,
     **doc_kwargs: Any,
@@ -366,7 +357,6 @@ def _build_docx_doc_ir(
     from docx.table import Table
     from docx.text.paragraph import Paragraph
 
-    normalize = normalizer or normalize_text_default
     doc = _load_docx_source(source)
     paragraphs: list[ParagraphIR] = []
     assets: dict[str, ImageAsset] = {}
@@ -389,7 +379,6 @@ def _build_docx_doc_ir(
                 block,
                 paragraph_id,
                 skip_empty=skip_empty,
-                normalizer=normalize,
                 assets=assets,
                 asset_lookup=asset_lookup,
             )
@@ -397,7 +386,7 @@ def _build_docx_doc_ir(
                 unit_id=paragraph_id,
                 content=content,
             )
-            paragraph_ir.recompute_text(normalizer=normalize)
+            paragraph_ir.recompute_text()
             if paragraph_ir.content or paragraph_ir.text or not skip_empty:
                 paragraphs.append(paragraph_ir)
             continue
@@ -413,7 +402,6 @@ def _build_docx_doc_ir(
             f"{paragraph_id}.r1.tbl{table_counter}",
             include_tables=include_tables,
             skip_empty=skip_empty,
-            normalizer=normalize,
             assets=assets,
             asset_lookup=asset_lookup,
             CT_P=CT_P,
@@ -425,7 +413,7 @@ def _build_docx_doc_ir(
             unit_id=paragraph_id,
             content=[table_ir],
         )
-        paragraph_ir.recompute_text(normalizer=normalize)
+        paragraph_ir.recompute_text()
         paragraphs.append(paragraph_ir)
 
     resolved_doc_id, resolved_source_path, resolved_metadata = _resolve_doc_metadata(
@@ -528,7 +516,6 @@ def _parse_hwpx_paragraph_content(
     table_id_builder: Callable[[int], str],
     include_tables: bool,
     skip_empty: bool,
-    normalizer: Callable[[str], str],
     archive: zipfile.ZipFile,
     binary_name_map: dict[str, str],
     assets: dict[str, ImageAsset],
@@ -548,7 +535,6 @@ def _parse_hwpx_paragraph_content(
             run = RunIR(
                 unit_id=f"{paragraph_id}.r1",
                 text=text,
-                normalized_text=normalizer(text),
             )
             runs.append(run)
             content.append(run)
@@ -574,7 +560,6 @@ def _parse_hwpx_paragraph_content(
                     table_id_builder(table_counter),
                     include_tables=include_tables,
                     skip_empty=skip_empty,
-                    normalizer=normalizer,
                     archive=archive,
                     binary_name_map=binary_name_map,
                     assets=assets,
@@ -586,7 +571,6 @@ def _parse_hwpx_paragraph_content(
             run = RunIR(
                 unit_id=f"{paragraph_id}.r{run_index}",
                 text=text,
-                normalized_text=normalizer(text),
             )
             runs.append(run)
             content.append(run)
@@ -611,7 +595,6 @@ def _parse_hwpx_table(
     *,
     include_tables: bool,
     skip_empty: bool,
-    normalizer: Callable[[str], str],
     archive: zipfile.ZipFile,
     binary_name_map: dict[str, str],
     assets: dict[str, ImageAsset],
@@ -637,13 +620,12 @@ def _parse_hwpx_table(
                             RunIR(
                                 unit_id=f"{table_id}.tr{tr_idx}.tc{tc_idx}.p1.r1",
                                 text="",
-                                normalized_text=normalizer(""),
                             )
                         ],
                     )
-                    paragraph_ir.recompute_text(normalizer=normalizer)
+                    paragraph_ir.recompute_text()
                     cell_ir.paragraphs.append(paragraph_ir)
-                cell_ir.recompute_text(normalizer=normalizer)
+                cell_ir.recompute_text()
                 continue
 
             for cp_idx, paragraph_el in enumerate(cell_paragraphs, start=1):
@@ -654,7 +636,6 @@ def _parse_hwpx_table(
                     table_id_builder=lambda counter, base=paragraph_id: f"{base}.tbl{counter}",
                     include_tables=include_tables,
                     skip_empty=skip_empty,
-                    normalizer=normalizer,
                     archive=archive,
                     binary_name_map=binary_name_map,
                     assets=assets,
@@ -664,11 +645,11 @@ def _parse_hwpx_table(
                     unit_id=paragraph_id,
                     content=content,
                 )
-                paragraph_ir.recompute_text(normalizer=normalizer)
+                paragraph_ir.recompute_text()
                 if paragraph_ir.content or paragraph_ir.text or not skip_empty:
                     cell_ir.paragraphs.append(paragraph_ir)
 
-            cell_ir.recompute_text(normalizer=normalizer)
+            cell_ir.recompute_text()
 
     return table_ir
 
@@ -680,13 +661,10 @@ def _build_hwpx_doc_ir(
     skip_empty: bool,
     source_path: str | Path | None,
     metadata: dict[str, Any] | None,
-    normalizer: Callable[[str], str] | None,
     doc_id: str | None,
     doc_cls: type[DocIR] | None,
     **doc_kwargs: Any,
 ) -> DocIR:
-    normalize = normalizer or normalize_text_default
-
     if isinstance(source, bytes):
         hwpx_bytes = source
     elif isinstance(source, (str, Path)):
@@ -713,7 +691,6 @@ def _build_hwpx_doc_ir(
                     table_id_builder=lambda counter, base=paragraph_id: f"{base}.r1.tbl{counter}",
                     include_tables=include_tables,
                     skip_empty=skip_empty,
-                    normalizer=normalize,
                     archive=archive,
                     binary_name_map=binary_name_map,
                     assets=assets,
@@ -724,7 +701,7 @@ def _build_hwpx_doc_ir(
                     unit_id=paragraph_id,
                     content=content,
                 )
-                paragraph_ir.recompute_text(normalizer=normalize)
+                paragraph_ir.recompute_text()
                 if paragraph_ir.content or paragraph_ir.text or not skip_empty:
                     paragraphs.append(paragraph_ir)
 
@@ -754,7 +731,6 @@ def build_doc_ir_from_file(
     skip_empty: bool = False,
     source_path: str | Path | None = None,
     metadata: dict[str, Any] | None = None,
-    normalizer: Callable[[str], str] | None = None,
     doc_id: str | None = None,
     doc_cls: type[DocIR] | None = None,
     **doc_kwargs: Any,
@@ -767,7 +743,6 @@ def build_doc_ir_from_file(
             skip_empty=skip_empty,
             source_path=source_path,
             metadata=metadata,
-            normalizer=normalizer,
             doc_id=doc_id,
             doc_cls=doc_cls,
             **doc_kwargs,
@@ -782,7 +757,6 @@ def build_doc_ir_from_file(
             skip_empty=skip_empty,
             source_path=source_path,
             metadata=metadata,
-            normalizer=normalizer,
             doc_id=doc_id,
             doc_cls=doc_cls,
             **doc_kwargs,
@@ -794,7 +768,6 @@ def build_doc_ir_from_file(
         skip_empty=skip_empty,
         source_path=source_path,
         metadata=metadata,
-        normalizer=normalizer,
         doc_id=doc_id,
         doc_cls=doc_cls,
         **doc_kwargs,

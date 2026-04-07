@@ -193,7 +193,6 @@ class HtmlExporterTests(unittest.TestCase):
         doc = DocIR(
             assets={
                 "img1": ImageAsset(
-                    image_id="img1",
                     mime_type="image/png",
                     filename="x.png",
                     data_base64="AAAA",

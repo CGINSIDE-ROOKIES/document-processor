@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path
-from typing import Any, BinaryIO, Callable, Generic, TypeAlias, TypeVar
+from typing import Any, BinaryIO, Generic, TypeAlias, TypeVar
 
 from pydantic import BaseModel, Field
 
@@ -22,14 +22,12 @@ class RunIR(BaseModel, Generic[T]):
 
     unit_id: str
     text: str = ""
-    normalized_text: str = ""
     run_style: RunStyleInfo | None = None
 
 
 class ImageAsset(BaseModel):
     """Binary image asset stored once per document."""
 
-    image_id: str
     mime_type: str
     filename: str | None = None
     data_base64: str
@@ -40,7 +38,6 @@ class ImageAsset(BaseModel):
     def from_bytes(
         cls,
         *,
-        image_id: str,
         data: bytes,
         mime_type: str,
         filename: str | None = None,
@@ -48,7 +45,6 @@ class ImageAsset(BaseModel):
         intrinsic_height_px: int | None = None,
     ) -> "ImageAsset":
         return cls(
-            image_id=image_id,
             mime_type=mime_type,
             filename=filename,
             data_base64=base64.b64encode(data).decode("ascii"),
@@ -83,7 +79,6 @@ class ParagraphIR(BaseModel, Generic[T]):
 
     unit_id: str
     text: str = ""
-    normalized_text: str = ""
     para_style: ParaStyleInfo | None = None
     content: list["ParagraphContentNode"] = Field(default_factory=list)
 
@@ -117,9 +112,7 @@ class ParagraphIR(BaseModel, Generic[T]):
                 for cell_paragraph in cell.paragraphs:
                     yield from cell_paragraph.iter_all_runs(include_table_runs=True)
 
-    def recompute_text(self, *, normalizer: Callable[[str], str] | None = None) -> None:
-        normalize = normalizer or (lambda s: s.strip())
-
+    def recompute_text(self) -> None:
         parts: list[str] = []
         if self.runs:
             parts.append("".join(run.text for run in self.runs))
@@ -129,7 +122,6 @@ class ParagraphIR(BaseModel, Generic[T]):
                 parts.append("\n".join(cell_texts))
 
         self.text = "\n".join(part for part in parts if part) if self.tables else "".join(run.text for run in self.runs)
-        self.normalized_text = normalize(self.text)
 
 
 class TableCellIR(BaseModel, Generic[T]):
@@ -142,14 +134,11 @@ class TableCellIR(BaseModel, Generic[T]):
     row_index: int
     col_index: int
     text: str = ""
-    normalized_text: str = ""
     cell_style: CellStyleInfo | None = None
     paragraphs: list["ParagraphIR"] = Field(default_factory=list)
 
-    def recompute_text(self, *, normalizer: Callable[[str], str] | None = None) -> None:
-        normalize = normalizer or (lambda s: s.strip())
+    def recompute_text(self) -> None:
         self.text = "\n".join(p.text for p in self.paragraphs)
-        self.normalized_text = normalize(self.text)
 
 
 class TableIR(BaseModel, Generic[T]):
@@ -186,7 +175,6 @@ class DocIR(BaseModel, Generic[T]):
         include_tables: bool = True,
         skip_empty: bool = False,
         metadata: dict[str, Any] | None = None,
-        normalizer: Callable[[str], str] | None = None,
         doc_id: str | None = None,
         **doc_kwargs: Any,
     ) -> "DocIR":
@@ -210,7 +198,6 @@ class DocIR(BaseModel, Generic[T]):
                     include_tables=include_tables,
                     source_path=resolved_source_path,
                     metadata=metadata,
-                    normalizer=normalizer,
                     doc_id=doc_id,
                     doc_cls=cls,
                     **doc_kwargs,
@@ -229,7 +216,6 @@ class DocIR(BaseModel, Generic[T]):
                 include_tables=include_tables,
                 source_path=resolved_source_path,
                 metadata=metadata,
-                normalizer=normalizer,
                 doc_id=doc_id,
                 doc_cls=cls,
                 **doc_kwargs,
@@ -257,7 +243,6 @@ class DocIR(BaseModel, Generic[T]):
         source_path: str | Path | None = None,
         source_doc_type: str | None = None,
         metadata: dict[str, Any] | None = None,
-        normalizer: Callable[[str], str] | None = None,
         doc_id: str | None = None,
         **doc_kwargs: Any,
     ) -> "DocIR":
@@ -270,7 +255,6 @@ class DocIR(BaseModel, Generic[T]):
             source_path=source_path,
             source_doc_type=source_doc_type,
             metadata=metadata,
-            normalizer=normalizer,
             doc_id=doc_id,
             doc_cls=cls,
             **doc_kwargs,
