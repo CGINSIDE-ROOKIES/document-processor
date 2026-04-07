@@ -14,9 +14,15 @@ def _load_erdantic():
     try:
         import erdantic as erd
     except ImportError as exc:  # pragma: no cover - depends on optional extra
+        if getattr(exc, "name", None) == "erdantic":
+            raise RuntimeError(
+                "Erdantic is not installed. Install the visualization extra with "
+                "`pip install \"document-processor[viz]\"` and ensure Graphviz is available."
+            ) from exc
         raise RuntimeError(
-            "Erdantic is not installed. Install the visualization extra with "
-            "`pip install \"document-processor[viz]\"` and ensure Graphviz is available."
+            "Erdantic is installed, but one of its native dependencies failed to load. "
+            f"Original import error: {exc}. Ensure `pygraphviz` is built against the "
+            "currently installed Graphviz libraries."
         ) from exc
     return erd
 

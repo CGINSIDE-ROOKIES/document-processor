@@ -5,14 +5,7 @@ Installable structural document parser for `hwp`, `hwpx`, and `docx`.
 ```python
 from document_processor import DocIR
 
-
-class MyIR(DocIR):
-    # custom field injection
-    custom_field: int = 0
-    ...
-
-
-doc = MyIR.from_file("/path/to/file.docx")
+doc = DocIR.from_file("/path/to/file.docx")
 ```
 
 The package focuses on:
@@ -20,6 +13,19 @@ The package focuses on:
 - document parsing
 - style extraction
 - structural IR creation
+
+
+## Exporting HTML
+
+Render a parsed document to styled HTML:
+
+```python
+from document_processor import DocIR
+
+doc = DocIR.from_file("/path/to/file.docx")
+html = doc.to_html(title="Preview")
+```
+
 
 ## Visualizing the Models
 
@@ -49,15 +55,4 @@ Or use the Python helper:
 from document_processor import draw_model_diagram
 
 draw_model_diagram(out="docir.svg")
-```
-
-## Exporting HTML
-
-Render a parsed document to styled HTML:
-
-```python
-from document_processor import DocIR
-
-doc = DocIR.from_file("/path/to/file.docx")
-html = doc.to_html(title="Preview")
 ```

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
-from typing import Any, BinaryIO, Callable, Self
+from typing import Any, BinaryIO, Callable, TypeVar, Generic
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 from .io_utils import TemporarySourcePath, coerce_source_to_supported_value, get_source_name, infer_doc_type
 from .style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
+
+T = TypeVar("T", bound=BaseModel)
 
 
 class SourceType(str, Enum):
@@ -19,8 +21,10 @@ class SourceType(str, Enum):
     TABLE_BLOCK = "table_block"
 
 
-class RunIR(BaseModel):
+class RunIR(BaseModel, Generic[T]):
     """Smallest style-preserving text unit."""
+    model_config = {"validate_assignment": True}
+    meta: T | None = None
 
     unit_id: str
     text: str = ""
@@ -28,8 +32,10 @@ class RunIR(BaseModel):
     run_style: RunStyleInfo | None = None
 
 
-class TableCellParagraphIR(BaseModel):
+class TableCellParagraphIR(BaseModel, Generic[T]):
     """Paragraph inside a table cell."""
+    model_config = {"validate_assignment": True}
+    meta: T | None = None
 
     unit_id: str
     text: str = ""
@@ -38,8 +44,10 @@ class TableCellParagraphIR(BaseModel):
     runs: list[RunIR] = Field(default_factory=list)
 
 
-class TableCellIR(BaseModel):
+class TableCellIR(BaseModel, Generic[T]):
     """Table cell node."""
+    model_config = {"validate_assignment": True}
+    meta: T | None = None
 
     unit_id: str
     row_index: int
@@ -55,8 +63,10 @@ class TableCellIR(BaseModel):
         self.normalized_text = normalize(self.text)
 
 
-class TableIR(BaseModel):
+class TableIR(BaseModel, Generic[T]):
     """Nested table node under a paragraph."""
+    model_config = {"validate_assignment": True}
+    meta: T | None = None
 
     unit_id: str
     row_count: int = 0
@@ -65,8 +75,10 @@ class TableIR(BaseModel):
     cells: list[TableCellIR] = Field(default_factory=list)
 
 
-class ParagraphIR(BaseModel):
+class ParagraphIR(BaseModel, Generic[T]):
     """Structural paragraph unit."""
+    model_config = {"validate_assignment": True}
+    meta: T | None = None
 
     unit_id: str
     text: str = ""
@@ -103,8 +115,9 @@ class ParagraphIR(BaseModel):
         self.normalized_text = normalize(self.text)
 
 
-class DocIR(BaseModel):
+class DocIR(BaseModel, Generic[T]):
     """Top-level structural document IR."""
+    meta: T | None = None
 
     doc_id: str | None = None
     source_path: str | None = None
@@ -124,7 +137,7 @@ class DocIR(BaseModel):
         normalizer: Callable[[str], str] | None = None,
         doc_id: str | None = None,
         **doc_kwargs: Any,
-    ) -> Self:
+    ) -> "DocIR":
         """Build document IR from a path, bytes, or binary file object."""
         from .builder import build_doc_ir_from_mapping
         from .core.structured_mapping_exporter import export_structured_mapping
@@ -188,7 +201,7 @@ class DocIR(BaseModel):
         normalizer: Callable[[str], str] | None = None,
         doc_id: str | None = None,
         **doc_kwargs: Any,
-    ) -> Self:
+    ) -> "DocIR":
         """Build document IR from a run-level mapping."""
         from .builder import build_doc_ir_from_mapping
 
@@ -206,9 +219,9 @@ class DocIR(BaseModel):
 
     def to_html(self, *, title: str | None = None) -> str:
         """Render this document IR as styled HTML."""
-        from .html_exporter import export_html
+        from .html_exporter import render_html_document
 
-        return export_html(self, title=title)
+        return render_html_document(self, title=title)
 
 
 __all__ = [

@@ -9,7 +9,7 @@ SRC_ROOT = THIS_DIR.parent / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from document_processor import DocIR, export_html
+from document_processor import DocIR
 from document_processor.models import ParagraphIR, RunIR, TableCellIR, TableCellParagraphIR, TableIR
 from document_processor.style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo
 
@@ -97,7 +97,7 @@ class HtmlExporterTests(unittest.TestCase):
             ]
         )
 
-        html = export_html(doc, title="Table Preview")
+        html = doc.to_html(title="Table Preview")
 
         self.assertIn("<table", html)
         self.assertIn('colspan="2"', html)
@@ -136,7 +136,7 @@ class HtmlExporterTests(unittest.TestCase):
             ]
         )
 
-        html = export_html(doc)
+        html = doc.to_html()
 
         self.assertIn("<table", html)
         self.assertIn("margin-left:auto", html)

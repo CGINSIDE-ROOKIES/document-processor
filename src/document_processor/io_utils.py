@@ -106,17 +106,14 @@ def infer_doc_type_from_bytes(source: bytes) -> ResolvedDocType:
 
 
 def coerce_source_to_supported_value(
-    source: object,
+    source: str | Path | bytes | BinaryIO,
     *,
     doc_type: ResolvedDocType,
-) -> str | Path | bytes | object:
+) -> str | Path | bytes:
     if isinstance(source, (str, Path, bytes)):
         return source
 
-    if hasattr(source, "read"):
-        return _read_file_object(source)
-
-    return source
+    return _read_file_object(source)
 
 
 class TemporarySourcePath:

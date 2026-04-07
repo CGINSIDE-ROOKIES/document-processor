@@ -198,8 +198,8 @@ def _render_paragraph(paragraph: ParagraphIR) -> str:
     return "\n".join(parts)
 
 
-def export_html(doc_ir: DocIR, *, title: str | None = None) -> str:
-    """Export a document IR tree as a complete HTML document."""
+def render_html_document(doc_ir: DocIR, *, title: str | None = None) -> str:
+    """Render a document IR tree as a complete HTML document."""
     resolved_title = title or doc_ir.doc_id or "Document"
     body = "\n\n".join(
         _render_paragraph(paragraph)
@@ -237,4 +237,4 @@ def export_html(doc_ir: DocIR, *, title: str | None = None) -> str:
 """
 
 
-__all__ = ["export_html"]
+__all__ = ["render_html_document"]
