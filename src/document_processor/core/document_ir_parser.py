@@ -79,20 +79,13 @@ def _ensure_page_info(
         pages[page_number] = PageInfo(page_number=page_number, **layout)
 
 
-def _assign_page_number_to_table(table: TableIR, page_number: int | None) -> None:
-    table.page_number = page_number
-    for cell in table.cells:
-        for paragraph in cell.paragraphs:
-            _assign_page_number_to_paragraph(paragraph, page_number)
-
-
 def _assign_page_number_to_paragraph(paragraph: ParagraphIR, page_number: int | None) -> None:
     paragraph.page_number = page_number
     for node in paragraph.content:
-        if isinstance(node, ImageIR):
-            node.page_number = page_number
-        elif isinstance(node, TableIR):
-            _assign_page_number_to_table(node, page_number)
+        if isinstance(node, TableIR):
+            for cell in node.cells:
+                for cell_paragraph in cell.paragraphs:
+                    _assign_page_number_to_paragraph(cell_paragraph, page_number)
 
 
 def _image_dimensions_from_bytes(data: bytes) -> tuple[int | None, int | None]:

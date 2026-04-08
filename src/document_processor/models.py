@@ -80,7 +80,6 @@ class ImageIR(BaseModel, Generic[T]):
 
     unit_id: str
     image_id: str
-    page_number: int | None = None
     alt_text: str | None = None
     title: str | None = None
     display_width_pt: float | None = None
@@ -167,7 +166,6 @@ class TableIR(BaseModel, Generic[T]):
     unit_id: str
     row_count: int = 0
     col_count: int = 0
-    page_number: int | None = None
     table_style: TableStyleInfo | None = None
     cells: list[TableCellIR] = Field(default_factory=list)
 
