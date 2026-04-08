@@ -58,6 +58,13 @@ Render the default `DocIR` model diagram:
 document-processor-diagram --out docir.svg
 ```
 
+Render a package-scope diagram with IR fields/methods plus the main `core/`
+modules:
+
+```bash
+document-processor-diagram --kind package --out package.svg
+```
+
 Render a custom model by dotted import path:
 
 ```bash

@@ -12,7 +12,14 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from document_processor import DocIR
-from document_processor.diagram import create_model_diagram, draw_model_diagram, main, resolve_model
+from document_processor.diagram import (
+    create_model_diagram,
+    create_package_diagram_dot,
+    draw_model_diagram,
+    draw_package_diagram,
+    main,
+    resolve_model,
+)
 
 
 class DiagramTests(unittest.TestCase):
@@ -56,6 +63,44 @@ class DiagramTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(draw_calls[0], (DocIR, "docir.svg"))
         self.assertEqual(draw_calls[1], (DocIR, "cli-docir.svg"))
+
+    def test_create_package_diagram_dot_includes_models_and_methods(self) -> None:
+        dot = create_package_diagram_dot(include_core_modules=False)
+
+        self.assertIn("document_processor.models.DocIR", dot)
+        self.assertIn("from_file", dot)
+        self.assertIn("to_html", dot)
+        self.assertIn("document_processor.models.TableIR", dot)
+        self.assertIn("@ markdown: property", dot)
+
+    def test_draw_package_diagram_writes_dot_file_without_graphviz(self) -> None:
+        with patch("pathlib.Path.write_text") as write_text:
+            out_path = draw_package_diagram(out="package.dot")
+
+        self.assertEqual(out_path, Path("package.dot"))
+        write_text.assert_called_once()
+
+    def test_draw_package_diagram_renders_via_dot_and_cli(self) -> None:
+        run_calls: list[list[str]] = []
+
+        def fake_run(cmd, *, input, text, check):
+            run_calls.append(cmd)
+            self.assertIn("document_processor.models.DocIR", input)
+            self.assertTrue(text)
+            self.assertTrue(check)
+            return None
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/dot"),
+            patch("subprocess.run", side_effect=fake_run),
+        ):
+            out_path = draw_package_diagram(out="package.svg")
+            exit_code = main(["--kind", "package", "--out", "cli-package.svg"])
+
+        self.assertEqual(out_path, Path("package.svg"))
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(run_calls[0], ["/usr/bin/dot", "-Tsvg", "-o", "package.svg"])
+        self.assertEqual(run_calls[1], ["/usr/bin/dot", "-Tsvg", "-o", "cli-package.svg"])
 
 
 if __name__ == "__main__":
