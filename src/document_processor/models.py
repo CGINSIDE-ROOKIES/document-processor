@@ -26,8 +26,11 @@ class RunIR(BaseModel, Generic[T]):
     run_style: RunStyleInfo | None = None
 
 
-class ImageAsset(BaseModel):
+class ImageAsset(BaseModel, Generic[T]):
     """Binary image asset stored once per document."""
+
+    model_config = {"validate_assignment": True}
+    meta: T | None = None
 
     mime_type: str
     filename: str | None = None
@@ -44,7 +47,7 @@ class ImageAsset(BaseModel):
         filename: str | None = None,
         intrinsic_width_px: int | None = None,
         intrinsic_height_px: int | None = None,
-    ) -> "ImageAsset":
+    ) -> "ImageAsset[T]":
         return cls(
             mime_type=mime_type,
             filename=filename,
@@ -76,7 +79,6 @@ class ImageIR(BaseModel, Generic[T]):
     """Image placement node inside paragraph-like content."""
 
     model_config = {"validate_assignment": True}
-    meta: T | None = None
 
     unit_id: str
     image_id: str
@@ -184,7 +186,7 @@ class DocIR(BaseModel, Generic[T]):
     source_path: str | None = None
     source_doc_type: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
-    assets: dict[str, ImageAsset] = Field(default_factory=dict)
+    assets: dict[str, ImageAsset[T]] = Field(default_factory=dict)
     pages: list[PageInfo] = Field(default_factory=list)
     paragraphs: list[ParagraphIR] = Field(default_factory=list)
 
@@ -192,6 +194,10 @@ class DocIR(BaseModel, Generic[T]):
     @property
     def has_page_metadata(self) -> bool:
         return bool(self.pages)
+
+    def get_image_asset(self, image_or_id: ImageIR | str) -> ImageAsset[T] | None:
+        image_id = image_or_id if isinstance(image_or_id, str) else image_or_id.image_id
+        return self.assets.get(image_id)
 
     @classmethod
     def from_file(

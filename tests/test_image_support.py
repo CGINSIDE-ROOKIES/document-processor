@@ -8,12 +8,14 @@ import tempfile
 import unittest
 import zipfile
 
+from pydantic import BaseModel
+
 THIS_DIR = Path(__file__).resolve().parent
 SRC_ROOT = THIS_DIR.parent / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from document_processor import DocIR, ImageIR, RunIR
+from document_processor import DocIR, ImageAsset, ImageIR, ParagraphIR, RunIR
 
 
 PNG_BYTES = base64.b64decode(
@@ -22,6 +24,41 @@ PNG_BYTES = base64.b64decode(
 
 
 class ImageSupportTests(unittest.TestCase):
+    def test_image_metadata_lives_on_shared_asset(self) -> None:
+        class ImageMeta(BaseModel):
+            label: str
+
+        asset = ImageAsset[ImageMeta](
+            mime_type="image/png",
+            filename="shared.png",
+            data_base64="AAAA",
+            meta=ImageMeta(label="shared"),
+        )
+        doc = DocIR(
+            assets={"img1": asset},
+            paragraphs=[
+                ParagraphIR(
+                    unit_id="s1.p1",
+                    content=[
+                        ImageIR(unit_id="s1.p1.img1", image_id="img1", display_width_pt=50.0),
+                        ImageIR(unit_id="s1.p1.img2", image_id="img1", display_width_pt=90.0),
+                    ],
+                )
+            ],
+        )
+
+        first_image, second_image = doc.paragraphs[0].images
+        self.assertFalse(hasattr(first_image, "meta"))
+        self.assertIs(doc.get_image_asset(first_image), asset)
+        self.assertIs(doc.get_image_asset(second_image), asset)
+        self.assertEqual(doc.get_image_asset("img1").meta.label, "shared")
+        self.assertEqual(first_image.display_width_pt, 50.0)
+        self.assertEqual(second_image.display_width_pt, 90.0)
+
+        dumped = doc.model_dump(mode="json")
+        self.assertEqual(dumped["assets"]["img1"]["meta"]["label"], "shared")
+        self.assertNotIn("meta", dumped["paragraphs"][0]["content"][0])
+
     def test_docx_images_are_embedded_in_ir_and_preserve_order(self) -> None:
         from docx import Document
         from docx.shared import Inches
