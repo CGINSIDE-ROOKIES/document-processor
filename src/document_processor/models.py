@@ -172,7 +172,6 @@ class TableIR(BaseModel, Generic[T]):
     cells: list[TableCellIR] = Field(default_factory=list)
 
     @computed_field
-    @property
     def markdown(self) -> str:
         return _render_table_markdown(self)
 
@@ -185,7 +184,6 @@ class DocIR(BaseModel, Generic[T]):
     doc_id: str | None = None
     source_path: str | None = None
     source_doc_type: str | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
     assets: dict[str, ImageAsset[T]] = Field(default_factory=dict)
     pages: list[PageInfo] = Field(default_factory=list)
     paragraphs: list[ParagraphIR] = Field(default_factory=list)
