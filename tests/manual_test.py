@@ -21,11 +21,11 @@ for file_ in files:
 
     # == Add metadata == #
 
-    class ClauseMeta(BaseModel):
+    class MyMetaData(BaseModel):
         a: int = 1
         b: str = "test"
 
-    metainfo = ClauseMeta(a=1)
+    metainfo = MyMetaData(a=1)
     doc.paragraphs[0].runs[0].meta = metainfo
 
     # ================== #

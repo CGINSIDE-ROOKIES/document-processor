@@ -16,6 +16,35 @@ The package focuses on:
 - embedded image extraction for `docx` and `hwpx`
 
 
+for specific uses, you can add metadata for processing (eg. feeding LLMs, RAG, analysis and such)
+
+All IR models include a `.meta` field for this purpose.
+```python
+for file_ in files:
+    doc = DocIR.from_file(file_)
+
+    class MyMetaData(BaseModel):
+        a: int = 1
+        b: str = "test"
+
+    # add your processing logic
+    metainfo = MyMetaData(a=2)
+    doc.paragraphs[0].runs[0].meta = metainfo
+
+    with \
+        open((out_dir / file_.stem).with_suffix(".json"), "w", encoding="utf-8") as json_f, \
+        open((out_dir / file_.stem).with_suffix(".html"), "w", encoding="utf-8") as html_f:
+        
+        json.dump(doc.model_dump(mode="json"), json_f, indent=4, ensure_ascii=False)
+        html_f.write(doc.to_html())
+
+    print(f"completed: {file_}")
+```
+> **! Note !**
+>
+> Metadata obj. needs to extend Pydantic BaseModels. If not, it'll thow a validation error.
+
+
 ## Images in the IR
 
 Parsed image binaries are stored once on `DocIR.assets`, and paragraph-like nodes keep ordered
@@ -78,3 +107,9 @@ from document_processor import draw_model_diagram
 
 draw_model_diagram(out="docir.svg")
 ```
+
+---
+
+ERD for the pydantic models
+
+![diagram](docir.svg)
