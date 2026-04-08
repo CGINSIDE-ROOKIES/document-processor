@@ -60,6 +60,18 @@ class ImageAsset(BaseModel):
         return f"data:{self.mime_type};base64,{self.data_base64}"
 
 
+class PageInfo(BaseModel):
+    """Document page metadata used for approximate paged rendering."""
+
+    page_number: int
+    width_pt: float | None = None
+    height_pt: float | None = None
+    margin_left_pt: float | None = None
+    margin_right_pt: float | None = None
+    margin_top_pt: float | None = None
+    margin_bottom_pt: float | None = None
+
+
 class ImageIR(BaseModel, Generic[T]):
     """Image placement node inside paragraph-like content."""
 
@@ -68,6 +80,7 @@ class ImageIR(BaseModel, Generic[T]):
 
     unit_id: str
     image_id: str
+    page_number: int | None = None
     alt_text: str | None = None
     title: str | None = None
     display_width_pt: float | None = None
@@ -82,6 +95,7 @@ class ParagraphIR(BaseModel, Generic[T]):
 
     unit_id: str
     text: str = ""
+    page_number: int | None = None
     para_style: ParaStyleInfo | None = None
     content: list["ParagraphContentNode"] = Field(default_factory=list)
 
@@ -153,6 +167,7 @@ class TableIR(BaseModel, Generic[T]):
     unit_id: str
     row_count: int = 0
     col_count: int = 0
+    page_number: int | None = None
     table_style: TableStyleInfo | None = None
     cells: list[TableCellIR] = Field(default_factory=list)
 
@@ -172,7 +187,13 @@ class DocIR(BaseModel, Generic[T]):
     source_doc_type: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     assets: dict[str, ImageAsset] = Field(default_factory=dict)
+    pages: list[PageInfo] = Field(default_factory=list)
     paragraphs: list[ParagraphIR] = Field(default_factory=list)
+
+    @computed_field
+    @property
+    def has_page_metadata(self) -> bool:
+        return bool(self.pages)
 
     @classmethod
     def from_file(

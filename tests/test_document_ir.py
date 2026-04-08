@@ -17,6 +17,7 @@ from document_processor import (
     CellStyleInfo,
     DocIR,
     ImageIR,
+    PageInfo,
     ParaStyleInfo,
     ParagraphIR,
     RunIR,
@@ -180,6 +181,78 @@ class DocumentIRTests(unittest.TestCase):
         doc = DocIR.from_file(hwpx_bytes_io.getvalue(), doc_type="hwpx")
 
         self.assertEqual(doc.paragraphs[0].text, "<수요기업 협업 규모 및 분야>")
+
+    def test_from_file_hwpx_extracts_page_info_and_assigns_pages(self) -> None:
+        hwpx_bytes_io = BytesIO()
+        with zipfile.ZipFile(hwpx_bytes_io, "w") as zf:
+            zf.writestr(
+                "Contents/header.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core" />
+""",
+            )
+            zf.writestr(
+                "Contents/section0.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p pageBreak="0">
+    <hp:run>
+      <hp:secPr>
+        <hp:pagePr width="59528" height="84188">
+          <hp:margin left="5669" right="5669" top="2834" bottom="2834" />
+        </hp:pagePr>
+      </hp:secPr>
+      <hp:t>Page 1-A</hp:t>
+    </hp:run>
+    <hp:linesegarray><hp:lineseg vertpos="0" /></hp:linesegarray>
+  </hp:p>
+  <hp:p pageBreak="0">
+    <hp:run><hp:t>Page 1-B</hp:t></hp:run>
+    <hp:linesegarray><hp:lineseg vertpos="2200" /></hp:linesegarray>
+  </hp:p>
+  <hp:p pageBreak="0">
+    <hp:run><hp:t>Page 2-A</hp:t></hp:run>
+    <hp:linesegarray><hp:lineseg vertpos="0" /></hp:linesegarray>
+  </hp:p>
+</hs:sec>
+""",
+            )
+
+        doc = DocIR.from_file(hwpx_bytes_io.getvalue(), doc_type="hwpx")
+
+        self.assertEqual([page.page_number for page in doc.pages], [1, 2])
+        self.assertAlmostEqual(doc.pages[0].width_pt or 0.0, 595.28, places=2)
+        self.assertAlmostEqual(doc.pages[0].height_pt or 0.0, 841.88, places=2)
+        self.assertAlmostEqual(doc.pages[0].margin_left_pt or 0.0, 56.69, places=2)
+        self.assertEqual([paragraph.page_number for paragraph in doc.paragraphs], [1, 1, 2])
+
+    def test_from_file_docx_extracts_page_info_from_page_breaks(self) -> None:
+        from docx import Document
+        from docx.shared import Inches
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            docx_path = Path(tmp_dir) / "pages.docx"
+            doc = Document()
+            section = doc.sections[0]
+            section.page_width = Inches(8.5)
+            section.page_height = Inches(11)
+            section.left_margin = Inches(1)
+            section.right_margin = Inches(1)
+            section.top_margin = Inches(1)
+            section.bottom_margin = Inches(1)
+            doc.add_paragraph("Page 1")
+            doc.add_page_break()
+            doc.add_paragraph("Page 2")
+            doc.save(str(docx_path))
+
+            parsed = DocIR.from_file(docx_path, skip_empty=True)
+
+        self.assertEqual([page.page_number for page in parsed.pages], [1, 2])
+        self.assertAlmostEqual(parsed.pages[0].width_pt or 0.0, 612.0, places=1)
+        self.assertAlmostEqual(parsed.pages[0].height_pt or 0.0, 792.0, places=1)
+        self.assertAlmostEqual(parsed.pages[0].margin_left_pt or 0.0, 72.0, places=1)
+        self.assertEqual([paragraph.text for paragraph in parsed.paragraphs], ["Page 1", "Page 2"])
+        self.assertEqual([paragraph.page_number for paragraph in parsed.paragraphs], [1, 2])
 
     def test_from_file_hwp_file_object_materializes_temp_path(self) -> None:
         fake_hwp = b"fake-hwp"

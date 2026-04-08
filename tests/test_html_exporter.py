@@ -10,7 +10,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from document_processor import DocIR
-from document_processor.models import ImageAsset, ImageIR, ParagraphIR, RunIR, TableCellIR, TableIR
+from document_processor.models import ImageAsset, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
 from document_processor.style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
 
 
@@ -220,6 +220,30 @@ class HtmlExporterTests(unittest.TestCase):
         self.assertIn("<img ", html)
         self.assertIn("width:72.0pt", html)
         self.assertIn("height:36.0pt", html)
+
+    def test_export_html_renders_bordered_page_frames_when_page_metadata_exists(self) -> None:
+        doc = DocIR(
+            pages=[
+                PageInfo(page_number=1, width_pt=595.3, height_pt=841.9, margin_top_pt=72.0, margin_right_pt=72.0, margin_bottom_pt=72.0, margin_left_pt=72.0),
+                PageInfo(page_number=2, width_pt=595.3, height_pt=841.9, margin_top_pt=72.0, margin_right_pt=72.0, margin_bottom_pt=72.0, margin_left_pt=72.0),
+            ],
+            paragraphs=[
+                ParagraphIR(unit_id="s1.p1", page_number=1, content=[RunIR(unit_id="s1.p1.r1", text="First page")]),
+                ParagraphIR(unit_id="s1.p2", page_number=2, content=[RunIR(unit_id="s1.p2.r1", text="Second page")]),
+            ],
+        )
+
+        html = doc.to_html()
+
+        self.assertIn('class="document-page"', html)
+        self.assertIn('data-page-number="1"', html)
+        self.assertIn('data-page-number="2"', html)
+        self.assertIn("border:1px solid #222", html)
+        self.assertIn("width:595.3pt", html)
+        self.assertIn("min-height:841.9pt", html)
+        self.assertIn("padding:72.0pt 72.0pt 72.0pt 72.0pt", html)
+        self.assertIn("First page", html)
+        self.assertIn("Second page", html)
 
     def test_export_html_clamps_negative_first_line_indent_inside_table_cells(self) -> None:
         doc = DocIR(

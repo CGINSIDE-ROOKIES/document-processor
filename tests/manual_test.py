@@ -5,11 +5,6 @@ import json
 from os import listdir
 from pathlib import Path
 
-file_name = "style_test_sample.docx"
-# "style_test_sample.docx"
-# "251029 2025년 3회 추경 사업설명서(평화협력국)_최종.hwpx"
-# "2026년_전통시장_육성사업(백년시장)_모집공고(수정).hwpx"
-
 doc_dir = Path("/home/maxjo/Work/LAS-system/apps/backend/doc_processor/tests/doc_samples/new_test")
 out_dir = Path("/home/maxjo/Work/LAS-system/apps/backend/doc_processor/tests/results")
 

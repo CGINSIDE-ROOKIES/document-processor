@@ -6,7 +6,7 @@ import base64
 from html import escape
 import re
 
-from .models import DocIR, ImageIR, ParagraphContentNode, ParagraphIR, RunIR, TableCellIR, TableIR
+from .models import DocIR, ImageIR, PageInfo, ParagraphContentNode, ParagraphIR, RunIR, TableCellIR, TableIR
 from .style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo
 
 
@@ -367,12 +367,71 @@ def _render_paragraph(doc_ir: DocIR, paragraph: ParagraphIR) -> str:
     return _render_paragraph_like(doc_ir, paragraph.content, paragraph.para_style)
 
 
+def _page_style(page: PageInfo) -> str:
+    parts = [
+        "box-sizing:border-box",
+        "background:#fff",
+        "border:1px solid #222",
+        "box-shadow:0 1px 3px rgba(0,0,0,0.08)",
+        "margin:0 auto 24px auto",
+    ]
+    if page.width_pt is not None:
+        parts.append(f"width:{page.width_pt:.1f}pt")
+    else:
+        parts.append("max-width:900px")
+    if page.height_pt is not None:
+        parts.append(f"min-height:{page.height_pt:.1f}pt")
+    return ";".join(parts)
+
+
+def _page_content_style(page: PageInfo) -> str:
+    margin_top = page.margin_top_pt if page.margin_top_pt is not None else 48.0
+    margin_right = page.margin_right_pt if page.margin_right_pt is not None else 42.0
+    margin_bottom = page.margin_bottom_pt if page.margin_bottom_pt is not None else 48.0
+    margin_left = page.margin_left_pt if page.margin_left_pt is not None else 42.0
+    return (
+        "box-sizing:border-box;"
+        f"padding:{margin_top:.1f}pt {margin_right:.1f}pt {margin_bottom:.1f}pt {margin_left:.1f}pt"
+    )
+
+
+def _render_paged_body(doc_ir: DocIR) -> str:
+    paragraphs_by_page: dict[int, list[ParagraphIR]] = {}
+    unpaged: list[ParagraphIR] = []
+
+    for paragraph in doc_ir.paragraphs:
+        if paragraph.page_number is None:
+            unpaged.append(paragraph)
+            continue
+        paragraphs_by_page.setdefault(paragraph.page_number, []).append(paragraph)
+
+    parts: list[str] = []
+    for page in doc_ir.pages:
+        page_paragraphs = paragraphs_by_page.get(page.page_number, [])
+        content_html = "\n\n".join(_render_paragraph(doc_ir, paragraph) for paragraph in page_paragraphs)
+        parts.append(
+            f'<section class="document-page" data-page-number="{page.page_number}" style="{_page_style(page)}">'
+            f'<div class="document-page__content" style="{_page_content_style(page)}">{content_html or "&nbsp;"}</div>'
+            "</section>"
+        )
+
+    if unpaged:
+        parts.append(
+            '<section class="document-unpaged">'
+            + "\n\n".join(_render_paragraph(doc_ir, paragraph) for paragraph in unpaged)
+            + "</section>"
+        )
+
+    return "\n".join(parts)
+
+
 def render_html_document(doc_ir: DocIR, *, title: str | None = None) -> str:
     """Render a document IR tree as a complete HTML document."""
     resolved_title = title or doc_ir.doc_id or "Document"
-    body = "\n\n".join(
-        _render_paragraph(doc_ir, paragraph)
-        for paragraph in doc_ir.paragraphs
+    body = (
+        _render_paged_body(doc_ir)
+        if doc_ir.pages
+        else "\n\n".join(_render_paragraph(doc_ir, paragraph) for paragraph in doc_ir.paragraphs)
     )
 
     return f"""<!DOCTYPE html>
@@ -383,12 +442,13 @@ def render_html_document(doc_ir: DocIR, *, title: str | None = None) -> str:
 <title>{escape(resolved_title)}</title>
 <style>
   body {{
-    max-width: 900px;
+    max-width: 1100px;
     margin: 2em auto;
     padding: 0 1rem;
     line-height: 1.6;
     color: #1a1a1a;
     font-family: serif;
+    background:#f5f5f2;
   }}
   p {{
     margin: 0 0 0.45em 0;
@@ -400,6 +460,10 @@ def render_html_document(doc_ir: DocIR, *, title: str | None = None) -> str:
   img {{
     max-width: 100%;
     height: auto;
+  }}
+  .document-unpaged {{
+    max-width: 900px;
+    margin: 0 auto;
   }}
 </style>
 </head>

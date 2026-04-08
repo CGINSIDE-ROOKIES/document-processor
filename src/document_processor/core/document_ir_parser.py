@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 import hashlib
 import mimetypes
 import struct
@@ -12,7 +13,7 @@ from xml.etree import ElementTree as ET
 import zipfile
 
 from ..io_utils import coerce_source_to_supported_value
-from ..models import DocIR, ImageAsset, ImageIR, ParagraphIR, RunIR, TableCellIR, TableIR
+from ..models import DocIR, ImageAsset, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
 from .docx_structured_exporter import _iter_blocks, _iter_blocks_from_element, _load_docx_source
 from .hwp_converter import convert_hwp_to_hwpx_bytes
 from .hwpx_structured_exporter import _HP, _logical_table_cells, _paragraph_text, _run_text, _safe_int, _section_roots_from_bytes
@@ -47,6 +48,51 @@ def _hwpunit_to_pt(value: str | int | None) -> float | None:
         return int(value) / _HWPUNIT_PER_PT
     except (TypeError, ValueError):
         return None
+
+
+def _page_layout(
+    *,
+    width_pt: float | None,
+    height_pt: float | None,
+    margin_left_pt: float | None = None,
+    margin_right_pt: float | None = None,
+    margin_top_pt: float | None = None,
+    margin_bottom_pt: float | None = None,
+) -> dict[str, float | None]:
+    return {
+        "width_pt": width_pt,
+        "height_pt": height_pt,
+        "margin_left_pt": margin_left_pt,
+        "margin_right_pt": margin_right_pt,
+        "margin_top_pt": margin_top_pt,
+        "margin_bottom_pt": margin_bottom_pt,
+    }
+
+
+def _ensure_page_info(
+    pages: "OrderedDict[int, PageInfo]",
+    *,
+    page_number: int,
+    layout: dict[str, float | None],
+) -> None:
+    if page_number not in pages:
+        pages[page_number] = PageInfo(page_number=page_number, **layout)
+
+
+def _assign_page_number_to_table(table: TableIR, page_number: int | None) -> None:
+    table.page_number = page_number
+    for cell in table.cells:
+        for paragraph in cell.paragraphs:
+            _assign_page_number_to_paragraph(paragraph, page_number)
+
+
+def _assign_page_number_to_paragraph(paragraph: ParagraphIR, page_number: int | None) -> None:
+    paragraph.page_number = page_number
+    for node in paragraph.content:
+        if isinstance(node, ImageIR):
+            node.page_number = page_number
+        elif isinstance(node, TableIR):
+            _assign_page_number_to_table(node, page_number)
 
 
 def _image_dimensions_from_bytes(data: bytes) -> tuple[int | None, int | None]:
@@ -131,6 +177,88 @@ def _resolve_doc_metadata(
     if resolved_doc_id is None and source_path is not None:
         resolved_doc_id = Path(source_path).stem
     return resolved_doc_id, resolved_source_path, metadata or {}
+
+
+def _docx_section_layouts(doc) -> list[dict[str, float | None]]:
+    return [
+        _page_layout(
+            width_pt=_emu_to_pt(int(section.page_width)) if section.page_width is not None else None,
+            height_pt=_emu_to_pt(int(section.page_height)) if section.page_height is not None else None,
+            margin_left_pt=_emu_to_pt(int(section.left_margin)) if section.left_margin is not None else None,
+            margin_right_pt=_emu_to_pt(int(section.right_margin)) if section.right_margin is not None else None,
+            margin_top_pt=_emu_to_pt(int(section.top_margin)) if section.top_margin is not None else None,
+            margin_bottom_pt=_emu_to_pt(int(section.bottom_margin)) if section.bottom_margin is not None else None,
+        )
+        for section in doc.sections
+    ] or [_page_layout(width_pt=None, height_pt=None)]
+
+
+def _docx_paragraph_has_page_break_before(paragraph) -> bool:
+    from docx.oxml.ns import qn
+
+    p_pr = paragraph._p.find(qn("w:pPr"))
+    if p_pr is None:
+        return False
+    page_break_before = p_pr.find(qn("w:pageBreakBefore"))
+    if page_break_before is None:
+        return False
+    value = page_break_before.get(qn("w:val"))
+    return value not in {"0", "false", "False"}
+
+
+def _docx_paragraph_page_break_count(paragraph) -> int:
+    count = 0
+    for element in paragraph._p.iter():
+        tag = getattr(element, "tag", None)
+        if not isinstance(tag, str):
+            continue
+        local_name = tag.rsplit("}", 1)[-1]
+        if local_name == "br" and element.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}type") == "page":
+            count += 1
+    return count
+
+
+def _docx_paragraph_section_break_type(paragraph) -> str | None:
+    from docx.oxml.ns import qn
+
+    p_pr = paragraph._p.find(qn("w:pPr"))
+    if p_pr is None:
+        return None
+    sect_pr = p_pr.find(qn("w:sectPr"))
+    if sect_pr is None:
+        return None
+    type_el = sect_pr.find(qn("w:type"))
+    return type_el.get(qn("w:val")) if type_el is not None else "nextPage"
+
+
+def _hwpx_section_page_layout(section_root: ET.Element) -> dict[str, float | None]:
+    sec_pr = section_root.find(f".//{_HP}secPr")
+    if sec_pr is None:
+        return _page_layout(width_pt=None, height_pt=None)
+
+    page_pr = sec_pr.find(f"{_HP}pagePr")
+    if page_pr is None:
+        return _page_layout(width_pt=None, height_pt=None)
+
+    margin = page_pr.find(f"{_HP}margin")
+    return _page_layout(
+        width_pt=_hwpunit_to_pt(page_pr.get("width")),
+        height_pt=_hwpunit_to_pt(page_pr.get("height")),
+        margin_left_pt=_hwpunit_to_pt(margin.get("left")) if margin is not None else None,
+        margin_right_pt=_hwpunit_to_pt(margin.get("right")) if margin is not None else None,
+        margin_top_pt=_hwpunit_to_pt(margin.get("top")) if margin is not None else None,
+        margin_bottom_pt=_hwpunit_to_pt(margin.get("bottom")) if margin is not None else None,
+    )
+
+
+def _hwpx_paragraph_has_page_break_before(paragraph_el: ET.Element) -> bool:
+    value = paragraph_el.get("pageBreak")
+    return value not in {None, "", "0", "false", "False"}
+
+
+def _hwpx_paragraph_vertpos(paragraph_el: ET.Element) -> int | None:
+    line_seg = paragraph_el.find(f"{_HP}linesegarray/{_HP}lineseg")
+    return _safe_int(line_seg.get("vertpos")) if line_seg is not None else None
 
 
 def _parse_docx_run_images(
@@ -361,6 +489,11 @@ def _build_docx_doc_ir(
     paragraphs: list[ParagraphIR] = []
     assets: dict[str, ImageAsset] = {}
     asset_lookup: dict[tuple[str, str], str] = {}
+    pages: "OrderedDict[int, PageInfo]" = OrderedDict()
+    section_layouts = _docx_section_layouts(doc)
+    current_section_index = 0
+    current_page_number = 1
+    has_seen_content = False
 
     p_idx = 0
     table_counter = 0
@@ -373,8 +506,16 @@ def _build_docx_doc_ir(
         Table=Table,
     ):
         if isinstance(block, Paragraph):
+            if has_seen_content and _docx_paragraph_has_page_break_before(block):
+                current_page_number += 1
+
             p_idx += 1
             paragraph_id = f"s1.p{p_idx}"
+            _ensure_page_info(
+                pages,
+                page_number=current_page_number,
+                layout=section_layouts[min(current_section_index, len(section_layouts) - 1)],
+            )
             runs, images, content = _parse_docx_paragraph_content(
                 block,
                 paragraph_id,
@@ -384,11 +525,22 @@ def _build_docx_doc_ir(
             )
             paragraph_ir = ParagraphIR(
                 unit_id=paragraph_id,
+                page_number=current_page_number,
                 content=content,
             )
+            _assign_page_number_to_paragraph(paragraph_ir, current_page_number)
             paragraph_ir.recompute_text()
             if paragraph_ir.content or paragraph_ir.text or not skip_empty:
                 paragraphs.append(paragraph_ir)
+
+            has_seen_content = True
+            current_page_number += _docx_paragraph_page_break_count(block)
+            section_break_type = _docx_paragraph_section_break_type(block)
+            if section_break_type is not None:
+                if current_section_index < len(section_layouts) - 1:
+                    current_section_index += 1
+                if section_break_type != "continuous":
+                    current_page_number += 1
             continue
 
         if not include_tables or not isinstance(block, Table):
@@ -397,6 +549,11 @@ def _build_docx_doc_ir(
         table_counter += 1
         p_idx += 1
         paragraph_id = f"s1.p{p_idx}"
+        _ensure_page_info(
+            pages,
+            page_number=current_page_number,
+            layout=section_layouts[min(current_section_index, len(section_layouts) - 1)],
+        )
         table_ir = _parse_docx_table(
             block,
             f"{paragraph_id}.r1.tbl{table_counter}",
@@ -411,10 +568,13 @@ def _build_docx_doc_ir(
         )
         paragraph_ir = ParagraphIR(
             unit_id=paragraph_id,
+            page_number=current_page_number,
             content=[table_ir],
         )
+        _assign_page_number_to_paragraph(paragraph_ir, current_page_number)
         paragraph_ir.recompute_text()
         paragraphs.append(paragraph_ir)
+        has_seen_content = True
 
     resolved_doc_id, resolved_source_path, resolved_metadata = _resolve_doc_metadata(
         source_path=source_path,
@@ -429,6 +589,7 @@ def _build_docx_doc_ir(
         source_doc_type="docx",
         metadata=resolved_metadata,
         assets=assets,
+        pages=list(pages.values()),
         paragraphs=paragraphs,
         **doc_kwargs,
     )
@@ -678,12 +839,33 @@ def _build_hwpx_doc_ir(
     assets: dict[str, ImageAsset] = {}
     asset_lookup: dict[tuple[str, str], str] = {}
     paragraphs: list[ParagraphIR] = []
+    pages: "OrderedDict[int, PageInfo]" = OrderedDict()
+    page_offset = 0
 
     with zipfile.ZipFile(BytesIO(hwpx_bytes)) as archive:
         binary_name_map = _hwpx_binary_name_map(archive)
 
         for s_idx, section_root in enumerate(section_roots, start=1):
+            section_layout = _hwpx_section_page_layout(section_root)
+            section_page_number = 1
+            last_vertpos: int | None = None
+            saw_paragraph = False
+
             for p_idx, paragraph_el in enumerate(section_root.findall(f"{_HP}p"), start=1):
+                if saw_paragraph and _hwpx_paragraph_has_page_break_before(paragraph_el):
+                    section_page_number += 1
+                    last_vertpos = None
+
+                vertpos = _hwpx_paragraph_vertpos(paragraph_el)
+                if saw_paragraph and last_vertpos is not None and vertpos is not None and vertpos < last_vertpos:
+                    section_page_number += 1
+
+                absolute_page_number = page_offset + section_page_number
+                _ensure_page_info(
+                    pages,
+                    page_number=absolute_page_number,
+                    layout=section_layout,
+                )
                 paragraph_id = f"s{s_idx}.p{p_idx}"
                 runs, images, tables, content = _parse_hwpx_paragraph_content(
                     paragraph_el,
@@ -699,11 +881,19 @@ def _build_hwpx_doc_ir(
 
                 paragraph_ir = ParagraphIR(
                     unit_id=paragraph_id,
+                    page_number=absolute_page_number,
                     content=content,
                 )
+                _assign_page_number_to_paragraph(paragraph_ir, absolute_page_number)
                 paragraph_ir.recompute_text()
                 if paragraph_ir.content or paragraph_ir.text or not skip_empty:
                     paragraphs.append(paragraph_ir)
+
+                if vertpos is not None:
+                    last_vertpos = vertpos
+                saw_paragraph = True
+
+            page_offset += section_page_number
 
     resolved_doc_id, resolved_source_path, resolved_metadata = _resolve_doc_metadata(
         source_path=source_path,
@@ -718,6 +908,7 @@ def _build_hwpx_doc_ir(
         source_doc_type="hwpx",
         metadata=resolved_metadata,
         assets=assets,
+        pages=list(pages.values()),
         paragraphs=paragraphs,
         **doc_kwargs,
     )
