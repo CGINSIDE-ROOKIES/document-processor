@@ -28,6 +28,7 @@ class HtmlExporterTests(unittest.TestCase):
                             unit_id="s1.p1.r1",
                             text="Hello  world",
                             run_style=RunStyleInfo(
+                                font_family="Noto Serif KR",
                                 bold=True,
                                 italic=True,
                                 underline=True,
@@ -45,6 +46,7 @@ class HtmlExporterTests(unittest.TestCase):
         self.assertIn("<title>Preview</title>", html)
         self.assertIn("text-align:center", html)
         self.assertIn("text-indent:12.0pt", html)
+        self.assertIn("font-family:Noto Serif KR", html)
         self.assertIn("font-size:11.0pt", html)
         self.assertIn("color:#112233", html)
         self.assertIn("<b>Hello", html)

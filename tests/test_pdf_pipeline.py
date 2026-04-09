@@ -39,6 +39,10 @@ class PdfPipelineTests(unittest.TestCase):
         raw_document = {
             "file name": "sample.pdf",
             "number of pages": 2,
+            "author": "Hancom",
+            "title": "Sample PDF",
+            "creation date": "2026-04-09T09:00:00Z",
+            "modification date": "2026-04-09T10:00:00Z",
             "pages": [
                 {"page number": 1, "width pt": 612, "height pt": 792},
                 {"page number": 2, "width pt": 612, "height pt": 792},
@@ -51,8 +55,29 @@ class PdfPipelineTests(unittest.TestCase):
                     "id": 101,
                     "bounding box": [10, 20, 30, 40],
                     "heading level": 2,
+                    "font": "Noto Serif KR",
                     "text color": "#112233",
                     "font size": 11,
+                },
+                {
+                    "type": "formula",
+                    "content": "\\frac{a}{b}",
+                    "page number": 1,
+                    "id": 111,
+                },
+                {
+                    "type": "list",
+                    "numbering style": "ordered",
+                    "previous list id": 10,
+                    "next list id": 12,
+                    "list items": [
+                        {
+                            "type": "list item",
+                            "content": "First item",
+                            "page number": 1,
+                            "id": 112,
+                        }
+                    ],
                 },
                 {
                     "type": "table",
@@ -95,19 +120,32 @@ class PdfPipelineTests(unittest.TestCase):
         doc = build_doc_ir_from_odl_result(raw_document, source_path="sample.pdf")
 
         self.assertEqual(doc.source_doc_type, "pdf")
+        self.assertEqual(doc.meta.file_name, "sample.pdf")
+        self.assertEqual(doc.meta.number_of_pages, 2)
+        self.assertEqual(doc.meta.author, "Hancom")
+        self.assertEqual(doc.meta.title, "Sample PDF")
+        self.assertEqual(doc.meta.creation_date, "2026-04-09T09:00:00Z")
+        self.assertEqual(doc.meta.modification_date, "2026-04-09T10:00:00Z")
         self.assertEqual([page.page_number for page in doc.pages], [1, 2])
         self.assertEqual(doc.paragraphs[0].text, "Hello PDF")
         self.assertEqual(doc.paragraphs[0].meta.source_id, 101)
         self.assertEqual(doc.paragraphs[0].meta.heading_level, 2)
         self.assertEqual(doc.paragraphs[0].meta.bounding_box.left_pt, 10.0)
         self.assertEqual(doc.paragraphs[0].runs[0].meta.source_id, 101)
-        self.assertEqual(doc.paragraphs[1].tables[0].cells[0].text, "A1")
-        self.assertEqual(doc.paragraphs[1].tables[0].meta.previous_table_id, 201)
-        self.assertTrue(doc.paragraphs[1].tables[0].table_style.preview_grid)
-        self.assertEqual(doc.paragraphs[1].tables[0].cells[0].meta.source_id, 303)
-        self.assertIn("odl-img-p3", doc.assets)
-        self.assertEqual(doc.paragraphs[2].images[0].image_id, "odl-img-p3")
-        self.assertEqual(doc.assets["odl-img-p3"].meta.source_type, "image")
+        self.assertEqual(doc.paragraphs[0].runs[0].run_style.font_family, "Noto Serif KR")
+        self.assertEqual(doc.paragraphs[1].text, "\\frac{a}{b}")
+        self.assertEqual(doc.paragraphs[1].meta.source_type, "formula")
+        self.assertEqual(doc.paragraphs[2].text, "First item")
+        self.assertEqual(doc.paragraphs[2].meta.list_numbering_style, "ordered")
+        self.assertEqual(doc.paragraphs[2].meta.previous_list_id, 10)
+        self.assertEqual(doc.paragraphs[2].meta.next_list_id, 12)
+        self.assertEqual(doc.paragraphs[3].tables[0].cells[0].text, "A1")
+        self.assertEqual(doc.paragraphs[3].tables[0].meta.previous_table_id, 201)
+        self.assertTrue(doc.paragraphs[3].tables[0].table_style.preview_grid)
+        self.assertEqual(doc.paragraphs[3].tables[0].cells[0].meta.source_id, 303)
+        self.assertIn("odl-img-p5", doc.assets)
+        self.assertEqual(doc.paragraphs[4].images[0].image_id, "odl-img-p5")
+        self.assertEqual(doc.assets["odl-img-p5"].meta.source_type, "image")
 
     def test_parse_pdf_to_doc_ir_uses_probe_for_page_sizes_and_filters_scan_pages(self) -> None:
         profile = PdfProfile(
@@ -183,6 +221,8 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertEqual([page.page_number for page in doc.pages], [1, 2, 3])
         self.assertEqual([paragraph.page_number for paragraph in doc.paragraphs], [2, 3])
         self.assertEqual(doc.meta.parser, "odl-local")
+        self.assertEqual(doc.meta.file_name, "sample.pdf")
+        self.assertEqual(doc.meta.number_of_pages, 3)
         self.assertEqual(doc.meta.structured_pages, [2, 3])
         self.assertEqual(doc.meta.scan_like_pages, [1])
 

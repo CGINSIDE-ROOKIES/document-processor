@@ -81,14 +81,14 @@ def parse_pdf_to_doc_ir(
             pdf_path=source_path,
             dpi=resolved_config.table_border_dpi,
         )
-    doc_ir.meta = PdfDocumentMeta(
-        structured_pages=structured_pages,
-        scan_like_pages=[
-            decision.page_number
-            for decision in page_decisions
-            if decision.page_class == PageClass.SCAN_LIKE
-        ],
-    )
+    document_meta = doc_ir.meta.model_copy(deep=True) if isinstance(doc_ir.meta, PdfDocumentMeta) else PdfDocumentMeta()
+    document_meta.structured_pages = structured_pages
+    document_meta.scan_like_pages = [
+        decision.page_number
+        for decision in page_decisions
+        if decision.page_class == PageClass.SCAN_LIKE
+    ]
+    doc_ir.meta = document_meta
     return doc_ir
 
 

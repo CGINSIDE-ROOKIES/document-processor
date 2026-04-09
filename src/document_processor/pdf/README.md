@@ -6,7 +6,7 @@
 
 - PDF 파싱은 별도 pipeline으로 분리
 - 렌더링은 별도 PDF renderer를 만들지 않고 shared `html_exporter.py` 사용
-- PDF 쪽은 shared renderer가 바로 쓸 수 있도록 `DocIR` 스타일 정보를 보강하는 역할에 집중
+- PDF 쪽은 shared renderer 앞단의 `render_prep` 계층에서 필요한 보강만 수행
 
 즉, 바깥에서는 `DocIR`를 공통 계약으로 유지하면서도, PDF만 `probe -> triage -> ODL -> DocIR`
 경로를 타도록 정리한 구조입니다.
@@ -22,8 +22,11 @@
 4. `odl/adapter.py`
    - ODL JSON을 `DocIR`로 변환
    - 렌더에 필요한 PDF style 정보도 함께 채움
+   - formula, font family, list metadata, 문서 메타데이터도 여기서 흡수
 5. `enhancement/enrichment.py`
    - 필요한 경우 페이지 raster를 다시 읽어 table border를 보강
+6. `render_prep.py`
+   - PDF 전용 보강을 shared renderer 밖에서 수행
 
 메인 진입점:
 
@@ -47,6 +50,7 @@ ODL native 산출물은 별도 경로로 노출합니다.
   - ODL JSON -> `DocIR`
 - `meta.py`
   - PDF provenance / 좌표 정보용 metadata 모델
+  - 문서 레벨 메타데이터(author/title/date 등) 정규화
 - `local_outputs.py`
   - native ODL `json` / `html` / `markdown` output handle
 - `enhancement/border_inference.py`
@@ -63,8 +67,20 @@ ODL native 산출물은 별도 경로로 노출합니다.
 대신:
 
 - `DocIR.to_html()`는 다른 포맷과 같은 shared `html_exporter.py`를 사용
-- PDF 쪽은 렌더 전에 부족한 style 정보를 보강
-- 즉 렌더러가 PDF metadata를 직접 해석하기보다, adapter/enrichment가 `style_types`를 채우는 쪽으로 정리됨
+- PDF 쪽은 `render_prep.py`에서 필요한 전처리만 먼저 수행
+- 즉 렌더러가 PDF metadata를 직접 해석하기보다, adapter/render_prep가 `style_types`를 채우는 쪽으로 정리됨
+
+현재 raw에서 바로 흡수하는 대표 정보는 다음과 같습니다.
+
+- `RunStyleInfo`
+  - `font_family`, `font_size`, `text_color`, `hidden`
+- `ParaStyleInfo`
+  - heading 기반 `render_tag`
+- `PdfNodeMeta`
+  - `bbox`, `page_number`, `source_id`, `linked_content_id`
+  - list `numbering style`, `previous/next list id`
+- `PdfDocumentMeta`
+  - `file_name`, `number_of_pages`, `author`, `title`, `creation_date`, `modification_date`
 
 이 방식으로 DOCX/HWP/HWPX 렌더 경로를 건드리지 않으면서 PDF만 별도 파싱할 수 있습니다.
 

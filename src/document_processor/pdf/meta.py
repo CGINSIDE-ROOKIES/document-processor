@@ -24,6 +24,9 @@ class PdfNodeMeta(BaseModel):
     source_type: str | None = None
     source_id: int | None = None
     source_level: str | None = None
+    list_numbering_style: str | None = None
+    previous_list_id: int | None = None
+    next_list_id: int | None = None
     page_number: int | None = None
     bounding_box: PdfBoundingBox | None = None
     heading_level: int | None = None
@@ -35,6 +38,12 @@ class PdfNodeMeta(BaseModel):
 
 class PdfDocumentMeta(BaseModel):
     parser: str = "odl-local"
+    file_name: str | None = None
+    number_of_pages: int | None = None
+    author: str | None = None
+    title: str | None = None
+    creation_date: str | None = None
+    modification_date: str | None = None
     structured_pages: list[int] = Field(default_factory=list)
     scan_like_pages: list[int] = Field(default_factory=list)
 
@@ -101,6 +110,11 @@ def build_pdf_node_meta(node: dict[str, Any]) -> PdfNodeMeta | None:
         source_type=node.get("type"),
         source_id=coerce_int(node.get("id")),
         source_level=node.get("level") if isinstance(node.get("level"), str) else None,
+        list_numbering_style=node.get("numbering style")
+        if isinstance(node.get("numbering style"), str)
+        else None,
+        previous_list_id=coerce_int(node.get("previous list id")),
+        next_list_id=coerce_int(node.get("next list id")),
         page_number=coerce_int(node.get("page number")),
         bounding_box=coerce_bbox(node.get("bounding box")),
         heading_level=coerce_int(node.get("heading level")),
@@ -110,6 +124,23 @@ def build_pdf_node_meta(node: dict[str, Any]) -> PdfNodeMeta | None:
         hidden_text=bool(node.get("hidden text", False)),
     )
     return meta if meta.model_dump(exclude_defaults=True, exclude_none=True) else None
+
+
+def build_pdf_document_meta(raw_document: dict[str, Any]) -> PdfDocumentMeta:
+    return PdfDocumentMeta(
+        file_name=raw_document.get("file name")
+        if isinstance(raw_document.get("file name"), str)
+        else None,
+        number_of_pages=coerce_int(raw_document.get("number of pages")),
+        author=raw_document.get("author") if isinstance(raw_document.get("author"), str) else None,
+        title=raw_document.get("title") if isinstance(raw_document.get("title"), str) else None,
+        creation_date=raw_document.get("creation date")
+        if isinstance(raw_document.get("creation date"), str)
+        else None,
+        modification_date=raw_document.get("modification date")
+        if isinstance(raw_document.get("modification date"), str)
+        else None,
+    )
 
 
 def normalize_align(value: Any) -> str | None:
@@ -212,7 +243,7 @@ def extract_text_from_odl_children(children: list[dict[str, Any]]) -> str:
 
 def extract_text_from_odl_node(node: dict[str, Any]) -> str:
     node_type = node.get("type")
-    if node_type in {"paragraph", "heading", "caption", "list item"}:
+    if node_type in {"paragraph", "heading", "caption", "list item", "formula"}:
         return node.get("content", "")
     if node_type == "table":
         rows: list[str] = []
@@ -238,6 +269,7 @@ __all__ = [
     "PdfBoundingBox",
     "PdfDocumentMeta",
     "PdfNodeMeta",
+    "build_pdf_document_meta",
     "build_pdf_node_meta",
     "coerce_float",
     "coerce_bbox",

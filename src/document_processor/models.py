@@ -303,8 +303,10 @@ class DocIR(BaseModel, Generic[T]):
 
     def to_html(self, *, title: str | None = None) -> str:
         """Render this document IR as styled HTML."""
+        from .render_prep import prepare_doc_ir_for_html
         from .html_exporter import render_html_document
 
+        prepare_doc_ir_for_html(self)
         return render_html_document(self, title=title)
 
 

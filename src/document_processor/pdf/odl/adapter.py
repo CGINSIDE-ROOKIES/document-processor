@@ -8,7 +8,9 @@ from typing import Any
 from ...models import DocIR, ImageAsset, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
 from ...style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
 from ..meta import (
+    PdfDocumentMeta,
     PdfNodeMeta,
+    build_pdf_document_meta,
     build_pdf_node_meta,
     coerce_float,
     coerce_int,
@@ -46,6 +48,7 @@ def _para_style_from_node(node: dict[str, Any]) -> ParaStyleInfo | None:
 
 def _run_style_from_node(node: dict[str, Any]) -> RunStyleInfo | None:
     style = RunStyleInfo(
+        font_family=node.get("font") if isinstance(node.get("font"), str) else None,
         bold=_coerce_bool(node_value(node, "bold")) or False,
         italic=_coerce_bool(node_value(node, "italic")) or False,
         underline=_coerce_bool(node_value(node, "underline")) or False,
@@ -106,16 +109,18 @@ def _paragraph_from_text_node(
     node: dict[str, Any],
     *,
     unit_id: str,
+    paragraph_meta: PdfNodeMeta | None = None,
 ) -> ParagraphIR | None:
     text = extract_text_from_odl_node(node).strip()
-    if not text and node.get("type") not in {"caption", "header", "footer"}:
+    if not text and node.get("type") not in {"caption", "header", "footer", "formula"}:
         return None
+    resolved_meta = paragraph_meta if paragraph_meta is not None else build_pdf_node_meta(node)
     content = [
         RunIR(
             unit_id=f"{unit_id}.r1",
             text=text,
             run_style=_run_style_from_node(node),
-            meta=build_pdf_node_meta(node),
+            meta=resolved_meta,
         )
     ] if text else []
     return ParagraphIR(
@@ -123,9 +128,33 @@ def _paragraph_from_text_node(
         text=text,
         page_number=_page_number_from_node(node),
         para_style=_para_style_from_node(node),
-        meta=build_pdf_node_meta(node),
+        meta=resolved_meta,
         content=content,
     )
+
+
+def _merge_pdf_node_meta(
+    base: PdfNodeMeta | None,
+    *,
+    list_numbering_style: str | None = None,
+    previous_list_id: int | None = None,
+    next_list_id: int | None = None,
+) -> PdfNodeMeta | None:
+    if (
+        base is None
+        and list_numbering_style is None
+        and previous_list_id is None
+        and next_list_id is None
+    ):
+        return None
+    resolved = base.model_copy(deep=True) if base is not None else PdfNodeMeta()
+    if list_numbering_style is not None:
+        resolved.list_numbering_style = list_numbering_style
+    if previous_list_id is not None:
+        resolved.previous_list_id = previous_list_id
+    if next_list_id is not None:
+        resolved.next_list_id = next_list_id
+    return resolved if resolved.model_dump(exclude_defaults=True, exclude_none=True) else None
 
 
 def _append_image_asset(
@@ -282,9 +311,21 @@ def _paragraphs_from_list_node(
     assets: dict[str, ImageAsset],
 ) -> list[ParagraphIR]:
     paragraphs: list[ParagraphIR] = []
+    list_numbering_style = node.get("numbering style") if isinstance(node.get("numbering style"), str) else None
+    previous_list_id = coerce_int(node.get("previous list id"))
+    next_list_id = coerce_int(node.get("next list id"))
     for index, item in enumerate(node.get("list items", []), start=1):
         unit_id = f"{unit_prefix}.li{index}"
-        paragraph = _paragraph_from_text_node(item, unit_id=unit_id)
+        paragraph = _paragraph_from_text_node(
+            item,
+            unit_id=unit_id,
+            paragraph_meta=_merge_pdf_node_meta(
+                build_pdf_node_meta(item),
+                list_numbering_style=list_numbering_style,
+                previous_list_id=previous_list_id,
+                next_list_id=next_list_id,
+            ),
+        )
         if paragraph is not None:
             paragraphs.append(paragraph)
         for child_index, child in enumerate(item.get("kids", []), start=1):
@@ -443,8 +484,10 @@ def build_doc_ir_from_odl_result(
     resolved_doc_id = doc_id or raw_document.get("file name")
     if resolved_doc_id and "." in resolved_doc_id:
         resolved_doc_id = Path(resolved_doc_id).stem
+    document_meta: PdfDocumentMeta = build_pdf_document_meta(raw_document)
     return resolved_doc_cls(
         doc_id=resolved_doc_id,
+        meta=document_meta if document_meta.model_dump(exclude_defaults=True, exclude_none=True) else None,
         source_path=resolved_source_path,
         source_doc_type="pdf",
         assets=assets,

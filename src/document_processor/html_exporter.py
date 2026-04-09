@@ -12,6 +12,8 @@ from .style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo
 
 def _run_css(style: RunStyleInfo) -> str:
     parts: list[str] = []
+    if style.font_family:
+        parts.append(f"font-family:{style.font_family}")
     if style.color:
         parts.append(f"color:{style.color}")
     if style.size_pt:
@@ -475,13 +477,6 @@ def _render_paged_body(doc_ir: DocIR) -> str:
 
 def render_html_document(doc_ir: DocIR, *, title: str | None = None) -> str:
     """Render a document IR tree as a complete HTML document."""
-    if (doc_ir.source_doc_type or "").lower() == "pdf":
-        from .pdf import enrich_pdf_table_borders
-
-        # Keep `DocIR.to_html()` aligned with the main branch shape while still
-        # letting PDF rendering opportunistically fill missing table borders.
-        enrich_pdf_table_borders(doc_ir)
-
     resolved_title = title or doc_ir.doc_id or "Document"
     body = (
         _render_paged_body(doc_ir)

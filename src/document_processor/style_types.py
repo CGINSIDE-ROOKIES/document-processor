@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 class RunStyleInfo(BaseModel):
     """Text-level formatting for a single run."""
 
+    font_family: str | None = None
     bold: bool = False
     italic: bool = False
     underline: bool = False

@@ -14,6 +14,7 @@ if str(SRC_ROOT) not in sys.path:
 from document_processor import DocIR, PageInfo, ParagraphIR, TableCellIR, TableIR
 from document_processor.pdf.enhancement import RenderedPdfPage, enrich_pdf_table_borders, infer_cell_borders_from_rendered_page
 from document_processor.pdf.meta import PdfBoundingBox, PdfNodeMeta
+from document_processor.pdf.render_prep import prepare_pdf_for_html
 from document_processor.style_types import TableStyleInfo
 
 
@@ -104,10 +105,18 @@ class PdfEnrichmentTests(unittest.TestCase):
         self.assertEqual(cell_style.border_left, "1px solid #000000")
         self.assertEqual(cell_style.border_right, "1px solid #000000")
 
-    def test_docir_to_html_enriches_pdf_tables_by_default(self) -> None:
+    def test_prepare_pdf_for_html_enriches_pdf_tables_by_default(self) -> None:
         doc = DocIR(source_doc_type="pdf", source_path="/tmp/example.pdf")
 
-        with patch("document_processor.pdf.enrich_pdf_table_borders") as enrich_pdf:
-            doc.to_html()
+        with patch("document_processor.pdf.render_prep.enrich_pdf_table_borders") as enrich_pdf:
+            prepare_pdf_for_html(doc)
 
         enrich_pdf.assert_called_once_with(doc)
+
+    def test_docir_to_html_routes_through_render_prep(self) -> None:
+        doc = DocIR(source_doc_type="pdf", source_path="/tmp/example.pdf")
+
+        with patch("document_processor.render_prep.prepare_doc_ir_for_html") as prepare_doc:
+            doc.to_html()
+
+        prepare_doc.assert_called_once_with(doc)
