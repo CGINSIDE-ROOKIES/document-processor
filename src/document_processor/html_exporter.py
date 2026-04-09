@@ -7,6 +7,7 @@ from html import escape
 import re
 
 from .models import DocIR, ImageIR, PageInfo, ParagraphContentNode, ParagraphIR, RunIR, TableCellIR, TableIR
+from .meta_render import MetaRenderInfo, resolve_meta_render_info
 from .style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo
 
 
@@ -56,7 +57,10 @@ def _escape_whitespace(html: str) -> str:
     return html
 
 
-def _wrap_run(run: RunIR) -> str:
+def _wrap_run(doc_ir: DocIR, run: RunIR) -> str:
+    render_info = _run_render_info(doc_ir, run)
+    if render_info.suppress:
+        return ""
     html = escape(run.text)
     if not html:
         return ""
@@ -77,12 +81,16 @@ def _render_image(doc_ir: DocIR, image: ImageIR) -> str:
     elif image.display_width_pt is None:
         style_parts.append("height:auto")
 
-    attrs = [
+    extra_attrs = [
         f'src="{escape(asset.as_data_url(), quote=True)}"',
         f'alt="{escape(image.alt_text or asset.filename or "")}"',
-        f'style="{";".join(style_parts)}"',
     ]
-    return f"<img {' '.join(attrs)} />"
+    attrs = _html_attrs(
+        render_info=_image_render_info(doc_ir, image),
+        style=";".join(style_parts),
+        extra_attrs=extra_attrs,
+    )
+    return f"<img {attrs} />"
 
 
 def _paragraph_css(
@@ -106,20 +114,73 @@ def _paragraph_css(
     return ";".join(parts)
 
 
+def _html_attrs(
+    *,
+    render_info: MetaRenderInfo | None = None,
+    style: str | None = None,
+    extra_attrs: list[str] | None = None,
+) -> str:
+    # Keep HTML assembly centralized so shared rendering stays format-agnostic.
+    # PDF-specific meaning is converted into `MetaRenderInfo` before it reaches here.
+    attrs: list[str] = []
+    if style:
+        attrs.append(f'style="{style}"')
+
+    if render_info is not None and render_info.classes:
+        attrs.append(f'class="{" ".join(render_info.classes)}"')
+
+    if extra_attrs:
+        attrs.extend(extra_attrs)
+
+    if render_info is not None:
+        attrs.extend(render_info.data_attrs)
+    return " ".join(attrs)
+
+
+def _run_render_info(doc_ir: DocIR, run: RunIR) -> MetaRenderInfo:
+    return resolve_meta_render_info(doc_ir, run)
+
+
+def _image_render_info(doc_ir: DocIR, image: ImageIR) -> MetaRenderInfo:
+    return resolve_meta_render_info(doc_ir, image)
+
+
+def _block_render_info(
+    doc_ir: DocIR,
+    node: object,
+    *,
+    default_tag: str | None = None,
+) -> MetaRenderInfo:
+    return resolve_meta_render_info(doc_ir, node, default_tag=default_tag)
+
+
 def _flush_paragraph(
     run_fragments: list[str],
     para_style: ParaStyleInfo | None,
     *,
+    paragraph_render_info: MetaRenderInfo | None = None,
     clamp_negative_first_line_indent: bool = False,
 ) -> str:
     content = "".join(run_fragments)
     if not content.strip():
         content = "&nbsp;"
-    return f'<p style="{_paragraph_css(para_style, clamp_negative_first_line_indent=clamp_negative_first_line_indent)}">{content}</p>'
+    resolved_render_info = paragraph_render_info or MetaRenderInfo(tag="p")
+    tag = resolved_render_info.tag or "p"
+    attrs = _html_attrs(
+        render_info=resolved_render_info,
+        style=_paragraph_css(
+            para_style,
+            clamp_negative_first_line_indent=clamp_negative_first_line_indent,
+        ),
+    )
+    return f"<{tag} {attrs}>{content}</{tag}>"
 
 
-def _cell_css(style: CellStyleInfo | None) -> str:
+def _cell_css(style: CellStyleInfo | None, *, render_table_grid: bool = False) -> str:
     parts: list[str] = []
+    # PDF tables often arrive with structure but incomplete border CSS. Fall back
+    # to a conservative grid only when the PDF pipeline explicitly asks for it.
+    fallback_border = "1px solid #4a4f57" if render_table_grid else "none"
     if style is not None:
         if style.background:
             parts.append(f"background-color:{style.background}")
@@ -131,10 +192,10 @@ def _cell_css(style: CellStyleInfo | None) -> str:
             parts.append(f"width:{style.width_pt:.1f}pt")
         if style.height_pt is not None:
             parts.append(f"height:{style.height_pt:.1f}pt")
-        parts.append(f"border-top:{style.border_top or 'none'}")
-        parts.append(f"border-bottom:{style.border_bottom or 'none'}")
-        parts.append(f"border-left:{style.border_left or 'none'}")
-        parts.append(f"border-right:{style.border_right or 'none'}")
+        parts.append(f"border-top:{style.border_top or fallback_border}")
+        parts.append(f"border-bottom:{style.border_bottom or fallback_border}")
+        parts.append(f"border-left:{style.border_left or fallback_border}")
+        parts.append(f"border-right:{style.border_right or fallback_border}")
         diagonal_background = _cell_diagonal_background(style)
         if diagonal_background:
             parts.append(f"background-image:url({diagonal_background})")
@@ -143,10 +204,10 @@ def _cell_css(style: CellStyleInfo | None) -> str:
     else:
         parts.extend(
             [
-                "border-top:none",
-                "border-bottom:none",
-                "border-left:none",
-                "border-right:none",
+                f"border-top:{fallback_border}",
+                f"border-bottom:{fallback_border}",
+                f"border-left:{fallback_border}",
+                f"border-right:{fallback_border}",
             ]
         )
     parts.append("padding:4px 6px")
@@ -252,6 +313,7 @@ def _render_paragraph_like(
     content: list[ParagraphContentNode],
     para_style: ParaStyleInfo | None,
     *,
+    paragraph_render_info: MetaRenderInfo | None = None,
     clamp_negative_first_line_indent: bool = False,
 ) -> str:
     parts: list[str] = []
@@ -259,7 +321,7 @@ def _render_paragraph_like(
 
     for node in content:
         if isinstance(node, RunIR):
-            inline_fragments.append(_wrap_run(node))
+            inline_fragments.append(_wrap_run(doc_ir, node))
             continue
         if isinstance(node, ImageIR):
             image_html = _render_image(doc_ir, node)
@@ -272,6 +334,7 @@ def _render_paragraph_like(
                     _flush_paragraph(
                         inline_fragments,
                         para_style,
+                        paragraph_render_info=paragraph_render_info,
                         clamp_negative_first_line_indent=clamp_negative_first_line_indent,
                     )
                 )
@@ -283,6 +346,7 @@ def _render_paragraph_like(
             _flush_paragraph(
                 inline_fragments,
                 para_style,
+                paragraph_render_info=paragraph_render_info,
                 clamp_negative_first_line_indent=clamp_negative_first_line_indent,
             )
         )
@@ -291,6 +355,7 @@ def _render_paragraph_like(
             _flush_paragraph(
                 [],
                 para_style,
+                paragraph_render_info=paragraph_render_info,
                 clamp_negative_first_line_indent=clamp_negative_first_line_indent,
             )
         )
@@ -303,36 +368,59 @@ def _render_cell_paragraph(doc_ir: DocIR, paragraph: ParagraphIR) -> str:
         doc_ir,
         paragraph.content,
         paragraph.para_style,
+        paragraph_render_info=_block_render_info(doc_ir, paragraph, default_tag="p"),
         clamp_negative_first_line_indent=True,
     )
 
 
-def _render_cell(doc_ir: DocIR, cell: TableCellIR) -> str:
-    attrs = [f'style="{_cell_css(cell.cell_style)}"']
-    if cell.cell_style is not None:
-        if cell.cell_style.colspan > 1:
-            attrs.append(f'colspan="{cell.cell_style.colspan}"')
-        if cell.cell_style.rowspan > 1:
-            attrs.append(f'rowspan="{cell.cell_style.rowspan}"')
+def _cell_span_attrs(cell: TableCellIR) -> list[str]:
+    if cell.cell_style is None:
+        return []
+
+    attrs: list[str] = []
+    if cell.cell_style.colspan > 1:
+        attrs.append(f'colspan="{cell.cell_style.colspan}"')
+    if cell.cell_style.rowspan > 1:
+        attrs.append(f'rowspan="{cell.cell_style.rowspan}"')
+    return attrs
+
+
+def _render_cell(doc_ir: DocIR, cell: TableCellIR, *, render_table_grid: bool = False) -> str:
+    cell_render_info = _block_render_info(doc_ir, cell)
+    cell_attrs = _html_attrs(
+        render_info=cell_render_info,
+        style=_cell_css(cell.cell_style, render_table_grid=render_table_grid),
+        extra_attrs=_cell_span_attrs(cell),
+    )
 
     if cell.paragraphs:
         content = "".join(_render_cell_paragraph(doc_ir, paragraph) for paragraph in cell.paragraphs)
     else:
         content = "&nbsp;"
 
-    return f"<td {' '.join(attrs)}>{content}</td>"
+    return f"<td {cell_attrs}>{content}</td>"
 
 
 def _render_table(doc_ir: DocIR, table: TableIR, para_style: ParaStyleInfo | None = None) -> str:
+    table_render_info = _block_render_info(doc_ir, table)
+    render_table_grid = table_render_info.render_table_grid
+    # `render_table_grid` is a rendering hint, not a layout model change: explicit
+    # cell borders still win, and the shared table renderer stays in one place.
+    table_style = _table_css(table, para_style)
+    table_attrs = _html_attrs(
+        render_info=table_render_info,
+        style=table_style,
+    )
+
     if not table.cells:
-        return f'<table style="{_table_css(table, para_style)}"></table>'
+        return f"<table {table_attrs}></table>"
 
     covered: set[tuple[int, int]] = set()
     cells_by_pos = {(cell.row_index, cell.col_index): cell for cell in table.cells}
     max_row = max(cell.row_index for cell in table.cells)
     max_col = max(cell.col_index for cell in table.cells)
 
-    lines = [f'<table style="{_table_css(table, para_style)}">']
+    lines = [f"<table {table_attrs}>"]
     for row in range(1, max_row + 1):
         lines.append("  <tr>")
         for col in range(1, max_col + 1):
@@ -341,7 +429,7 @@ def _render_table(doc_ir: DocIR, table: TableIR, para_style: ParaStyleInfo | Non
 
             cell = cells_by_pos.get((row, col))
             if cell is None:
-                lines.append('    <td style="padding:4px 6px;border:none">&nbsp;</td>')
+                lines.append(f'    <td style="{_cell_css(None, render_table_grid=render_table_grid)}">&nbsp;</td>')
                 continue
 
             if cell.cell_style is not None:
@@ -357,14 +445,19 @@ def _render_table(doc_ir: DocIR, table: TableIR, para_style: ParaStyleInfo | Non
                         continue
                     covered.add((covered_row, covered_col))
 
-            lines.append(f"    {_render_cell(doc_ir, cell)}")
+            lines.append(f"    {_render_cell(doc_ir, cell, render_table_grid=render_table_grid)}")
         lines.append("  </tr>")
     lines.append("</table>")
     return "\n".join(lines)
 
 
 def _render_paragraph(doc_ir: DocIR, paragraph: ParagraphIR) -> str:
-    return _render_paragraph_like(doc_ir, paragraph.content, paragraph.para_style)
+    return _render_paragraph_like(
+        doc_ir,
+        paragraph.content,
+        paragraph.para_style,
+        paragraph_render_info=_block_render_info(doc_ir, paragraph, default_tag="p"),
+    )
 
 
 def _page_style(page: PageInfo) -> str:

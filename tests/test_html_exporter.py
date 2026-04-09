@@ -11,6 +11,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from document_processor import DocIR
 from document_processor.models import ImageAsset, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
+from document_processor.pdf.meta import PdfBoundingBox, PdfNodeMeta
 from document_processor.style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
 
 
@@ -188,6 +189,86 @@ class HtmlExporterTests(unittest.TestCase):
         self.assertIn("<table", html)
         self.assertIn("margin-left:0", html)
         self.assertIn("margin-right:auto", html)
+
+    def test_export_html_renders_pdf_table_grid_when_meta_requests_preview_grid(self) -> None:
+        doc = DocIR(
+            source_doc_type="pdf",
+            paragraphs=[
+                ParagraphIR(
+                    unit_id="s1.p1",
+                    content=[
+                        TableIR(
+                            unit_id="s1.p1.r1.tbl1",
+                            meta=PdfNodeMeta(source_type="table", render_table_grid=True),
+                            cells=[
+                                TableCellIR(
+                                    unit_id="s1.p1.r1.tbl1.tr1.tc1",
+                                    row_index=1,
+                                    col_index=1,
+                                    paragraphs=[
+                                        ParagraphIR(
+                                            unit_id="s1.p1.r1.tbl1.tr1.tc1.p1",
+                                            content=[RunIR(unit_id="x", text="A1")],
+                                        )
+                                    ],
+                                ),
+                                TableCellIR(
+                                    unit_id="s1.p1.r1.tbl1.tr1.tc2",
+                                    row_index=1,
+                                    col_index=2,
+                                    paragraphs=[
+                                        ParagraphIR(
+                                            unit_id="s1.p1.r1.tbl1.tr1.tc2.p1",
+                                            content=[RunIR(unit_id="y", text="B1")],
+                                        )
+                                    ],
+                                ),
+                            ],
+                        )
+                    ],
+                )
+            ],
+        )
+
+        html = doc.to_html()
+
+        self.assertIn('class="semantic-table render-table-grid"', html)
+        self.assertIn("border-top:1px solid #4a4f57", html)
+        self.assertIn("border-right:1px solid #4a4f57", html)
+        self.assertIn("A1", html)
+        self.assertIn("B1", html)
+
+    def test_export_html_renders_pdf_semantic_heading_and_data_attrs(self) -> None:
+        doc = DocIR(
+            source_doc_type="pdf",
+            paragraphs=[
+                ParagraphIR(
+                    unit_id="s1.p1",
+                    meta=PdfNodeMeta(
+                        source_type="heading",
+                        heading_level=2,
+                        source_id=11,
+                        page_number=1,
+                        bounding_box=PdfBoundingBox(
+                            left_pt=10.0,
+                            bottom_pt=20.0,
+                            right_pt=30.0,
+                            top_pt=40.0,
+                        ),
+                    ),
+                    content=[RunIR(unit_id="x", text="Heading")],
+                )
+            ],
+        )
+
+        html = doc.to_html()
+
+        self.assertIn("<h2", html)
+        self.assertIn('class="semantic-heading"', html)
+        self.assertIn('data-source-id="11"', html)
+        self.assertIn('data-page-number="1"', html)
+        self.assertIn('data-bbox="10.0,20.0,30.0,40.0"', html)
+        self.assertIn("Heading</h2>", html)
 
     def test_export_html_uses_image_display_size(self) -> None:
         doc = DocIR(
