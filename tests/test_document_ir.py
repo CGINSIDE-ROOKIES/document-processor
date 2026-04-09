@@ -156,6 +156,31 @@ class DocumentIRTests(unittest.TestCase):
         self.assertEqual(from_bytes.paragraphs[0].text, "Hello HWPX")
         self.assertEqual(from_file_object.paragraphs[0].text, "Hello HWPX")
 
+    def test_export_hwpx_structured_mapping_accepts_hwpx_document(self) -> None:
+        from document_processor.hwpx import HwpxDocument
+
+        hwpx_bytes_io = BytesIO()
+        with zipfile.ZipFile(hwpx_bytes_io, "w") as zf:
+            zf.writestr(
+                "Contents/header.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core" />
+""",
+            )
+            zf.writestr(
+                "Contents/section0.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p><hp:run><hp:t>Hello from doc object</hp:t></hp:run></hp:p>
+</hs:sec>
+""",
+            )
+
+        with HwpxDocument.open(hwpx_bytes_io.getvalue()) as doc:
+            mapping = export_hwpx_structured_mapping(doc)
+
+        self.assertEqual(mapping, {"s1.p1.r1": "Hello from doc object"})
+
     def test_from_file_hwpx_reads_mixed_content_inside_hp_t(self) -> None:
         hwpx_bytes_io = BytesIO()
         with zipfile.ZipFile(hwpx_bytes_io, "w") as zf:

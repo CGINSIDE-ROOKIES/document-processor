@@ -49,7 +49,6 @@ dependencies = [
     { name = "jpype1" },
     { name = "pydantic" },
     { name = "python-docx" },
-    { name = "python-hwpx" },
 ]
 
 [package.optional-dependencies]
@@ -68,7 +67,6 @@ requires-dist = [
     { name = "jpype1", specifier = ">=1.6.0" },
     { name = "pydantic", specifier = ">=2.12.0" },
     { name = "python-docx", specifier = ">=1.2.0" },
-    { name = "python-hwpx" },
 ]
 provides-extras = ["viz"]
 
@@ -294,18 +292,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/a9/f7/eddfe33871520adab45aaa1a71f0402a2252050c14c7e3009446c8f4701c/python_docx-1.2.0.tar.gz", hash = "sha256:7bc9d7b7d8a69c9c02ca09216118c86552704edc23bac179283f2e38f86220ce", size = 5723256, upload-time = "2025-06-16T20:46:27.921Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d0/00/1e03a4989fa5795da308cd774f05b704ace555a70f9bf9d3be057b680bcf/python_docx-1.2.0-py3-none-any.whl", hash = "sha256:3fd478f3250fbbbfd3b94fe1e985955737c145627498896a8a6bf81f4baf66c7", size = 252987, upload-time = "2025-06-16T20:46:22.506Z" },
-]
-
-[[package]]
-name = "python-hwpx"
-version = "2.9.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "lxml" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/04/c6/b6efe49d425092ff28d6d4e428fb5c985421b0f8db1d860d44162e98d93c/python_hwpx-2.9.0.tar.gz", hash = "sha256:a79b350ee62fd3395619972d8401c530430b81ab4686074c680d4479ec2e7326", size = 144328, upload-time = "2026-04-02T03:34:12.178Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/a9/76/95c060741da71a81dfb0c10acd1619dee06a517b4db32753f1396d380ea1/python_hwpx-2.9.0-py3-none-any.whl", hash = "sha256:1616243f544c198fa34639000c429aa6ce9f3bebbcc213b7fc30a12fc14be039", size = 116823, upload-time = "2026-04-02T03:34:10.983Z" },
 ]
 
 [[package]]

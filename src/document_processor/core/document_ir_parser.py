@@ -20,7 +20,7 @@ from .hwpx_structured_exporter import _HP, _logical_table_cells, _paragraph_text
 
 if TYPE_CHECKING:
     from docx.document import Document as DocxDocument
-    from hwpx import HwpxDocument
+    from ..hwpx import HwpxDocument
 
 
 DocType = Literal["hwp", "hwpx", "docx"]
