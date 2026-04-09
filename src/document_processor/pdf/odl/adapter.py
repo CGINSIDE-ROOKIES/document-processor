@@ -22,6 +22,11 @@ from ..meta import (
 
 
 def _para_style_from_node(node: dict[str, Any]) -> ParaStyleInfo | None:
+    render_tag: str | None = None
+    if node.get("type") == "heading":
+        level = coerce_int(node.get("heading level"))
+        render_tag = f"h{level}" if level is not None and 1 <= level <= 6 else "h2"
+
     style = ParaStyleInfo(
         align=normalize_align(
             node_value(node, "align", "alignment", "text align", "horizontal align")
@@ -34,6 +39,7 @@ def _para_style_from_node(node: dict[str, Any]) -> ParaStyleInfo | None:
         hanging_indent_pt=coerce_float(
             node_value(node, "hanging indent pt", "hanging indent")
         ),
+        render_tag=render_tag,
     )
     return style if style.model_dump(exclude_defaults=True, exclude_none=True) else None
 
@@ -49,6 +55,7 @@ def _run_style_from_node(node: dict[str, Any]) -> RunStyleInfo | None:
         size_pt=coerce_float(node.get("font size")),
         color=sanitize_css_color(node.get("text color")),
         highlight=sanitize_css_color(node_value(node, "highlight color", "background color")),
+        hidden=bool(node.get("hidden text", False)),
     )
     return style if style.model_dump(exclude_defaults=True, exclude_none=True) else None
 
@@ -74,6 +81,7 @@ def _table_style_from_node(node: dict[str, Any]) -> TableStyleInfo | None:
         col_count=coerce_int(node.get("number of columns")) or 0,
         width_pt=width_pt,
         height_pt=height_pt,
+        preview_grid=True,
     )
     return style if style.model_dump(exclude_defaults=True, exclude_none=True) else None
 
@@ -170,7 +178,6 @@ def _image_paragraph(
                 title=node_value(node, "title", "name"),
                 display_width_pt=display_width_pt,
                 display_height_pt=display_height_pt,
-                meta=build_pdf_node_meta(node),
             )
         ],
     )
@@ -236,10 +243,6 @@ def _table_node_to_ir(
     table_meta = build_pdf_node_meta(node)
     if table_meta is None:
         table_meta = PdfNodeMeta(source_type="table")
-    # ODL JSON usually carries table structure but not full cell-border CSS. Mark
-    # PDF tables up front so the shared HTML renderer can add a conservative grid
-    # fallback when explicit or inferred borders are still missing.
-    table_meta.render_table_grid = True
 
     table = TableIR(
         unit_id=unit_id,

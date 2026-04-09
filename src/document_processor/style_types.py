@@ -17,6 +17,7 @@ class RunStyleInfo(BaseModel):
     color: str | None = None
     highlight: str | None = None
     size_pt: float | None = None
+    hidden: bool = False
 
 
 class ParaStyleInfo(BaseModel):
@@ -27,6 +28,7 @@ class ParaStyleInfo(BaseModel):
     right_indent_pt: float | None = None
     first_line_indent_pt: float | None = None
     hanging_indent_pt: float | None = None
+    render_tag: str | None = None
 
 
 class CellStyleInfo(BaseModel):
@@ -54,6 +56,7 @@ class TableStyleInfo(BaseModel):
     col_count: int = 0
     width_pt: float | None = None
     height_pt: float | None = None
+    preview_grid: bool = False
 
 
 class StyleMap(BaseModel):

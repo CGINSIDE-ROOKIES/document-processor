@@ -1,107 +1,106 @@
-# PDF Module
+# PDF 모듈
 
-This package contains the PDF-only path added on top of the existing `document_processor`
-core parsers.
+이 디렉터리는 기존 `document_processor` 코어 파서 위에 추가된 PDF 전용 경로를 담고 있습니다.
 
-The important design choice is that PDF parsing is separate, but rendering is not:
+현재 설계의 중요한 기준은 다음과 같습니다.
 
-- `DocIR.from_file(..., doc_type="pdf")` uses the dedicated PDF pipeline in this directory
-- `DocIR.to_html()` still uses the shared `src/document_processor/html_exporter.py`
-- PDF-specific render behavior is limited to metadata interpretation and optional table-border
-  enrichment before the shared renderer runs
+- PDF 파싱은 별도 pipeline으로 분리
+- 렌더링은 별도 PDF renderer를 만들지 않고 shared `html_exporter.py` 사용
+- PDF 쪽은 shared renderer가 바로 쓸 수 있도록 `DocIR` 스타일 정보를 보강하는 역할에 집중
 
-## Current Flow
+즉, 바깥에서는 `DocIR`를 공통 계약으로 유지하면서도, PDF만 `probe -> triage -> ODL -> DocIR`
+경로를 타도록 정리한 구조입니다.
 
-1. `probe.py`
-   Cheap page profiling with `pypdfium2`
-2. `triage.py`
-   Classifies pages as `structured` or `scan_like`
+## 현재 흐름
+
+1. `parsing/probe.py`
+   - `pypdfium2`로 페이지를 가볍게 프로파일링
+2. `parsing/triage.py`
+   - 페이지를 `structured` / `scan_like`로 분류
 3. `odl/runner.py`
-   Runs the vendored OpenDataLoader CLI JAR
+   - vendored OpenDataLoader CLI JAR 실행
 4. `odl/adapter.py`
-   Converts ODL JSON into `DocIR`
+   - ODL JSON을 `DocIR`로 변환
+   - 렌더에 필요한 PDF style 정보도 함께 채움
 5. `enhancement/enrichment.py`
-   Optionally rasterizes PDF pages again to infer missing table borders
+   - 필요한 경우 페이지 raster를 다시 읽어 table border를 보강
 
-The main entrypoint is:
+메인 진입점:
 
 - `parse_pdf_to_doc_ir()` in [pipeline.py](./pipeline.py)
 
-Native ODL artifacts are exposed separately through:
+ODL native 산출물은 별도 경로로 노출합니다.
 
 - `export_pdf_local_outputs()` in [local_outputs.py](./local_outputs.py)
 
-## What Lives Here
+## 디렉터리 구성
 
 - `config.py`
-  PDF parse config, ODL config, and triage config
+  - PDF parse config, ODL config, triage config
 - `parsing/probe.py`
-  Lightweight PDF page profiling
+  - lightweight PDF page profiling
 - `parsing/triage.py`
-  Scan-like vs structured routing rules
+  - scan-like / structured 분기 규칙
 - `odl/runner.py`
-  Local Java CLI wrapper around the vendored ODL JAR
+  - vendored ODL JAR를 감싼 local CLI wrapper
 - `odl/adapter.py`
-  ODL JSON to `DocIR`
+  - ODL JSON -> `DocIR`
 - `meta.py`
-  PDF-specific metadata models and normalization helpers
+  - PDF provenance / 좌표 정보용 metadata 모델
 - `local_outputs.py`
-  Typed handles for native ODL `json` / `html` / `markdown` outputs
+  - native ODL `json` / `html` / `markdown` output handle
 - `enhancement/border_inference.py`
-  Grayscale raster sampling for cell-border inference
+  - grayscale raster 기반 cell border 추론
 - `enhancement/enrichment.py`
-  Applies inferred borders back onto `DocIR`
+  - 추론된 border를 `DocIR`에 다시 반영
 
-## Important Behaviors
+## 중요한 동작
 
-### Shared HTML renderer stays in charge
+### shared HTML renderer를 계속 사용합니다
 
-There is no separate PDF HTML exporter in the current design.
+현재 구조에는 별도 PDF HTML exporter가 없습니다.
 
-Instead:
+대신:
 
-- `meta_render.py` reads PDF metadata and produces node-local render hints
-- `html_exporter.py` remains the single HTML renderer for every format
-- `DocIR.to_html()` optionally enriches PDF table borders before handing off to the shared renderer
+- `DocIR.to_html()`는 다른 포맷과 같은 shared `html_exporter.py`를 사용
+- PDF 쪽은 렌더 전에 부족한 style 정보를 보강
+- 즉 렌더러가 PDF metadata를 직접 해석하기보다, adapter/enrichment가 `style_types`를 채우는 쪽으로 정리됨
 
-This keeps the PDF work isolated from DOCX/HWP/HWPX parsing while avoiding a second
-renderer codepath.
+이 방식으로 DOCX/HWP/HWPX 렌더 경로를 건드리지 않으면서 PDF만 별도 파싱할 수 있습니다.
 
-### Embedded images are preferred for the `DocIR` path
+### `DocIR` 경로에서는 embedded image를 기본으로 사용합니다
 
-`parse_pdf_to_doc_ir()` defaults ODL `image_output` to `embedded` when no explicit value is
-provided.
+`parse_pdf_to_doc_ir()`는 ODL `image_output`이 명시되지 않으면 기본적으로 `embedded`를 사용합니다.
 
-Reason:
+이유:
 
-- `DocIR` wants `ImageAsset` data available immediately
-- embedded `data:` URIs can be turned into `DocIR.assets` directly
-- native local output export remains the place where sidecar files are expected
+- `DocIR`는 `ImageAsset` 데이터를 바로 들고 있는 편이 자연스럽고
+- embedded `data:` URI는 `DocIR.assets`로 바로 변환 가능하며
+- sidecar 파일 기반 output은 `export_pdf_local_outputs()` 경로에서 다루는 편이 더 명확하기 때문입니다
 
-### Table borders are best-effort
+### table border는 best-effort 보강입니다
 
-ODL JSON usually gives table structure but not full border CSS.
+ODL JSON은 표 구조는 잘 주지만, 셀 border CSS는 충분히 주지 않는 경우가 많습니다.
 
-So the PDF path does two things:
+그래서 PDF 경로는 두 단계로 처리합니다.
 
-- marks table metadata with `render_table_grid=True`
-- optionally infers missing cell borders from rasterized page pixels
+- adapter 단계에서 `TableStyleInfo.preview_grid=True` 설정
+- enrichment 단계에서 raster 기반으로 비어 있는 `CellStyleInfo.border_*` 추론
 
-The enrichment step only fills edges that are still missing. It does not overwrite explicit
-styles already present on `CellStyleInfo`.
+중요한 점은, enrichment는 이미 채워진 border를 덮어쓰지 않고
+비어 있는 edge만 보강한다는 점입니다.
 
-## Touchpoints Outside This Directory
+## 이 디렉터리 밖과 연결되는 지점
 
 - `document_processor.models.DocIR.from_file(...)`
 - `document_processor.models.DocIR.to_html(...)`
-- `document_processor.meta_render`
 - `document_processor.html_exporter`
 - `document_processor.__init__`
 - `tests/test_pdf_pipeline.py`
 - `tests/test_pdf_enrichment.py`
 
-## Current Limits
+## 현재 한계
 
-- Probe currently runs serially to keep the page-classification path simple and deterministic
-- Table border inference is heuristic and focused on missing grid lines, not full visual fidelity
-- `DocIR` parsing and native ODL local outputs intentionally stay as separate codepaths
+- probe는 단순성과 안정성을 위해 현재 직렬 실행
+- table border inference는 missing grid line 보강 중심의 heuristic이며 full visual fidelity를 보장하지 않음
+- `DocIR` 경로와 native ODL local output 경로는 의도적으로 분리되어 있음

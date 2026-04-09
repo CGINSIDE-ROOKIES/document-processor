@@ -7,7 +7,6 @@ from html import escape
 import re
 
 from .models import DocIR, ImageIR, PageInfo, ParagraphContentNode, ParagraphIR, RunIR, TableCellIR, TableIR
-from .meta_render import MetaRenderInfo, resolve_meta_render_info
 from .style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo
 
 
@@ -58,8 +57,7 @@ def _escape_whitespace(html: str) -> str:
 
 
 def _wrap_run(doc_ir: DocIR, run: RunIR) -> str:
-    render_info = _run_render_info(doc_ir, run)
-    if render_info.suppress:
+    if run.run_style is not None and run.run_style.hidden:
         return ""
     html = escape(run.text)
     if not html:
@@ -85,11 +83,7 @@ def _render_image(doc_ir: DocIR, image: ImageIR) -> str:
         f'src="{escape(asset.as_data_url(), quote=True)}"',
         f'alt="{escape(image.alt_text or asset.filename or "")}"',
     ]
-    attrs = _html_attrs(
-        render_info=_image_render_info(doc_ir, image),
-        style=";".join(style_parts),
-        extra_attrs=extra_attrs,
-    )
+    attrs = _html_attrs(style=";".join(style_parts), extra_attrs=extra_attrs)
     return f"<img {attrs} />"
 
 
@@ -116,58 +110,29 @@ def _paragraph_css(
 
 def _html_attrs(
     *,
-    render_info: MetaRenderInfo | None = None,
     style: str | None = None,
     extra_attrs: list[str] | None = None,
 ) -> str:
-    # Keep HTML assembly centralized so shared rendering stays format-agnostic.
-    # PDF-specific meaning is converted into `MetaRenderInfo` before it reaches here.
     attrs: list[str] = []
     if style:
         attrs.append(f'style="{style}"')
 
-    if render_info is not None and render_info.classes:
-        attrs.append(f'class="{" ".join(render_info.classes)}"')
-
     if extra_attrs:
         attrs.extend(extra_attrs)
-
-    if render_info is not None:
-        attrs.extend(render_info.data_attrs)
     return " ".join(attrs)
-
-
-def _run_render_info(doc_ir: DocIR, run: RunIR) -> MetaRenderInfo:
-    return resolve_meta_render_info(doc_ir, run)
-
-
-def _image_render_info(doc_ir: DocIR, image: ImageIR) -> MetaRenderInfo:
-    return resolve_meta_render_info(doc_ir, image)
-
-
-def _block_render_info(
-    doc_ir: DocIR,
-    node: object,
-    *,
-    default_tag: str | None = None,
-) -> MetaRenderInfo:
-    return resolve_meta_render_info(doc_ir, node, default_tag=default_tag)
 
 
 def _flush_paragraph(
     run_fragments: list[str],
     para_style: ParaStyleInfo | None,
     *,
-    paragraph_render_info: MetaRenderInfo | None = None,
     clamp_negative_first_line_indent: bool = False,
 ) -> str:
     content = "".join(run_fragments)
     if not content.strip():
         content = "&nbsp;"
-    resolved_render_info = paragraph_render_info or MetaRenderInfo(tag="p")
-    tag = resolved_render_info.tag or "p"
+    tag = para_style.render_tag if para_style is not None and para_style.render_tag else "p"
     attrs = _html_attrs(
-        render_info=resolved_render_info,
         style=_paragraph_css(
             para_style,
             clamp_negative_first_line_indent=clamp_negative_first_line_indent,
@@ -313,7 +278,6 @@ def _render_paragraph_like(
     content: list[ParagraphContentNode],
     para_style: ParaStyleInfo | None,
     *,
-    paragraph_render_info: MetaRenderInfo | None = None,
     clamp_negative_first_line_indent: bool = False,
 ) -> str:
     parts: list[str] = []
@@ -334,7 +298,6 @@ def _render_paragraph_like(
                     _flush_paragraph(
                         inline_fragments,
                         para_style,
-                        paragraph_render_info=paragraph_render_info,
                         clamp_negative_first_line_indent=clamp_negative_first_line_indent,
                     )
                 )
@@ -346,7 +309,6 @@ def _render_paragraph_like(
             _flush_paragraph(
                 inline_fragments,
                 para_style,
-                paragraph_render_info=paragraph_render_info,
                 clamp_negative_first_line_indent=clamp_negative_first_line_indent,
             )
         )
@@ -355,7 +317,6 @@ def _render_paragraph_like(
             _flush_paragraph(
                 [],
                 para_style,
-                paragraph_render_info=paragraph_render_info,
                 clamp_negative_first_line_indent=clamp_negative_first_line_indent,
             )
         )
@@ -368,7 +329,6 @@ def _render_cell_paragraph(doc_ir: DocIR, paragraph: ParagraphIR) -> str:
         doc_ir,
         paragraph.content,
         paragraph.para_style,
-        paragraph_render_info=_block_render_info(doc_ir, paragraph, default_tag="p"),
         clamp_negative_first_line_indent=True,
     )
 
@@ -386,9 +346,7 @@ def _cell_span_attrs(cell: TableCellIR) -> list[str]:
 
 
 def _render_cell(doc_ir: DocIR, cell: TableCellIR, *, render_table_grid: bool = False) -> str:
-    cell_render_info = _block_render_info(doc_ir, cell)
     cell_attrs = _html_attrs(
-        render_info=cell_render_info,
         style=_cell_css(cell.cell_style, render_table_grid=render_table_grid),
         extra_attrs=_cell_span_attrs(cell),
     )
@@ -402,13 +360,11 @@ def _render_cell(doc_ir: DocIR, cell: TableCellIR, *, render_table_grid: bool = 
 
 
 def _render_table(doc_ir: DocIR, table: TableIR, para_style: ParaStyleInfo | None = None) -> str:
-    table_render_info = _block_render_info(doc_ir, table)
-    render_table_grid = table_render_info.render_table_grid
+    render_table_grid = bool(table.table_style and table.table_style.preview_grid)
     # `render_table_grid` is a rendering hint, not a layout model change: explicit
     # cell borders still win, and the shared table renderer stays in one place.
     table_style = _table_css(table, para_style)
     table_attrs = _html_attrs(
-        render_info=table_render_info,
         style=table_style,
     )
 
@@ -456,7 +412,6 @@ def _render_paragraph(doc_ir: DocIR, paragraph: ParagraphIR) -> str:
         doc_ir,
         paragraph.content,
         paragraph.para_style,
-        paragraph_render_info=_block_render_info(doc_ir, paragraph, default_tag="p"),
     )
 
 
@@ -520,6 +475,13 @@ def _render_paged_body(doc_ir: DocIR) -> str:
 
 def render_html_document(doc_ir: DocIR, *, title: str | None = None) -> str:
     """Render a document IR tree as a complete HTML document."""
+    if (doc_ir.source_doc_type or "").lower() == "pdf":
+        from .pdf import enrich_pdf_table_borders
+
+        # Keep `DocIR.to_html()` aligned with the main branch shape while still
+        # letting PDF rendering opportunistically fill missing table borders.
+        enrich_pdf_table_borders(doc_ir)
+
     resolved_title = title or doc_ir.doc_id or "Document"
     body = (
         _render_paged_body(doc_ir)

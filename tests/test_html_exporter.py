@@ -190,7 +190,7 @@ class HtmlExporterTests(unittest.TestCase):
         self.assertIn("margin-left:0", html)
         self.assertIn("margin-right:auto", html)
 
-    def test_export_html_renders_pdf_table_grid_when_meta_requests_preview_grid(self) -> None:
+    def test_export_html_renders_pdf_table_grid_when_table_style_requests_preview_grid(self) -> None:
         doc = DocIR(
             source_doc_type="pdf",
             paragraphs=[
@@ -199,7 +199,8 @@ class HtmlExporterTests(unittest.TestCase):
                     content=[
                         TableIR(
                             unit_id="s1.p1.r1.tbl1",
-                            meta=PdfNodeMeta(source_type="table", render_table_grid=True),
+                            meta=PdfNodeMeta(source_type="table"),
+                            table_style=TableStyleInfo(preview_grid=True),
                             cells=[
                                 TableCellIR(
                                     unit_id="s1.p1.r1.tbl1.tr1.tc1",
@@ -232,18 +233,18 @@ class HtmlExporterTests(unittest.TestCase):
 
         html = doc.to_html()
 
-        self.assertIn('class="semantic-table render-table-grid"', html)
         self.assertIn("border-top:1px solid #4a4f57", html)
         self.assertIn("border-right:1px solid #4a4f57", html)
         self.assertIn("A1", html)
         self.assertIn("B1", html)
 
-    def test_export_html_renders_pdf_semantic_heading_and_data_attrs(self) -> None:
+    def test_export_html_renders_pdf_heading_tag_from_paragraph_style(self) -> None:
         doc = DocIR(
             source_doc_type="pdf",
             paragraphs=[
                 ParagraphIR(
                     unit_id="s1.p1",
+                    para_style=ParaStyleInfo(render_tag="h2"),
                     meta=PdfNodeMeta(
                         source_type="heading",
                         heading_level=2,
@@ -264,10 +265,6 @@ class HtmlExporterTests(unittest.TestCase):
         html = doc.to_html()
 
         self.assertIn("<h2", html)
-        self.assertIn('class="semantic-heading"', html)
-        self.assertIn('data-source-id="11"', html)
-        self.assertIn('data-page-number="1"', html)
-        self.assertIn('data-bbox="10.0,20.0,30.0,40.0"', html)
         self.assertIn("Heading</h2>", html)
 
     def test_export_html_uses_image_display_size(self) -> None:

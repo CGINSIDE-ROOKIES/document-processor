@@ -103,11 +103,10 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertEqual(doc.paragraphs[0].runs[0].meta.source_id, 101)
         self.assertEqual(doc.paragraphs[1].tables[0].cells[0].text, "A1")
         self.assertEqual(doc.paragraphs[1].tables[0].meta.previous_table_id, 201)
-        self.assertTrue(doc.paragraphs[1].tables[0].meta.render_table_grid)
+        self.assertTrue(doc.paragraphs[1].tables[0].table_style.preview_grid)
         self.assertEqual(doc.paragraphs[1].tables[0].cells[0].meta.source_id, 303)
         self.assertIn("odl-img-p3", doc.assets)
         self.assertEqual(doc.paragraphs[2].images[0].image_id, "odl-img-p3")
-        self.assertEqual(doc.paragraphs[2].images[0].meta.source_type, "image")
         self.assertEqual(doc.assets["odl-img-p3"].meta.source_type, "image")
 
     def test_parse_pdf_to_doc_ir_uses_probe_for_page_sizes_and_filters_scan_pages(self) -> None:

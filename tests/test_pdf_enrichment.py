@@ -14,6 +14,7 @@ if str(SRC_ROOT) not in sys.path:
 from document_processor import DocIR, PageInfo, ParagraphIR, TableCellIR, TableIR
 from document_processor.pdf.enhancement import RenderedPdfPage, enrich_pdf_table_borders, infer_cell_borders_from_rendered_page
 from document_processor.pdf.meta import PdfBoundingBox, PdfNodeMeta
+from document_processor.style_types import TableStyleInfo
 
 
 def _make_test_page(*, width: int = 40, height: int = 40) -> RenderedPdfPage:
@@ -65,7 +66,8 @@ class PdfEnrichmentTests(unittest.TestCase):
                         content=[
                             TableIR(
                                 unit_id="p1.tbl1",
-                                meta=PdfNodeMeta(source_type="table", page_number=1, render_table_grid=True),
+                                meta=PdfNodeMeta(source_type="table", page_number=1),
+                                table_style=TableStyleInfo(preview_grid=True),
                                 cells=[
                                     TableCellIR(
                                         unit_id="p1.tbl1.tr1.tc1",
@@ -102,26 +104,10 @@ class PdfEnrichmentTests(unittest.TestCase):
         self.assertEqual(cell_style.border_left, "1px solid #000000")
         self.assertEqual(cell_style.border_right, "1px solid #000000")
 
-    def test_docir_to_html_can_request_pdf_table_enrichment(self) -> None:
-        doc = DocIR(source_doc_type="pdf", source_path="/tmp/example.pdf")
-
-        with patch("document_processor.pdf.enrich_pdf_table_borders") as enrich_pdf:
-            doc.to_html(enrich_pdf_tables=True, table_border_dpi=180)
-
-        enrich_pdf.assert_called_once_with(doc, dpi=180)
-
     def test_docir_to_html_enriches_pdf_tables_by_default(self) -> None:
         doc = DocIR(source_doc_type="pdf", source_path="/tmp/example.pdf")
 
         with patch("document_processor.pdf.enrich_pdf_table_borders") as enrich_pdf:
             doc.to_html()
 
-        enrich_pdf.assert_called_once_with(doc, dpi=144)
-
-    def test_docir_to_html_can_disable_pdf_table_enrichment(self) -> None:
-        doc = DocIR(source_doc_type="pdf", source_path="/tmp/example.pdf")
-
-        with patch("document_processor.pdf.enrich_pdf_table_borders") as enrich_pdf:
-            doc.to_html(enrich_pdf_tables=False)
-
-        enrich_pdf.assert_not_called()
+        enrich_pdf.assert_called_once_with(doc)

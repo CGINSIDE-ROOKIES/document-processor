@@ -30,7 +30,6 @@ class PdfNodeMeta(BaseModel):
     linked_content_id: int | None = None
     previous_table_id: int | None = None
     next_table_id: int | None = None
-    render_table_grid: bool = False
     hidden_text: bool = False
 
 

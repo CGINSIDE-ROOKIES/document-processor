@@ -102,7 +102,10 @@ PDF still renders through the shared HTML exporter. The PDF path only adds:
 
 - a dedicated parse pipeline (`probe -> triage -> ODL -> DocIR`)
 - PDF metadata on IR nodes
-- optional table-border enrichment before `DocIR.to_html()`
+- style enrichment before shared HTML rendering
+
+In practice, `DocIR.to_html()` keeps using the same shared renderer as the other
+formats, and the PDF path only backfills missing table borders before rendering.
 
 `export_pdf_local_outputs()` writes ODL local artifacts to disk and returns typed
 paths for `json`, `html`, and one markdown variant.
