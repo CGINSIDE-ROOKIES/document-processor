@@ -109,6 +109,36 @@ class StyleExtractorTests(unittest.TestCase):
         self.assertEqual(rstyle.color, "#112233")
         self.assertAlmostEqual(rstyle.size_pt or 0.0, 12.0, places=3)
 
+    def test_extract_hwpx_styles_from_hwpx_document(self) -> None:
+        from document_processor.hwpx import HwpxDocument
+
+        header_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core">
+  <hh:paraProperties itemCnt="1">
+    <hh:paraPr id="1">
+      <hh:align horizontal="RIGHT" />
+    </hh:paraPr>
+  </hh:paraProperties>
+</hh:head>
+"""
+        section_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p paraPrIDRef="1">
+    <hp:run><hp:t>Hello</hp:t></hp:run>
+  </hp:p>
+</hs:sec>
+"""
+
+        hwpx_bytes_io = BytesIO()
+        with zipfile.ZipFile(hwpx_bytes_io, "w") as zf:
+            zf.writestr("Contents/header.xml", header_xml)
+            zf.writestr("Contents/section0.xml", section_xml)
+
+        with HwpxDocument.open(hwpx_bytes_io.getvalue()) as doc:
+            style_map = extract_styles_hwpx(doc)
+
+        self.assertEqual(style_map.paragraphs["s1.p1"].align, "right")
+
     def test_extract_hwpx_strikeout_ignores_3d_default_shape(self) -> None:
         header_xml = """<?xml version="1.0" encoding="UTF-8"?>
 <hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core">

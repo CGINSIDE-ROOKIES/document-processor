@@ -10,7 +10,7 @@ from xml.etree import ElementTree as ET
 import zipfile
 
 if TYPE_CHECKING:
-    from hwpx import HwpxDocument
+    from ..hwpx import HwpxDocument
 
 _HP_NS = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 _HP = f"{{{_HP_NS}}}"
@@ -177,7 +177,7 @@ def export_hwpx_structured_mapping(
     skip_empty: bool = False,
 ) -> dict[str, str]:
     """Export HWPX text fragments keyed by structural unit IDs."""
-    from hwpx import HwpxDocument
+    from ..hwpx import HwpxDocument
 
     if isinstance(source, HwpxDocument):
         return _export_from_section_roots(

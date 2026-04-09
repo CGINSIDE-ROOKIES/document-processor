@@ -12,6 +12,7 @@ files = [doc_dir / file for file in listdir(doc_dir)]
 
 
 for file_ in files:
+    print(f"processing {file_}...", end="")
     doc = DocIR.from_file(file_)
 
     # == Add metadata == #
@@ -21,7 +22,11 @@ for file_ in files:
         b: str = "test"
 
     metainfo = MyMetaData(a=1)
-    doc.paragraphs[0].runs[0].meta = metainfo
+    
+    # ex: add metadata to all runs
+    for para in doc.paragraphs:
+        for run in para.iter_all_runs():
+            run.meta = metainfo
 
     # ================== #
 
@@ -33,4 +38,4 @@ for file_ in files:
         json.dump(doc.model_dump(mode="json"), json_f, indent=4, ensure_ascii=False)
         html_f.write(doc.to_html())
 
-    print(f"completed: {file_}")
+    print("completed.")

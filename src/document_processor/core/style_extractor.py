@@ -15,7 +15,7 @@ from .hwp_converter import convert_hwp_to_hwpx_bytes
 
 if TYPE_CHECKING:
     from docx.document import Document as DocxDocument
-    from hwpx import HwpxDocument
+    from ..hwpx import HwpxDocument
 
 
 DocType = Literal["auto", "hwp", "hwpx", "docx", "pdf"]
@@ -503,6 +503,8 @@ def _extract_styles_hwpx_from_roots(
 
 def extract_styles_hwpx(source: "HwpxDocument | str | Path | bytes") -> StyleMap:
     """Extract style map from HWPX source."""
+    from ..hwpx import HwpxDocument
+
     if isinstance(source, bytes):
         return _extract_styles_hwpx_from_roots(
             _section_roots_from_bytes(source),
@@ -512,12 +514,7 @@ def extract_styles_hwpx(source: "HwpxDocument | str | Path | bytes") -> StyleMap
     if isinstance(source, (str, Path)):
         return extract_styles_hwpx(Path(source).read_bytes())
 
-    try:
-        from hwpx import HwpxDocument
-    except ImportError:
-        HwpxDocument = None
-
-    if HwpxDocument is not None and isinstance(source, HwpxDocument):
+    if isinstance(source, HwpxDocument):
         section_roots = [section.element for section in source.sections]
         header_root = source.headers[0].element if source.headers else None
         return _extract_styles_hwpx_from_roots(section_roots, header_root=header_root)
