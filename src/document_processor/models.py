@@ -79,6 +79,7 @@ class ImageIR(BaseModel, Generic[T]):
     """Image placement node inside paragraph-like content."""
 
     model_config = {"validate_assignment": True}
+    meta: T | None = None
 
     unit_id: str
     image_id: str
@@ -215,7 +216,17 @@ class DocIR(BaseModel, Generic[T]):
 
         resolved_doc_type = infer_doc_type(source, doc_type)  # type: ignore[arg-type]
         if resolved_doc_type == "pdf":
-            raise NotImplementedError("PDF parsing is not implemented yet.")
+            from .pdf import parse_pdf_to_doc_ir
+
+            # PDF uses a dedicated pipeline so probe/ODL routing stays isolated from
+            # the DOCX/HWP(HWPX) parsers below.
+            with TemporarySourcePath(source, suffix=".pdf") as source_path:
+                return parse_pdf_to_doc_ir(
+                    source_path,
+                    doc_id=doc_id,
+                    doc_cls=cls,
+                    **doc_kwargs,
+                )
 
         source_name = get_source_name(source)
         resolved_source_path = source_name
@@ -291,8 +302,25 @@ class DocIR(BaseModel, Generic[T]):
             **doc_kwargs,
         )
 
-    def to_html(self, *, title: str | None = None) -> str:
+    def to_html(
+        self,
+        *,
+        title: str | None = None,
+        enrich_pdf_tables: bool | None = None,
+        table_border_dpi: int = 144,
+    ) -> str:
         """Render this document IR as styled HTML."""
+        should_enrich_pdf_tables = enrich_pdf_tables
+        if should_enrich_pdf_tables is None:
+            # Keep the shared HTML renderer as the single rendering path. PDF only
+            # gets an opt-out enrichment step that fills missing table borders first.
+            should_enrich_pdf_tables = (self.source_doc_type or "").lower() == "pdf"
+
+        if should_enrich_pdf_tables and (self.source_doc_type or "").lower() == "pdf":
+            from .pdf import enrich_pdf_table_borders
+
+            enrich_pdf_table_borders(self, dpi=table_border_dpi)
+
         from .html_exporter import render_html_document
 
         return render_html_document(self, title=title)

@@ -19,6 +19,15 @@ dependencies = [
 viz = [
     "erdantic>=1.0.0",
 ]
+# Keep the PDF extra small: Java/ODL stays vendored, and `pypdfium2` covers
+# probe plus optional table-border enrichment.
+pdf-local = [
+    "pypdfium2>=5.6.0,<6.0.0",
+]
+# Preserve the shorter `pdf` extra as an alias for local-mode PDF support.
+pdf = [
+    "pypdfium2>=5.6.0,<6.0.0",
+]
 
 [project.scripts]
 document-processor-diagram = "document_processor.diagram:main"
@@ -30,3 +39,8 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/document_processor"]
+artifacts = [
+    "src/document_processor/core/vendor/**/*.jar",
+    # PDF local mode depends on the vendored ODL CLI JAR at runtime.
+    "src/document_processor/pdf/odl/vendor/**/*.jar",
+]
