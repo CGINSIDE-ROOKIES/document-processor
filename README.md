@@ -8,19 +8,12 @@ from document_processor import DocIR
 doc = DocIR.from_file("/path/to/file.docx")
 ```
 
-PDF is available as an optional local-mode extra:
-
-```bash
-pip install "document-processor[pdf-local]"
-```
-
 The package focuses on:
 
 - document parsing
 - style extraction
 - structural IR creation
 - embedded image extraction for `docx` and `hwpx`
-
 
 for specific uses, you can add metadata for processing (eg. feeding LLMs, RAG, analysis and such)
 
@@ -75,41 +68,6 @@ from document_processor import DocIR
 doc = DocIR.from_file("/path/to/file.docx")
 html = doc.to_html(title="Preview")
 ```
-
-
-## PDF Local Outputs
-
-For PDF, keep `DocIR` as the main contract and expose native OpenDataLoader outputs
-side-by-side when needed.
-
-```python
-from document_processor import DocIR, export_pdf_local_outputs
-
-doc = DocIR.from_file("/path/to/file.pdf", doc_type="pdf")
-html = doc.to_html(title="DocIR Preview")
-
-outputs = export_pdf_local_outputs(
-    "/path/to/file.pdf",
-    output_dir="./out/pdf-native",
-)
-
-raw_json = outputs.read_json()
-native_html = outputs.read_text("html")
-native_markdown = outputs.read_text("markdown")
-```
-
-PDF still renders through the shared HTML exporter. The PDF path only adds:
-
-- a dedicated parse pipeline (`probe -> triage -> ODL -> DocIR`)
-- PDF metadata on IR nodes
-- a PDF-only render-prep step before shared HTML rendering
-
-In practice, `DocIR.to_html()` keeps using the same shared renderer as the other
-formats. PDF-specific work is kept in a prep layer that currently backfills
-missing table borders before rendering.
-
-`export_pdf_local_outputs()` writes ODL local artifacts to disk and returns typed
-paths for `json`, `html`, and one markdown variant.
 
 
 ## Visualizing the Models

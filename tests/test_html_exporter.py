@@ -53,6 +53,20 @@ class HtmlExporterTests(unittest.TestCase):
         self.assertIn("<i><b>", html)
         self.assertIn("&nbsp;&nbsp;", html)
 
+    def test_export_html_renders_newlines_inside_runs_as_line_breaks(self) -> None:
+        doc = DocIR(
+            paragraphs=[
+                ParagraphIR(
+                    unit_id="s1.p1",
+                    content=[RunIR(unit_id="s1.p1.r1", text="Alpha\nBeta")],
+                )
+            ],
+        )
+
+        html = doc.to_html()
+
+        self.assertIn("Alpha<br>Beta", html)
+
     def test_export_html_renders_tables_and_cell_styles(self) -> None:
         doc = DocIR(
             paragraphs=[
@@ -201,7 +215,7 @@ class HtmlExporterTests(unittest.TestCase):
                     content=[
                         TableIR(
                             unit_id="s1.p1.r1.tbl1",
-                            meta=PdfNodeMeta(source_type="table"),
+                            meta=PdfNodeMeta(),
                             table_style=TableStyleInfo(preview_grid=True),
                             cells=[
                                 TableCellIR(
@@ -248,9 +262,6 @@ class HtmlExporterTests(unittest.TestCase):
                     unit_id="s1.p1",
                     para_style=ParaStyleInfo(render_tag="h2"),
                     meta=PdfNodeMeta(
-                        source_type="heading",
-                        heading_level=2,
-                        source_id=11,
                         page_number=1,
                         bounding_box=PdfBoundingBox(
                             left_pt=10.0,

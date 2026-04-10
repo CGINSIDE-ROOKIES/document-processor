@@ -303,6 +303,13 @@ class DocIR(BaseModel, Generic[T]):
 
     def to_html(self, *, title: str | None = None) -> str:
         """Render this document IR as styled HTML."""
+        if (self.source_doc_type or "").lower() == "pdf" and self.source_path:
+            from .pdf.pipeline import _build_pdf_preview_context_for_path
+            from .pdf.preview import render_pdf_preview_html
+
+            preview_context = _build_pdf_preview_context_for_path(self.source_path)
+            return render_pdf_preview_html(self, preview_context=preview_context, title=title)
+
         from .render_prep import prepare_doc_ir_for_html
         from .html_exporter import render_html_document
 

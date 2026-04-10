@@ -1,282 +1,698 @@
-# ODL Line Art Exposure Experiment Plan
+# ODL Table Grid And Background Preservation Plan
 
-## Goal
+## Objective
 
-Expose `LineArtChunk` data from `opendataloader-pdf` JSON output, inspect whether the emitted geometry is useful for downstream table-border recovery, and only then decide whether to build and adopt a custom JAR in `document-processor`.
+The original phase-1 goal was to expose `LineArtChunk` and decide whether raw line geometry was good enough for downstream border recovery.
 
-## Current Facts
+That phase is complete.
 
-- `LineArtChunk` is currently filtered out in multiple serializers before JSON is written.
-- `LineChunk` has a serializer, but `LineArtChunk` does not.
-- Because of that, downstream code cannot evaluate whether raw line geometry is good enough for border-style or border-presence recovery.
-- The right first step is not “ship a new JAR”, but “instrument JSON output and inspect the signal quality”.
+The revised goal is narrower and more useful:
 
-## Decision Criteria
+1. preserve table grid topology well enough to populate downstream `TableIR` and `CellStyleInfo` reliably
+2. preserve cell background color when the PDF uses filled rectangles or filled paths for table shading
 
-I will judge the experiment successful only if most of the following hold across the 4 target PDFs:
+This plan is now about reaching those two outcomes.
 
-1. Table-adjacent line art is emitted consistently enough to recover border presence for a large share of table cells.
-2. The amount of obvious noise is manageable.
-   Noise examples:
-   - underline strokes
-   - decorative separators
-   - header/footer lines
-   - layout guides unrelated to tables
-3. Table-cell-level association looks feasible from emitted geometry.
-   Feasible means cell bbox and line-art bbox overlap patterns are stable enough that downstream heuristics do not become brittle.
-4. The emitted schema is understandable and does not destabilize existing consumers.
-5. The JSON volume increase is acceptable for debugging and later optional production use.
+## Scope
 
-## Non-Goals For Phase 1
+### In Scope
 
-- Perfect dotted/double-line fidelity
-- Production-grade border classification
-- Immediate `document-processor` integration
-- Schema finalization for public release
+- table row/column/span fidelity
+- cell-level border-presence fidelity
+- cell background color preservation for flat fills
+- debug JSON needed to evaluate both
+- upstream patch planning across:
+  - `opendataloader-pdf`
+  - veraPDF dependency code paths
 
-Phase 1 is strictly about exposure and evaluation.
+### Out Of Scope For This Phase
 
-## Dataset
+- dotted vs solid vs double-line fidelity
+- exact stroke-style reproduction
+- arbitrary vector artwork styling
+- gradients, patterns, transparency-heavy fills
+- production `document-processor` integration before the upstream signal is validated
 
-Requested dataset path:
+## What Phase 1 Proved
 
-- `/Users/yoonseo/Downloads/dataset-2/`
+### Completed Work
 
-Expected contents:
+- branch: `feat/TableStyle`
+- `LineArtChunk` exposure was added to `opendataloader-pdf`
+- modified CLI JAR was built and run against the 4-PDF dataset
+- results were written to:
+  - `/Users/yoonseo/Developer/External/document-processor/docs/opendataloader-pdf-line-art-experiment-results.md`
 
-- 4 PDF files
+### Dataset
 
-Current blocker:
+- `/Users/yoonseo/Developer/External/RAGBuilder-test/dataset-2`
 
-- The sandbox cannot read `Downloads/dataset-2`; access currently fails with `Operation not permitted`.
-- Until that path is accessible, exact file enumeration and actual sample runs against those 4 PDFs are blocked.
+Files:
 
-## Proposed Output Shape
+1. `창업기업.pdf`
+2. `모두의_챌린지_AX_-_LLM_분야_참여기업_모집공고.pdf`
+3. `지구과학Ⅰ_문제.pdf`
+4. `2026년_전통시장_육성사업(백년시장)_모집공고.pdf`
 
-For phase 1, do **not** mix line art into existing `kids`.
+### Key Findings
 
-Instead emit dedicated arrays so current downstream parsing remains stable.
+- `LineArtChunk` wrappers are now emitted in JSON.
+- `line chunks` were empty in all 4 PDFs.
+- therefore, the current exposed line-art path is not enough for stroke-style fidelity
+- but some cell-level bbox hints are still useful as weak border-presence hints
 
-Recommended JSON additions:
+### Dependency Trace Findings
+
+Observed runtime dependency versions in the shaded CLI JAR:
+
+- `wcag-validation`: `1.31.36`
+- `wcag-algorithms`: `1.31.16`
+
+The most important technical finding is:
+
+- the serializer is not the main reason `line chunks` are empty
+- the real bottleneck is upstream parsing in `org.verapdf.gf.model.factory.chunks.ChunkParser`
+
+What happens:
+
+- `GraphicsState` tracks `fillColor` and `fillColorSpace`
+- `ChunkParser.processS()` and `ChunkParser.processB()` can preserve line segments more directly
+- `ChunkParser.processf()` often reduces filled geometry to bbox-only artifacts through `processBoundingBox(...)`
+- therefore many visually meaningful table fills and filled border-like rectangles never survive as segment geometry
+
+This changes the strategy:
+
+- grid fidelity should not depend primarily on raw `LineArtChunk`
+- background color preservation cannot be solved only in JSON serializers
+
+## Revised Technical Thesis
+
+### Thesis A: Table Grid Should Use `TableBorder*` As Primary Truth
+
+For table structure, the strongest signal is already inside the recognized border-table model:
+
+- `TableBorder`
+- `TableBorderRow`
+- `TableBorderCell`
+- `TableBordersCollection`
+- `TableBorderProcessor`
+- `TableStructureNormalizer`
+
+This path already knows about:
+
+- rows
+- columns
+- spans
+- normalized table structure
+- assignment of content into cells
+
+So the right direction for “기가막힌 격자” is:
+
+- use `TableBorder*` as the primary topology source
+- use raw line art only as a weak supporting hint
+
+### Thesis B: Background Color Requires Fill-Aware Visual Objects
+
+For color preservation, table structure is not enough.
+
+We need the fill information that currently exists in `GraphicsState` to survive into emitted visual objects.
+
+That means:
+
+- `ChunkParser.processf()`
+- `GraphicsState.fillColor`
+- `GraphicsState.fillColorSpace`
+- filled rectangle/path serialization
+
+must all be part of the solution.
+
+### Thesis C: Background Filtering Currently Conflicts With Color Preservation
+
+`ContentFilterProcessor.processBackgrounds(...)` removes large `LineArtChunk` backgrounds.
+
+That may be correct for page-level decoration removal, but it is also a direct risk for:
+
+- table-wide shaded header rows
+- cell fills
+- large merged-cell backgrounds
+
+So background filtering itself must become table-aware before color preservation can work reliably.
+
+## Success Criteria
+
+The project is successful only if both of the following become true on the 4-PDF dataset.
+
+### A. Grid Success
+
+- most visible tables have correct row and column counts
+- merged cells and spans are preserved well enough for downstream `TableIR`
+- cell bbox coverage is stable enough to assign content and later background style
+- the emitted JSON remains understandable and debug-friendly
+
+### B. Background Success
+
+- obvious header-row or cell shading is emitted as structured data
+- background color is recoverable for flat filled cells with low false positives
+- page-level backgrounds and decorative fills do not dominate cell assignments
+
+## Planned Output Shape
+
+Do not overload existing semantic `kids` arrays with visual-debug objects.
+
+Keep debug structures separate.
+
+The concrete JSON contract for downstream `CellStyleInfo` / `TableStyleInfo`
+mapping now lives in:
+
+- `/Users/yoonseo/Developer/External/document-processor/docs/opendataloader-pdf-table-style-schema.md`
+
+That schema document is the source of truth for:
+
+- which keys should be emitted flat for easy `document-processor` mapping
+- which keys are debug-only
+- which fields are feasible in `opendataloader-pdf` alone
+- which fields require a veraPDF-side patch
+
+### Proposed Table JSON Additions
+
+At the table level:
+
+```json
+{
+  "type": "table",
+  "bounding box": [ ... ],
+  "number of rows": 5,
+  "number of columns": 4,
+  "rows": [ ... ],
+  "grid source": "table-border",
+  "grid normalized": true
+}
+```
+
+At the cell level:
 
 ```json
 {
   "type": "table cell",
   "bounding box": [ ... ],
+  "row number": 1,
+  "column number": 1,
+  "row span": 1,
+  "column span": 1,
   "kids": [ ... ],
-  "line arts": [
+  "line arts": [ ... ],
+  "fills": [
     {
-      "type": "line art",
+      "type": "fill region",
       "bounding box": [ ... ],
-      "line chunks": [
-        {
-          "type": "line",
-          "bounding box": [ ... ]
-        }
-      ]
+      "fill color": [0.9, 0.9, 0.9],
+      "fill color space": "DeviceRGB",
+      "source": "filled-rectangle"
     }
-  ]
+  ],
+  "background": {
+    "fill color": [0.9, 0.9, 0.9],
+    "fill color space": "DeviceRGB",
+    "source": "cell-matched-fill",
+    "confidence": 0.94
+  }
 }
 ```
 
-Possible locations:
+Notes:
 
-- root document object: `line arts`
-- table: `line arts`
-- table cell: `line arts`
-- header/footer: `line arts`
-- list item: `line arts`
+- `fills` is a debug/analysis field
+- `background` is a higher-confidence derived field
+- `line arts` remains optional weak evidence
 
-## Why Separate Fields Instead Of `kids`
+## Workstreams
 
-- avoids breaking downstream assumptions about semantic content order
-- keeps debug output readable
-- lets us compare text/image/table content against line data side by side
-- allows later opt-in support in downstream adapters
+## Workstream A: Grid Fidelity Through `TableBorder*`
 
-## Implementation Plan
+### Goal
 
-### Step 1. Add Phase-1 JSON Keys
+Make the emitted table model trustworthy enough that downstream style assignment can target stable cells.
 
-Files:
+### Why This Comes First
 
+Without strong cell topology:
+
+- background matching becomes brittle
+- row/header shading cannot be attached consistently
+- later `document-processor` mapping will remain heuristic-heavy
+
+### Primary Patch Targets In `opendataloader-pdf`
+
+- `java/opendataloader-pdf-core/src/main/java/org/opendataloader/pdf/processors/DocumentProcessor.java`
+- `java/opendataloader-pdf-core/src/main/java/org/opendataloader/pdf/processors/TableBorderProcessor.java`
+- `java/opendataloader-pdf-core/src/main/java/org/opendataloader/pdf/processors/TableStructureNormalizer.java`
+- `java/opendataloader-pdf-core/src/main/java/org/opendataloader/pdf/json/serializers/TableSerializer.java`
+- `java/opendataloader-pdf-core/src/main/java/org/opendataloader/pdf/json/serializers/TableRowSerializer.java`
+- `java/opendataloader-pdf-core/src/main/java/org/opendataloader/pdf/json/serializers/TableCellSerializer.java`
 - `java/opendataloader-pdf-core/src/main/java/org/opendataloader/pdf/json/JsonName.java`
 
-Add keys such as:
+### Detailed Tasks
 
-- `LINE_ART_TYPE`
-- `LINE_ARTS`
-- `LINE_CHUNKS`
+#### A1. Verify Table Source Of Truth
 
-### Step 2. Add `LineArtChunkSerializer`
+Confirm which tables in JSON are already coming from normalized `TableBorder` objects rather than weaker raw structures.
 
-Files:
+Questions:
 
-- `java/opendataloader-pdf-core/src/main/java/org/opendataloader/pdf/json/serializers/LineArtChunkSerializer.java`
+- Is every serialized `table` backed by `TableBorderProcessor.normalizeAndProcessTableBorder(...)`?
+- Are there cases where the JSON table falls back to a weaker structure?
+- Are one-cell “text block tables” affecting analysis?
+
+#### A2. Emit Grid Provenance
+
+Add explicit debug fields to the table JSON:
+
+- `grid source`
+- `grid normalized`
+- optional `previous table id`
+- optional `next table id`
+
+This is not a style feature by itself.
+It is needed to understand whether topology quality comes from recognition, normalization, or fallback behavior.
+
+#### A3. Audit Cell Coverage
+
+Measure, per table:
+
+- number of rows
+- number of columns
+- number of serialized cells
+- number of logical covered cells due to span
+- count of cells with content
+- count of empty cells
+
+This gives a hard baseline before color matching starts.
+
+#### A4. Keep Raw Visual Hints Available At Cell Level
+
+Retain:
+
+- `line arts`
+- later `fills`
+
+at table-cell scope so that style assignment is cell-driven, not page-driven.
+
+### Grid Decision Gate
+
+Proceed to serious color work only if the normalized table-cell grid is stable enough across the 4 PDFs.
+
+If grid quality is not strong:
+
+- do not attempt background color assignment yet
+- fix topology first
+
+## Workstream B: Background Color Preservation
+
+### Goal
+
+Recover flat table-cell fills such as:
+
+- gray header shading
+- alternating row shading when implemented as filled rectangles
+- emphasis cells drawn with flat colored fills
+
+### Why This Requires More Than JSON Serializer Work
+
+The current serializer only sees already-created content objects.
+
+But the color is currently trapped earlier:
+
+- `GraphicsState` knows the fill color
+- `ChunkParser.processf()` decides how filled paths become visual objects
+- those objects do not currently preserve fill metadata in emitted JSON
+
+So this workstream is split into:
+
+- ODL-local work
+- dependency-level work
+
+### Workstream B1: ODL-Local Feasibility Pass
+
+#### Primary Patch Targets
+
+- `java/opendataloader-pdf-core/src/main/java/org/opendataloader/pdf/processors/ContentFilterProcessor.java`
+- existing JSON serializer files under `json/serializers`
+
+#### Tasks
+
+1. Make background filtering table-aware for experiments.
+
+Current risk:
+
+- `ContentFilterProcessor.processBackgrounds(...)` removes large `LineArtChunk` backgrounds too early.
+
+Experimental change:
+
+- do not remove a large line-art background if it overlaps a recognized table region significantly
+- keep these objects for analysis runs
+
+2. Measure whether useful fill-like objects already survive to the table-cell level after filtering is relaxed.
+
+If yes:
+
+- some background recovery might be possible without immediate veraPDF patching
+
+If no:
+
+- dependency patching is mandatory
+
+### Workstream B2: veraPDF Fill-Aware Object Path
+
+This is the most important upstream technical work.
+
+#### Primary Dependency Classes
+
+- `org.verapdf.gf.model.factory.chunks.ChunkParser`
+- `org.verapdf.gf.model.factory.chunks.GraphicsState`
+- `org.verapdf.gf.model.factory.chunks.Rectangle`
+- `org.verapdf.gf.model.factory.chunks.Path`
+- `org.verapdf.wcag.algorithms.entities.content.LineArtChunk`
+
+#### Required Outcome
+
+When `processf()` handles filled table geometry, the emitted object must preserve:
+
+- bbox
+- fill color
+- fill color space
+- source type such as:
+  - filled rectangle
+  - filled path
+  - filled curve-derived region
+
+#### Likely Model Change
+
+There are two plausible design directions:
+
+1. extend `LineArtChunk`
+
+- add fill metadata fields directly
+- cheaper for downstream reuse
+- but changes shared model semantics
+
+2. introduce a new visual chunk type such as `FilledShapeChunk`
+
+- cleaner semantics
+- larger schema and serializer change
+
+At planning time, option 2 is conceptually cleaner.
+Option 1 may be faster if the goal is experimental validation.
+
+#### Required Logic Change
+
+`ChunkParser.processf()` must stop collapsing all useful filled table geometry into bbox-only artifacts that lose fill metadata.
+
+At minimum, simple filled rectangles must preserve:
+
+- their bbox
+- their fill color
+
+This is the minimum viable signal for cell background recovery.
+
+### Workstream B3: ODL JSON Serialization For Fills
+
+#### Primary Patch Targets In `opendataloader-pdf`
+
+- `java/opendataloader-pdf-core/src/main/java/org/opendataloader/pdf/json/JsonName.java`
 - `java/opendataloader-pdf-core/src/main/java/org/opendataloader/pdf/json/ObjectMapperHolder.java`
+- `java/opendataloader-pdf-core/src/main/java/org/opendataloader/pdf/json/serializers/SerializerUtil.java`
+- new serializer such as:
+  - `FilledShapeSerializer.java`
 
-Serializer requirements:
+#### Proposed JSON Keys
 
-- write essential info
-- write `type: "line art"`
-- write nested `line chunks`
-- keep phase 1 output simple and geometry-focused
+- `fills`
+- `fill color`
+- `fill color space`
+- `fill source`
+- `background`
+- `confidence`
+- optional `grid source`
+- optional `grid normalized`
 
-Nice-to-have later:
+#### Output Strategy
 
-- orientation summary
-- stroke count
-- enclosing-box hint
+- keep raw fills separate from `kids`
+- emit `fills` as debug evidence
+- emit `background` only after a cell-level matching step says it is trustworthy
 
-### Step 3. Stop Throwing Away `LineArtChunk`
+### Workstream B4: Match Fill Regions To Table Cells
 
-Files:
+#### Primary Patch Targets
 
-- `java/opendataloader-pdf-core/src/main/java/org/opendataloader/pdf/json/JsonWriter.java`
-- `java/opendataloader-pdf-core/src/main/java/org/opendataloader/pdf/json/serializers/TableSerializer.java`
-- `java/opendataloader-pdf-core/src/main/java/org/opendataloader/pdf/json/serializers/TableCellSerializer.java`
-- `java/opendataloader-pdf-core/src/main/java/org/opendataloader/pdf/json/serializers/HeaderFooterSerializer.java`
-- `java/opendataloader-pdf-core/src/main/java/org/opendataloader/pdf/json/serializers/ListItemSerializer.java`
+- `java/opendataloader-pdf-core/src/main/java/org/opendataloader/pdf/processors/TableBorderProcessor.java`
+- possibly a new helper such as:
+  - `TableBackgroundProcessor.java`
 
-Required behavior:
+#### Matching Rules To Implement
 
-- keep non-line content in `kids`
-- collect `LineArtChunk` separately into `line arts`
+Assign a fill to a cell only when most of the following hold:
 
-Root writer should also optionally emit document-level orphan line art, because some useful table/grid lines may not be neatly attached to the most specific semantic parent.
+1. fill bbox overlaps the cell bbox strongly
+2. fill bbox is not page-scale decoration
+3. fill bbox is not obviously spanning unrelated nearby cells
+4. fill color is stable
+5. competing fills do not create ambiguity
 
-### Step 4. Optional Feature Flag
+Special handling should be added for:
 
-Only add this if the raw output looks useful.
+- row-wide header fills spanning multiple cells
+- merged cells
+- repeated row shading
 
-Files:
+### Workstream B5: Downstream Mapping
 
-- `java/opendataloader-pdf-core/src/main/java/org/opendataloader/pdf/api/Config.java`
-- `java/opendataloader-pdf-cli/src/main/java/org/opendataloader/pdf/cli/CLIOptions.java`
-- `options.json`
+This is not the first patch, but the plan must end here.
 
-Suggested flag:
+Once upstream signal is good enough:
 
-- `--emit-line-art`
+- `document-processor` can map cell background to `CellStyleInfo.background`
+- table-grid confidence can influence border reconstruction confidence
 
-Default:
+## Risks
 
-- `false`
+### Grid Risks
 
-Reason:
+- `TableBorder` recognition may still fail on documents whose visible grid is weak
+- normalized topology may differ from user-visible visual grouping in some PDFs
 
-- limits schema churn
-- keeps baseline outputs unchanged for existing users
+### Background Risks
 
-For the very first local experiment, hard-coded exposure is acceptable. Feature-flagging can come immediately after validation.
+- many PDFs draw table backgrounds as large page-level fills or decorative artifacts
+- `ContentFilterProcessor` may remove useful fills unless made table-aware
+- some fills may use unsupported color spaces or patterns
+- some table shading may be raster image-based rather than vector fill-based
 
-## Evaluation Procedure
+### Dependency Risks
+
+- real color preservation likely requires patching veraPDF classes outside this repo
+- model changes may span more than one dependency module
+- keeping the experimental fork buildable may take more effort than the JSON patch itself
+
+## Validation Plan
 
 For each of the 4 PDFs:
 
-1. Run baseline ODL JSON.
-2. Run modified ODL JSON with line-art exposure.
-3. Inspect:
-   - document-level `line arts`
-   - table-level `line arts`
-   - table-cell-level `line arts`
-4. Record:
-   - number of tables
-   - number of cells
-   - number of cells with nearby line art
-   - obvious false positives
-   - whether cell-border inference appears feasible
+1. run current baseline JSON
+2. run table-grid enhanced JSON
+3. run fill-preserving JSON
+4. inspect:
+   - table count
+   - row and column counts
+   - span correctness
+   - cells with raw fill candidates
+   - cells with derived background assignments
+   - false positives from decoration or page backgrounds
 
-## What I Will Measure
+### Required Evidence Per PDF
 
-### Quantitative
+- one good table example
+- one weak or failure example
+- one JSON snippet showing:
+  - cell bbox
+  - raw fills
+  - final background assignment
 
-- count of `line art` nodes per document
-- count of `line art` nodes per table
-- count of cells whose bbox intersects at least one line-art bbox
-- count of orphan line-art nodes at document root
-- JSON size delta before/after exposure
+## HWPX Oracle Validation
 
-### Qualitative
+The grid debug fields are useful, but they are not the actual target.
 
-- are table outlines actually captured?
-- are internal row/column separators captured?
-- do underlines dominate the output?
-- do decorative lines pollute table-adjacent regions?
-- are lines emitted close enough to cell edges to support deterministic heuristics?
+They only answer:
 
-## Success Thresholds
+- is the PDF-side table topology internally consistent enough to support style matching?
 
-Proceed toward custom JAR adoption only if:
+They do **not** answer:
 
-- line art is present for a meaningful share of real table borders
-- noise does not overwhelm true table structure
-- table-cell association looks implementable with reasonable heuristics
+- are border/background styles correct?
 
-Do **not** proceed yet if:
+For style fidelity, the better validation source is the HWP/HWPX side parsed through `document-processor`,
+because HWPX can populate richer `CellStyleInfo` directly.
 
-- most emitted line art is decorative noise
-- table borders are too incomplete
-- emitted geometry is too coarse to associate with cells
-- JSON explosion is disproportionate to utility
+### Why HWPX Comparison Matters
 
-## Expected Follow-Up If Phase 1 Succeeds
+For the same or near-identical source document:
 
-1. Build a shaded CLI JAR from the modified branch.
-2. Run the same 4-PDF dataset again via the built CLI.
-3. Add temporary support in `document-processor` to preserve raw `line arts`.
-4. Prototype table-border recovery from exposed line geometry.
-5. Compare:
-   - current raster border inference
-   - raw line-art-based inference
-   - combined strategy
+- HWPX `DocIR` can serve as a practical style oracle
+- PDF-side recovered table styles can be compared against:
+  - cell background
+  - border presence
+  - row/col spans
+  - cell occupancy
 
-## Expected Follow-Up If Phase 1 Fails
+This is a much better test than looking at PDF JSON in isolation.
 
-If exposed line art is too noisy or too weak:
+### Dataset Status
 
-- abandon raw line-art path for border fidelity
-- keep current raster-based border enrichment
-- focus upstream effort on other recoverable metadata:
-  - formula
-  - document metadata
-  - font family
-  - list metadata
-  - caption linkage
+Current files in `/Users/yoonseo/Developer/External/RAGBuilder-test/dataset-2`:
+
+- exact pair:
+  - `모두의_챌린지_AX_-_LLM_분야_참여기업_모집공고.pdf`
+  - `모두의_챌린지_AX_-_LLM_분야_참여기업_모집공고.hwpx`
+- oracle pair (filename suffix differs):
+  - `2026년_전통시장_육성사업(백년시장)_모집공고.pdf`
+  - `2026년_전통시장_육성사업(백년시장)_모집공고(수정).hwpx`
+- PDF-only:
+  - `창업기업.pdf`
+  - `지구과학Ⅰ_문제.pdf`
+- HWPX-only:
+  - `2026년도_민관공동기술사업화R&D(TRL점프업)_상반기_2차_시행계획_공고.hwpx`
+
+### Revised Validation Strategy
+
+Use two tracks:
+
+1. internal PDF debug validation
+   - grid stats
+   - raw line art
+   - raw fills
+2. HWPX oracle comparison
+   - compare recovered PDF cell styles against HWPX `CellStyleInfo`
+
+### Oracle Metrics To Compare
+
+For matched table/cell pairs:
+
+- border presence agreement
+  - top
+  - bottom
+  - left
+  - right
+- background agreement
+  - background present vs absent
+  - optional normalized color distance later
+- span agreement
+  - row span
+  - column span
+- occupancy agreement
+  - empty vs non-empty cell
+
+### Oracle Matching Strategy
+
+Do not try to compare full documents only by page number.
+
+Match in this order:
+
+1. table shape
+   - row count
+   - column count
+   - span pattern
+2. table text fingerprint
+   - sampled cell text
+   - header row content
+3. cell position within the matched table
+   - row index
+   - column index
+
+For the `2026...` pair, the HWPX filename includes `(수정)`, but the working assumption for this project is:
+
+- the suffix is only a filename artifact
+- the pair is still valid for oracle comparison unless concrete content drift is observed during matching
+
+If a later comparison run shows real table-level mismatch, downgrade that pair from oracle to qualitative-only.
+
+### Immediate Oracle Priority
+
+Start with both oracle pairs:
+
+- `모두의_챌린지_AX_-_LLM_분야_참여기업_모집공고.pdf`
+- `모두의_챌린지_AX_-_LLM_분야_참여기업_모집공고.hwpx`
+- `2026년_전통시장_육성사업(백년시장)_모집공고.pdf`
+- `2026년_전통시장_육성사업(백년시장)_모집공고(수정).hwpx`
+
+Reason:
+
+- both pairs are currently treated as valid style-oracle candidates
+- both contain enough table structure to make border/background validation meaningful
+
+### Practical Next Step
+
+Before deeper veraPDF fill patching, add an evaluation step that:
+
+1. parses the HWPX file through `document-processor`
+2. extracts table/cell style summaries from HWPX `DocIR`
+3. extracts comparable summaries from PDF-side JSON / future PDF `DocIR`
+4. writes a pairwise comparison report
+
+This will make future work measurable instead of purely visual.
+
+## Go / No-Go Gates
+
+### Gate 1: Grid
+
+Continue only if the normalized table grid is stable enough to support cell-level reasoning.
+
+### Gate 2: Raw Fill Signal
+
+Continue only if meaningful table-adjacent filled regions can be kept through parsing and filtering.
+
+### Gate 3: Cell Background Assignment
+
+Continue toward downstream integration only if header or shaded-cell recovery works on at least some of the dataset without unacceptable false positives.
 
 ## Immediate Execution Order
 
-1. Gain access to `/Users/yoonseo/Downloads/dataset-2/`.
-2. Implement phase-1 serializer changes in `opendataloader-pdf`.
-3. Build local CLI artifact.
-4. Run the 4 target PDFs.
-5. Write a short result note per PDF with screenshots or JSON snippets.
-6. Decide whether to continue toward JAR adoption.
+1. update JSON/table debug fields for normalized `TableBorder` output
+2. measure grid quality on the 4-PDF dataset
+3. relax or instrument `ContentFilterProcessor.processBackgrounds(...)` for experiment runs
+4. determine whether useful fill-like regions survive without dependency changes
+5. if not, start the veraPDF-side fill-aware object patch
+6. serialize raw fills
+7. implement cell background matching
+8. rerun the dataset and record results
 
-## Current Progress
+## Practical Decision Tree
 
-Completed on `feat/TableStyle` in local `opendataloader-pdf`:
+### If Grid Is Strong But Fill Signal Is Weak
 
-- added `LineArtChunkSerializer`
-- registered `LineArtChunk` in `ObjectMapperHolder`
-- added `line arts` / `line chunks` JSON keys
-- expanded `LineChunk` JSON with start/end/width/orientation hints
-- stopped dropping `LineArtChunk` from:
-  - root `JsonWriter`
-  - `TableCellSerializer`
-  - `TableSerializer` text-block path
-  - `HeaderFooterSerializer`
-  - `ListItemSerializer`
-- built local CLI successfully with:
-  - `mvn -pl opendataloader-pdf-cli -am -DskipTests package`
+- keep using `TableBorder*` for topology
+- patch veraPDF parsing next
 
-Current blocker:
+### If Grid Is Weak
 
-- dataset path under `Downloads` is still not readable from this environment
-- actual 4-PDF experiment run is therefore pending filesystem access
+- pause color work
+- improve table normalization first
 
-## Notes
+### If Fill Signal Exists But Color Does Not Survive
 
-- This plan is intentionally conservative.
-- The main question is not “can we emit line art?” but “does emitted line art materially improve downstream border reasoning?”
-- If the answer is weak, we should stop early instead of over-investing in a custom JAR path.
+- dependency patch is mandatory
+- serializer-only work is not enough
+
+## Current Status
+
+### Already Done
+
+- line-art exposure experiment completed
+- root cause for empty `line chunks` traced to upstream parse behavior rather than serializer omission
+- key patch candidates identified in both `opendataloader-pdf` and veraPDF dependency code
+
+### Ready For Next Step
+
+The next sensible implementation step is:
+
+- start with Workstream A
+- do not begin full background-color rollout until grid quality and filtering behavior are measured on the current branch

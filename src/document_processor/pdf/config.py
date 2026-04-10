@@ -20,6 +20,7 @@ class OdlPdfConfig(BaseModel):
     table_method: str = "cluster"
     include_header_footer: bool = False
     keep_line_breaks: bool = False
+    preserve_whitespace: bool = False
     sanitize: bool = False
     detect_strikethrough: bool = False
     markdown_page_separator: str | None = None

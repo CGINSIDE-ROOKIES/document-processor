@@ -1,19 +1,15 @@
 from .builder import build_doc_ir_from_mapping
 from .diagram import create_model_diagram, draw_model_diagram
 from .models import DocIR, ImageAsset, ImageIR, PageInfo, ParagraphContentNode, ParagraphIR, RunIR, TableCellIR, TableIR
-# Re-export the PDF entrypoints here so callers can stay on the top-level
-# package even though PDF parsing lives under `document_processor.pdf`.
+
+# Keep top-level PDF exports narrow. Advanced preview/context helpers remain in
+# `document_processor.pdf.*` submodules so the main package stays easy to scan.
 from .pdf import (
     DEFAULT_LOCAL_FORMATS,
-    OdlPdfConfig,
     PdfLocalOutputs,
     PdfParseConfig,
-    PdfTriageConfig,
-    convert_pdf_local,
-    enrich_pdf_table_borders,
     export_pdf_local_outputs,
     parse_pdf_to_doc_ir,
-    resolve_odl_jar_path,
 )
 from .style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo, StyleMap, TableStyleInfo
 
@@ -29,14 +25,9 @@ __all__ = [
     "ParaStyleInfo",
     "PdfLocalOutputs",
     "PdfParseConfig",
-    "PdfTriageConfig",
-    "OdlPdfConfig",
-    "convert_pdf_local",
-    "enrich_pdf_table_borders",
     "export_pdf_local_outputs",
     "RunIR",
     "RunStyleInfo",
-    "resolve_odl_jar_path",
     "StyleMap",
     "TableCellIR",
     "TableIR",

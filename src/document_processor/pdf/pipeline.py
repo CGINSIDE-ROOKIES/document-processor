@@ -1,4 +1,11 @@
-"""PDF parsing pipeline."""
+"""PDF parsing pipeline.
+
+Public surface:
+- ``parse_pdf_to_doc_ir()`` for canonical DocIR construction
+
+Internal helpers:
+- preview-sidecar parsing used only by the PDF HTML preview path
+"""
 
 from __future__ import annotations
 
@@ -11,6 +18,7 @@ from .enhancement import enrich_pdf_table_borders
 from .meta import PdfDocumentMeta
 from .odl import build_doc_ir_from_odl_result, run_odl_json
 from .parsing import PageClass, PdfProfile, decide_page, probe_pdf
+from .preview import PdfPreviewContext, build_pdf_preview_context
 
 
 def parse_pdf_to_doc_ir(
@@ -21,6 +29,84 @@ def parse_pdf_to_doc_ir(
     doc_cls: type[DocIR] | None = None,
     **doc_kwargs: Any,
 ) -> DocIR:
+    # Canonical PDF parse path:
+    # raw ODL JSON -> DocIR
+    # Preview-only sidecar data is intentionally dropped here.
+    doc_ir, _preview_context = _parse_pdf_with_optional_preview(
+        path,
+        config=config,
+        doc_id=doc_id,
+        doc_cls=doc_cls,
+        **doc_kwargs,
+    )
+    return doc_ir
+
+
+def _build_pdf_preview_context_for_path(
+    path: str | Path,
+    *,
+    config: PdfParseConfig | dict[str, Any] | None = None,
+) -> PdfPreviewContext:
+    """Internal helper for preview-only ODL sidecar loading."""
+    resolved_config = (
+        config
+        if isinstance(config, PdfParseConfig)
+        else PdfParseConfig.model_validate(config or {})
+    )
+    source_path = Path(path)
+    profile = probe_pdf(source_path)
+    if profile is None:
+        raise RuntimeError("PDF probe failed before ODL parsing.")
+
+    structured_pages = [
+        decision.page_number
+        for decision in (
+            decide_page(page_profile, resolved_config.triage)
+            for page_profile in profile.page_profiles
+        )
+        if decision.page_class == PageClass.STRUCTURED
+    ]
+    if not structured_pages:
+        return PdfPreviewContext()
+
+    raw_document = run_odl_json(
+        source_path,
+        {
+            **resolved_config.odl.model_dump(),
+            "pages": structured_pages,
+            "image_output": resolved_config.odl.image_output or "embedded",
+        },
+    )
+    return build_pdf_preview_context(raw_document)
+
+
+def _parse_pdf_to_doc_ir_with_preview(
+    path: str | Path,
+    *,
+    config: PdfParseConfig | dict[str, Any] | None = None,
+    doc_id: str | None = None,
+    doc_cls: type[DocIR] | None = None,
+    **doc_kwargs: Any,
+) -> tuple[DocIR, PdfPreviewContext]:
+    # Internal preview parse path:
+    # raw ODL JSON -> DocIR + PdfPreviewContext sidecar
+    return _parse_pdf_with_optional_preview(
+        path,
+        config=config,
+        doc_id=doc_id,
+        doc_cls=doc_cls,
+        **doc_kwargs,
+    )
+
+
+def _parse_pdf_with_optional_preview(
+    path: str | Path,
+    *,
+    config: PdfParseConfig | dict[str, Any] | None = None,
+    doc_id: str | None = None,
+    doc_cls: type[DocIR] | None = None,
+    **doc_kwargs: Any,
+) -> tuple[DocIR, PdfPreviewContext]:
     resolved_config = (
         config
         if isinstance(config, PdfParseConfig)
@@ -42,6 +128,7 @@ def parse_pdf_to_doc_ir(
     ]
 
     resolved_doc_cls = doc_cls or DocIR
+    preview_context = PdfPreviewContext()
     if structured_pages:
         raw_document = run_odl_json(
             source_path,
@@ -53,6 +140,10 @@ def parse_pdf_to_doc_ir(
                 "image_output": resolved_config.odl.image_output or "embedded",
             },
         )
+        # The same raw document feeds two outputs:
+        # 1. canonical DocIR
+        # 2. preview-only sidecar context
+        preview_context = build_pdf_preview_context(raw_document)
         doc_ir = build_doc_ir_from_odl_result(
             raw_document,
             source_path=str(source_path),
@@ -81,7 +172,11 @@ def parse_pdf_to_doc_ir(
             pdf_path=source_path,
             dpi=resolved_config.table_border_dpi,
         )
-    document_meta = doc_ir.meta.model_copy(deep=True) if isinstance(doc_ir.meta, PdfDocumentMeta) else PdfDocumentMeta()
+    document_meta = (
+        doc_ir.meta.model_copy(deep=True)
+        if isinstance(doc_ir.meta, PdfDocumentMeta)
+        else PdfDocumentMeta()
+    )
     document_meta.structured_pages = structured_pages
     document_meta.scan_like_pages = [
         decision.page_number
@@ -89,7 +184,7 @@ def parse_pdf_to_doc_ir(
         if decision.page_class == PageClass.SCAN_LIKE
     ]
     doc_ir.meta = document_meta
-    return doc_ir
+    return doc_ir, preview_context
 
 
 def _apply_probe_page_sizes(doc_ir: DocIR, *, profile: PdfProfile) -> None:

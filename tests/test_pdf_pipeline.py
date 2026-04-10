@@ -54,6 +54,8 @@ class PdfPipelineTests(unittest.TestCase):
                     "page number": 1,
                     "id": 101,
                     "bounding box": [10, 20, 30, 40],
+                    "layout region id": "p1-main",
+                    "reading order index": 1,
                     "heading level": 2,
                     "font": "Noto Serif KR",
                     "text color": "#112233",
@@ -64,6 +66,8 @@ class PdfPipelineTests(unittest.TestCase):
                     "content": "\\frac{a}{b}",
                     "page number": 1,
                     "id": 111,
+                    "layout region id": "p1-main",
+                    "reading order index": 2,
                 },
                 {
                     "type": "list",
@@ -76,6 +80,8 @@ class PdfPipelineTests(unittest.TestCase):
                             "content": "First item",
                             "page number": 1,
                             "id": 112,
+                            "layout region id": "p1-main",
+                            "reading order index": 3,
                         }
                     ],
                 },
@@ -83,7 +89,8 @@ class PdfPipelineTests(unittest.TestCase):
                     "type": "table",
                     "page number": 2,
                     "id": 202,
-                    "previous table id": 201,
+                    "layout region id": "p2-main",
+                    "reading order index": 4,
                     "number of rows": 1,
                     "number of columns": 1,
                     "rows": [
@@ -95,6 +102,12 @@ class PdfPipelineTests(unittest.TestCase):
                                     "row number": 1,
                                     "column number": 1,
                                     "page number": 2,
+                                    "layout region id": "p2-main",
+                                    "reading order index": 5,
+                                    "has top border": True,
+                                    "has bottom border": True,
+                                    "has left border": True,
+                                    "has right border": True,
                                     "kids": [
                                         {
                                             "type": "paragraph",
@@ -128,24 +141,285 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertEqual(doc.meta.modification_date, "2026-04-09T10:00:00Z")
         self.assertEqual([page.page_number for page in doc.pages], [1, 2])
         self.assertEqual(doc.paragraphs[0].text, "Hello PDF")
-        self.assertEqual(doc.paragraphs[0].meta.source_id, 101)
-        self.assertEqual(doc.paragraphs[0].meta.heading_level, 2)
+        self.assertEqual(doc.paragraphs[0].meta.page_number, 1)
         self.assertEqual(doc.paragraphs[0].meta.bounding_box.left_pt, 10.0)
-        self.assertEqual(doc.paragraphs[0].runs[0].meta.source_id, 101)
+        self.assertEqual(doc.paragraphs[0].meta.layout_region_id, "p1-main")
+        self.assertEqual(doc.paragraphs[0].meta.reading_order_index, 1)
+        self.assertEqual(doc.paragraphs[0].runs[0].meta.page_number, 1)
         self.assertEqual(doc.paragraphs[0].runs[0].run_style.font_family, "Noto Serif KR")
         self.assertEqual(doc.paragraphs[1].text, "\\frac{a}{b}")
-        self.assertEqual(doc.paragraphs[1].meta.source_type, "formula")
+        self.assertEqual(doc.paragraphs[1].meta.reading_order_index, 2)
         self.assertEqual(doc.paragraphs[2].text, "First item")
-        self.assertEqual(doc.paragraphs[2].meta.list_numbering_style, "ordered")
-        self.assertEqual(doc.paragraphs[2].meta.previous_list_id, 10)
-        self.assertEqual(doc.paragraphs[2].meta.next_list_id, 12)
+        self.assertEqual(doc.paragraphs[2].meta.layout_region_id, "p1-main")
+        self.assertEqual(doc.paragraphs[2].meta.reading_order_index, 3)
         self.assertEqual(doc.paragraphs[3].tables[0].cells[0].text, "A1")
-        self.assertEqual(doc.paragraphs[3].tables[0].meta.previous_table_id, 201)
+        self.assertEqual(doc.paragraphs[3].tables[0].meta.layout_region_id, "p2-main")
         self.assertTrue(doc.paragraphs[3].tables[0].table_style.preview_grid)
-        self.assertEqual(doc.paragraphs[3].tables[0].cells[0].meta.source_id, 303)
+        self.assertEqual(doc.paragraphs[3].tables[0].cells[0].meta.reading_order_index, 5)
+        self.assertEqual(doc.paragraphs[3].tables[0].cells[0].cell_style.border_top, "1px solid")
+        self.assertEqual(doc.paragraphs[3].tables[0].cells[0].cell_style.border_right, "1px solid")
         self.assertIn("odl-img-p5", doc.assets)
         self.assertEqual(doc.paragraphs[4].images[0].image_id, "odl-img-p5")
-        self.assertEqual(doc.assets["odl-img-p5"].meta.source_type, "image")
+        self.assertEqual(doc.assets["odl-img-p5"].meta.page_number, 2)
+
+    def test_build_doc_ir_from_odl_result_preserves_text_whitespace_and_header_footer_children(self) -> None:
+        raw_document = {
+            "file name": "sample.pdf",
+            "number of pages": 1,
+            "kids": [
+                {
+                    "type": "paragraph",
+                    "content": "  Hello PDF  ",
+                    "page number": 1,
+                    "id": 101,
+                },
+                {
+                    "type": "paragraph",
+                    "content": "   ",
+                    "page number": 1,
+                    "id": 102,
+                },
+                {
+                    "type": "header",
+                    "page number": 1,
+                    "id": 201,
+                    "kids": [
+                        {
+                            "type": "paragraph",
+                            "content": "Header line",
+                            "page number": 1,
+                            "id": 202,
+                            "font": "Noto Sans KR",
+                            "font size": 9,
+                        }
+                    ],
+                },
+                {
+                    "type": "table",
+                    "page number": 1,
+                    "rows": [
+                        {
+                            "cells": [
+                                {
+                                    "type": "table cell",
+                                    "row number": 1,
+                                    "column number": 1,
+                                    "page number": 1,
+                                    "kids": [
+                                        {
+                                            "type": "paragraph",
+                                            "content": "  A1  ",
+                                            "page number": 1,
+                                        }
+                                    ],
+                                }
+                            ]
+                        }
+                    ],
+                },
+            ],
+        }
+
+        doc = build_doc_ir_from_odl_result(raw_document, source_path="sample.pdf")
+
+        self.assertEqual(len(doc.paragraphs), 3)
+        self.assertEqual(doc.paragraphs[0].text, "  Hello PDF  ")
+        self.assertEqual(doc.paragraphs[1].text, "Header line")
+        self.assertEqual(doc.paragraphs[1].meta.page_number, 1)
+        self.assertEqual(doc.paragraphs[1].runs[0].meta.page_number, 1)
+        self.assertEqual(doc.paragraphs[1].runs[0].run_style.font_family, "Noto Sans KR")
+        self.assertEqual(doc.paragraphs[1].runs[0].run_style.size_pt, 9.0)
+        self.assertEqual(doc.paragraphs[2].tables[0].cells[0].text, "  A1  ")
+        self.assertEqual(doc.paragraphs[2].tables[0].cells[0].paragraphs[0].text, "  A1  ")
+
+    def test_build_doc_ir_from_odl_result_uses_additive_spans_for_multi_run_text(self) -> None:
+        raw_document = {
+            "file name": "sample.pdf",
+            "number of pages": 1,
+            "kids": [
+                {
+                    "type": "heading",
+                    "content": "Hello PDF",
+                    "page number": 1,
+                    "id": 101,
+                    "heading level": 1,
+                    "font": "Parent Font",
+                    "font size": 18,
+                    "text color": "#112233",
+                    "spans": [
+                        {
+                            "type": "text chunk",
+                            "content": "Hello",
+                            "page number": 1,
+                            "bounding box": [1, 2, 3, 4],
+                            "font": "Span Font",
+                            "font size": 19,
+                            "text color": "#abcdef",
+                            "font weight": 700,
+                        },
+                        {
+                            "type": "text chunk",
+                            "content": " ",
+                            "page number": 1,
+                            "bounding box": [3, 2, 4, 4],
+                        },
+                        {
+                            "type": "text chunk",
+                            "content": "PDF",
+                            "page number": 1,
+                            "bounding box": [4, 2, 6, 4],
+                            "italic angle": 12,
+                            "underline": True,
+                        },
+                    ],
+                },
+                {
+                    "type": "table",
+                    "page number": 1,
+                    "rows": [
+                        {
+                            "cells": [
+                                {
+                                    "type": "table cell",
+                                    "row number": 1,
+                                    "column number": 1,
+                                    "page number": 1,
+                                    "kids": [
+                                        {
+                                            "type": "paragraph",
+                                            "content": "A1",
+                                            "page number": 1,
+                                            "font": "Cell Font",
+                                            "font size": 10,
+                                            "spans": [
+                                                {
+                                                    "type": "text chunk",
+                                                    "content": "A",
+                                                    "page number": 1,
+                                                    "font": "Cell Span Font",
+                                                    "font size": 11,
+                                                },
+                                                {
+                                                    "type": "text chunk",
+                                                    "content": "1",
+                                                    "page number": 1,
+                                                },
+                                            ],
+                                        }
+                                    ],
+                                }
+                            ]
+                        }
+                    ],
+                },
+            ],
+        }
+
+        doc = build_doc_ir_from_odl_result(raw_document, source_path="sample.pdf")
+
+        self.assertEqual(doc.paragraphs[0].text, "Hello PDF")
+        self.assertEqual([run.text for run in doc.paragraphs[0].runs], ["Hello", " ", "PDF"])
+        self.assertEqual(doc.paragraphs[0].runs[0].run_style.font_family, "Span Font")
+        self.assertEqual(doc.paragraphs[0].runs[0].run_style.size_pt, 19.0)
+        self.assertEqual(doc.paragraphs[0].runs[0].run_style.color, "#abcdef")
+        self.assertTrue(doc.paragraphs[0].runs[0].run_style.bold)
+        self.assertEqual(doc.paragraphs[0].runs[1].run_style.font_family, "Parent Font")
+        self.assertEqual(doc.paragraphs[0].runs[1].run_style.size_pt, 18.0)
+        self.assertTrue(doc.paragraphs[0].runs[2].run_style.italic)
+        self.assertTrue(doc.paragraphs[0].runs[2].run_style.underline)
+        self.assertEqual(doc.paragraphs[0].runs[0].meta.page_number, 1)
+        self.assertEqual(doc.paragraphs[0].runs[0].meta.bounding_box.left_pt, 1.0)
+        self.assertEqual(doc.paragraphs[1].tables[0].cells[0].text, "A1")
+        self.assertEqual(
+            [run.text for run in doc.paragraphs[1].tables[0].cells[0].paragraphs[0].runs],
+            ["A", "1"],
+        )
+        self.assertEqual(
+            doc.paragraphs[1].tables[0].cells[0].paragraphs[0].runs[0].run_style.font_family,
+            "Cell Span Font",
+        )
+        self.assertEqual(
+            doc.paragraphs[1].tables[0].cells[0].paragraphs[0].runs[1].run_style.font_family,
+            "Cell Font",
+        )
+
+    def test_build_doc_ir_from_odl_result_merges_adjacent_spans_with_same_style(self) -> None:
+        raw_document = {
+            "file name": "sample.pdf",
+            "number of pages": 1,
+            "kids": [
+                {
+                    "type": "paragraph",
+                    "content": "Hello World",
+                    "page number": 1,
+                    "font": "Base Font",
+                    "font size": 12,
+                    "text color": "#111111",
+                    "spans": [
+                        {
+                            "type": "text chunk",
+                            "content": "Hello",
+                            "page number": 1,
+                            "bounding box": [1, 2, 3, 4],
+                            "font": "Base Font",
+                            "font size": 12,
+                            "text color": "#111111",
+                        },
+                        {
+                            "type": "text chunk",
+                            "content": " ",
+                            "page number": 1,
+                            "bounding box": [3, 2, 4, 4],
+                        },
+                        {
+                            "type": "text chunk",
+                            "content": "World",
+                            "page number": 1,
+                            "bounding box": [4, 2, 7, 4],
+                            "font": "Base Font",
+                            "font size": 12,
+                            "text color": "#111111",
+                        },
+                    ],
+                }
+            ],
+        }
+
+        doc = build_doc_ir_from_odl_result(raw_document, source_path="sample.pdf")
+
+        self.assertEqual(doc.paragraphs[0].text, "Hello World")
+        self.assertEqual(len(doc.paragraphs[0].runs), 1)
+        self.assertEqual(doc.paragraphs[0].runs[0].text, "Hello World")
+        self.assertEqual(doc.paragraphs[0].runs[0].meta.bounding_box.left_pt, 1.0)
+        self.assertEqual(doc.paragraphs[0].runs[0].meta.bounding_box.right_pt, 7.0)
+
+    def test_build_doc_ir_from_odl_result_prefers_node_text_when_spans_flatten_newlines(self) -> None:
+        raw_document = {
+            "file name": "sample.pdf",
+            "number of pages": 1,
+            "kids": [
+                {
+                    "type": "paragraph",
+                    "content": "64\n65\n66 68 69390",
+                    "page number": 1,
+                    "font": "Base Font",
+                    "font size": 12,
+                    "spans": [
+                        {"type": "text chunk", "content": "64", "page number": 1},
+                        {"type": "text chunk", "content": " ", "page number": 1},
+                        {"type": "text chunk", "content": "65", "page number": 1},
+                        {"type": "text chunk", "content": " ", "page number": 1},
+                        {"type": "text chunk", "content": "66", "page number": 1},
+                    ],
+                }
+            ],
+        }
+
+        doc = build_doc_ir_from_odl_result(raw_document, source_path="sample.pdf")
+
+        self.assertEqual(doc.paragraphs[0].text, "64\n65\n66 68 69390")
+        self.assertEqual(len(doc.paragraphs[0].runs), 1)
+        self.assertEqual(doc.paragraphs[0].runs[0].text, "64\n65\n66 68 69390")
 
     def test_parse_pdf_to_doc_ir_uses_probe_for_page_sizes_and_filters_scan_pages(self) -> None:
         profile = PdfProfile(
@@ -262,6 +536,28 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertEqual(outputs["json"].name, "sample.json")
         self.assertEqual(outputs["html"].name, "sample.html")
         self.assertEqual(outputs["markdown"].name, "sample.md")
+
+    def test_convert_pdf_local_passes_preserve_whitespace_flag_when_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            pdf_path = Path(tmp_dir) / "sample.pdf"
+            pdf_path.write_bytes(b"%PDF-1.7\n%fake")
+            output_dir = Path(tmp_dir) / "out"
+
+            def fake_run(command, **kwargs):
+                self.assertIn("--preserve-whitespace", command)
+                output_dir.mkdir(parents=True, exist_ok=True)
+                (output_dir / "sample.json").write_text('{"ok": true}', encoding="utf-8")
+                return None
+
+            with patch("document_processor.pdf.odl.runner.subprocess.run", side_effect=fake_run):
+                outputs = convert_pdf_local(
+                    pdf_path,
+                    output_dir=output_dir,
+                    formats=["json"],
+                    config={"preserve_whitespace": True},
+                )
+
+        self.assertEqual(outputs["json"].name, "sample.json")
 
     def test_export_pdf_local_outputs_returns_readable_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

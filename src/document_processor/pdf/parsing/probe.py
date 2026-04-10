@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import logging
 from pathlib import Path
 import re
 
@@ -17,6 +18,7 @@ GIBBERISH_NORMAL_TEXT_MAX_RATIO = 0.1
 
 _HANGUL_RANGE = re.compile(r"[\uAC00-\uD7AF\u3131-\u318E]")
 _LATIN_RANGE = re.compile(r"[A-Za-z0-9]")
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)

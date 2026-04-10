@@ -21,19 +21,11 @@ class PdfBoundingBox(BaseModel):
 
 
 class PdfNodeMeta(BaseModel):
-    source_type: str | None = None
-    source_id: int | None = None
-    source_level: str | None = None
-    list_numbering_style: str | None = None
-    previous_list_id: int | None = None
-    next_list_id: int | None = None
     page_number: int | None = None
     bounding_box: PdfBoundingBox | None = None
-    heading_level: int | None = None
     linked_content_id: int | None = None
-    previous_table_id: int | None = None
-    next_table_id: int | None = None
-    hidden_text: bool = False
+    layout_region_id: str | None = None
+    reading_order_index: int | None = None
 
 
 class PdfDocumentMeta(BaseModel):
@@ -107,21 +99,13 @@ def coerce_bbox(value: Any) -> PdfBoundingBox | None:
 
 def build_pdf_node_meta(node: dict[str, Any]) -> PdfNodeMeta | None:
     meta = PdfNodeMeta(
-        source_type=node.get("type"),
-        source_id=coerce_int(node.get("id")),
-        source_level=node.get("level") if isinstance(node.get("level"), str) else None,
-        list_numbering_style=node.get("numbering style")
-        if isinstance(node.get("numbering style"), str)
-        else None,
-        previous_list_id=coerce_int(node.get("previous list id")),
-        next_list_id=coerce_int(node.get("next list id")),
         page_number=coerce_int(node.get("page number")),
         bounding_box=coerce_bbox(node.get("bounding box")),
-        heading_level=coerce_int(node.get("heading level")),
         linked_content_id=coerce_int(node.get("linked content id")),
-        previous_table_id=coerce_int(node.get("previous table id")),
-        next_table_id=coerce_int(node.get("next table id")),
-        hidden_text=bool(node.get("hidden text", False)),
+        layout_region_id=node.get("layout region id")
+        if isinstance(node.get("layout region id"), str)
+        else None,
+        reading_order_index=coerce_int(node.get("reading order index")),
     )
     return meta if meta.model_dump(exclude_defaults=True, exclude_none=True) else None
 

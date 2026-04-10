@@ -112,6 +112,7 @@ def _build_odl_command(
     )
     _append_flag(command, "--sanitize", config.get("sanitize", False))
     _append_flag(command, "--keep-line-breaks", config.get("keep_line_breaks", False))
+    _append_flag(command, "--preserve-whitespace", config.get("preserve_whitespace", False))
     _append_option(command, "--replace-invalid-chars", config.get("replace_invalid_chars"))
     _append_flag(command, "--use-struct-tree", config.get("use_struct_tree", False))
     _append_option(command, "--table-method", config.get("table_method"))

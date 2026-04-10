@@ -10,6 +10,10 @@ from .models import DocIR, ImageIR, PageInfo, ParagraphContentNode, ParagraphIR,
 from .style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo
 
 
+# ---------------------------------------------------------------------------
+# Shared format-agnostic rendering helpers
+# ---------------------------------------------------------------------------
+
 def _run_css(style: RunStyleInfo) -> str:
     parts: list[str] = []
     if style.font_family:
@@ -55,6 +59,7 @@ def _style_wrap(html: str, style: RunStyleInfo | None) -> str:
 def _escape_whitespace(html: str) -> str:
     html = html.replace("\t", "&nbsp;&nbsp;&nbsp;&nbsp;")
     html = re.sub(r"  +", lambda m: "&nbsp;" * len(m.group(0)), html)
+    html = html.replace("\n", "<br>")
     return html
 
 
@@ -475,21 +480,13 @@ def _render_paged_body(doc_ir: DocIR) -> str:
     return "\n".join(parts)
 
 
-def render_html_document(doc_ir: DocIR, *, title: str | None = None) -> str:
-    """Render a document IR tree as a complete HTML document."""
-    resolved_title = title or doc_ir.doc_id or "Document"
-    body = (
-        _render_paged_body(doc_ir)
-        if doc_ir.pages
-        else "\n\n".join(_render_paragraph(doc_ir, paragraph) for paragraph in doc_ir.paragraphs)
-    )
-
+def _render_html_document_shell(*, title: str, body: str) -> str:
     return f"""<!DOCTYPE html>
 <html lang="ko">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{escape(resolved_title)}</title>
+<title>{escape(title)}</title>
 <style>
   body {{
     max-width: 1100px;
@@ -522,6 +519,17 @@ def render_html_document(doc_ir: DocIR, *, title: str | None = None) -> str:
 </body>
 </html>
 """
+
+
+def render_html_document(doc_ir: DocIR, *, title: str | None = None) -> str:
+    """Render a document IR tree as a complete HTML document."""
+    resolved_title = title or doc_ir.doc_id or "Document"
+    body = (
+        _render_paged_body(doc_ir)
+        if doc_ir.pages
+        else "\n\n".join(_render_paragraph(doc_ir, paragraph) for paragraph in doc_ir.paragraphs)
+    )
+    return _render_html_document_shell(title=resolved_title, body=body)
 
 
 __all__ = ["render_html_document"]

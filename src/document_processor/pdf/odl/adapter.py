@@ -8,6 +8,7 @@ from typing import Any
 from ...models import DocIR, ImageAsset, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
 from ...style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
 from ..meta import (
+    PdfBoundingBox,
     PdfDocumentMeta,
     PdfNodeMeta,
     build_pdf_document_meta,
@@ -21,6 +22,14 @@ from ..meta import (
     pixels_to_points,
     sanitize_css_color,
 )
+
+
+# ---------------------------------------------------------------------------
+# Style extraction helpers
+# These functions map raw ODL node fields into format-agnostic DocIR style
+# models. They are intentionally small and side-effect free so the structural
+# conversion helpers below can stay readable.
+# ---------------------------------------------------------------------------
 
 
 def _para_style_from_node(node: dict[str, Any]) -> ParaStyleInfo | None:
@@ -47,12 +56,37 @@ def _para_style_from_node(node: dict[str, Any]) -> ParaStyleInfo | None:
 
 
 def _run_style_from_node(node: dict[str, Any]) -> RunStyleInfo | None:
+    text_format = node_value(node, "text format")
+    format_tokens = (
+        {token for token in text_format.strip().lower().replace("-", " ").split() if token}
+        if isinstance(text_format, str)
+        else set()
+    )
+    font_weight = coerce_float(node_value(node, "font weight"))
+    italic_angle = coerce_float(node_value(node, "italic angle"))
+    bold = _coerce_bool(node_value(node, "bold"))
+    if bold is None:
+        bold = (font_weight is not None and font_weight >= 600.0) or ("bold" in format_tokens)
+    italic = _coerce_bool(node_value(node, "italic"))
+    if italic is None:
+        italic = (
+            (italic_angle is not None and abs(italic_angle) > 0.01)
+            or ("italic" in format_tokens)
+            or ("oblique" in format_tokens)
+        )
+    underline = _coerce_bool(node_value(node, "underline"))
+    if underline is None:
+        underline = "underline" in format_tokens
+    strikethrough = _coerce_bool(node_value(node, "strikethrough"))
+    if strikethrough is None:
+        strikethrough = "strikethrough" in format_tokens or "strike" in format_tokens
+
     style = RunStyleInfo(
         font_family=node.get("font") if isinstance(node.get("font"), str) else None,
-        bold=_coerce_bool(node_value(node, "bold")) or False,
-        italic=_coerce_bool(node_value(node, "italic")) or False,
-        underline=_coerce_bool(node_value(node, "underline")) or False,
-        strikethrough=_coerce_bool(node_value(node, "strikethrough")) or False,
+        bold=bold or False,
+        italic=italic or False,
+        underline=underline or False,
+        strikethrough=strikethrough or False,
         superscript=_coerce_bool(node_value(node, "superscript")) or False,
         subscript=_coerce_bool(node_value(node, "subscript")) or False,
         size_pt=coerce_float(node.get("font size")),
@@ -71,6 +105,10 @@ def _cell_style_from_node(node: dict[str, Any]) -> CellStyleInfo | None:
         horizontal_align=normalize_align(node_value(node, "horizontal align", "text align")),
         width_pt=width_pt,
         height_pt=height_pt,
+        border_top=_coarse_border_css_from_node(node, "has top border", "border top"),
+        border_bottom=_coarse_border_css_from_node(node, "has bottom border", "border bottom"),
+        border_left=_coarse_border_css_from_node(node, "has left border", "border left"),
+        border_right=_coarse_border_css_from_node(node, "has right border", "border right"),
         rowspan=coerce_int(node.get("row span")) or 1,
         colspan=coerce_int(node.get("column span")) or 1,
     )
@@ -105,57 +143,292 @@ def _page_number_from_node(node: dict[str, Any]) -> int | None:
     return coerce_int(node.get("page number"))
 
 
+def _border_css(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = " ".join(value.split()).strip()
+    return normalized or None
+
+
+def _coarse_border_css_from_node(
+    node: dict[str, Any],
+    bool_key: str,
+    legacy_key: str,
+) -> str | None:
+    has_border = _coerce_bool(node.get(bool_key))
+    if has_border is True:
+        return "1px solid"
+    if has_border is False:
+        return None
+    return _border_css(node.get(legacy_key))
+
+
+# ---------------------------------------------------------------------------
+# Text node conversion
+# ODL semantic text nodes become ParagraphIR + RunIR here. This is the main
+# place where we preserve run-level styling while still keeping a stable
+# paragraph-level `.text` for downstream chunking/RAG paths.
+# ---------------------------------------------------------------------------
+
 def _paragraph_from_text_node(
     node: dict[str, Any],
     *,
     unit_id: str,
     paragraph_meta: PdfNodeMeta | None = None,
+    run_meta: PdfNodeMeta | None = None,
+    style_node: dict[str, Any] | None = None,
+    default_page_number: int | None = None,
 ) -> ParagraphIR | None:
-    text = extract_text_from_odl_node(node).strip()
+    text = extract_text_from_odl_node(node)
     if not text and node.get("type") not in {"caption", "header", "footer", "formula"}:
         return None
+    if not text.strip() and node.get("type") not in {"caption", "header", "footer", "formula"}:
+        return None
+    style_source = style_node or node
     resolved_meta = paragraph_meta if paragraph_meta is not None else build_pdf_node_meta(node)
-    content = [
-        RunIR(
-            unit_id=f"{unit_id}.r1",
-            text=text,
-            run_style=_run_style_from_node(node),
-            meta=resolved_meta,
-        )
-    ] if text else []
+    resolved_run_meta = run_meta if run_meta is not None else resolved_meta
+    content = _runs_from_text_node(
+        node,
+        unit_id=unit_id,
+        style_node=style_source,
+        run_meta=resolved_run_meta,
+    ) if text else []
     return ParagraphIR(
         unit_id=unit_id,
         text=text,
-        page_number=_page_number_from_node(node),
-        para_style=_para_style_from_node(node),
+        page_number=_page_number_from_node(style_source) or _page_number_from_node(node) or default_page_number,
+        para_style=_para_style_from_node(style_source),
         meta=resolved_meta,
         content=content,
     )
 
 
-def _merge_pdf_node_meta(
-    base: PdfNodeMeta | None,
+def _paragraphs_from_container_node(
+    node: dict[str, Any],
     *,
-    list_numbering_style: str | None = None,
-    previous_list_id: int | None = None,
-    next_list_id: int | None = None,
-) -> PdfNodeMeta | None:
-    if (
-        base is None
-        and list_numbering_style is None
-        and previous_list_id is None
-        and next_list_id is None
-    ):
-        return None
-    resolved = base.model_copy(deep=True) if base is not None else PdfNodeMeta()
-    if list_numbering_style is not None:
-        resolved.list_numbering_style = list_numbering_style
-    if previous_list_id is not None:
-        resolved.previous_list_id = previous_list_id
-    if next_list_id is not None:
-        resolved.next_list_id = next_list_id
-    return resolved if resolved.model_dump(exclude_defaults=True, exclude_none=True) else None
+    unit_prefix: str,
+    assets: dict[str, ImageAsset],
+) -> list[ParagraphIR]:
+    """Flatten header/footer-like wrapper nodes into paragraph units.
 
+    DocIR stays intentionally flat at the top level, so wrapper containers do
+    not survive as dedicated nodes. Their children are converted into regular
+    paragraphs/tables/images and appended in reading order.
+    """
+    paragraphs: list[ParagraphIR] = []
+    container_meta = build_pdf_node_meta(node)
+    default_page_number = _page_number_from_node(node)
+
+    for child_index, child in enumerate(node.get("kids", []), start=1):
+        child_type = child.get("type")
+        child_unit_id = f"{unit_prefix}.c{child_index}"
+        if child_type == "table":
+            paragraphs.append(
+                ParagraphIR(
+                    unit_id=child_unit_id,
+                    text="",
+                    page_number=_page_number_from_node(child) or default_page_number,
+                    para_style=_para_style_from_node(child),
+                    meta=build_pdf_node_meta(child) or container_meta,
+                    content=[_table_node_to_ir(child, unit_id=f"{child_unit_id}.tbl1", assets=assets)],
+                )
+            )
+            continue
+        if child_type == "image":
+            paragraph = _image_paragraph(child, unit_id=child_unit_id, assets=assets)
+            if paragraph.page_number is None:
+                paragraph.page_number = default_page_number
+            if paragraph.meta is None:
+                paragraph.meta = container_meta
+            paragraphs.append(paragraph)
+            continue
+        if child_type == "list":
+            paragraphs.extend(_paragraphs_from_list_node(child, unit_prefix=child_unit_id, assets=assets))
+            continue
+
+        paragraph = _paragraph_from_text_node(
+            child,
+            unit_id=child_unit_id,
+            paragraph_meta=container_meta,
+            run_meta=build_pdf_node_meta(child),
+            style_node=child,
+            default_page_number=default_page_number,
+        )
+        if paragraph is not None:
+            paragraphs.append(paragraph)
+
+    if paragraphs:
+        return paragraphs
+
+    paragraph = _paragraph_from_text_node(
+        node,
+        unit_id=unit_prefix,
+        paragraph_meta=container_meta,
+        default_page_number=default_page_number,
+    )
+    return [paragraph] if paragraph is not None else []
+
+
+def _compose_pdf_node_meta(
+    primary: PdfNodeMeta | None,
+    fallback: PdfNodeMeta | None,
+) -> PdfNodeMeta | None:
+    if primary is None:
+        return fallback
+    if fallback is None:
+        return primary
+    merged = PdfNodeMeta(
+        **{
+            **fallback.model_dump(exclude_defaults=True, exclude_none=True),
+            **primary.model_dump(exclude_defaults=True, exclude_none=True),
+        }
+    )
+    return merged if merged.model_dump(exclude_defaults=True, exclude_none=True) else None
+
+
+def _merged_style_node(
+    primary: dict[str, Any],
+    fallback: dict[str, Any],
+) -> dict[str, Any]:
+    merged = dict(fallback)
+    merged.update({key: value for key, value in primary.items() if value is not None})
+    return merged
+
+
+def _text_spans_from_node(node: dict[str, Any]) -> list[dict[str, Any]]:
+    spans = node.get("spans")
+    if not isinstance(spans, list):
+        return []
+    return [span for span in spans if isinstance(span, dict) and isinstance(span.get("content"), str)]
+
+
+def _runs_from_text_node(
+    node: dict[str, Any],
+    *,
+    unit_id: str,
+    style_node: dict[str, Any],
+    run_meta: PdfNodeMeta | None,
+) -> list[RunIR]:
+    """Convert ODL spans into RunIR and merge adjacent identical runs.
+
+    ODL span output can be very fine-grained, including whitespace chunks.
+    We preserve the information first, then merge only immediately adjacent
+    runs whose effective style/meta signatures are identical.
+    """
+    text = extract_text_from_odl_node(node)
+    spans = _text_spans_from_node(node)
+    # Current ODL span output flattens per-line chunks but does not emit explicit
+    # newline spans. When node content already contains line breaks, prefer the
+    # node-level text so preview fidelity does not regress.
+    if text and "\n" in text and not any("\n" in span.get("content", "") for span in spans):
+        return [
+            RunIR(
+                unit_id=f"{unit_id}.r1",
+                text=text,
+                run_style=_run_style_from_node(style_node),
+                meta=run_meta,
+            )
+        ]
+
+    runs: list[RunIR] = []
+    for index, span in enumerate(spans, start=1):
+        span_text = span.get("content")
+        if not isinstance(span_text, str):
+            continue
+        span_style_node = _merged_style_node(span, style_node)
+        span_meta = _compose_pdf_node_meta(build_pdf_node_meta(span), run_meta)
+        runs.append(
+            RunIR(
+                unit_id=f"{unit_id}.r{index}",
+                text=span_text,
+                run_style=_run_style_from_node(span_style_node),
+                meta=span_meta,
+            )
+        )
+    if runs:
+        return _merge_adjacent_runs(runs)
+    if not text:
+        return []
+    return [
+        RunIR(
+            unit_id=f"{unit_id}.r1",
+            text=text,
+            run_style=_run_style_from_node(style_node),
+            meta=run_meta,
+        )
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Run post-processing helpers
+# ---------------------------------------------------------------------------
+
+def _merge_adjacent_runs(runs: list[RunIR]) -> list[RunIR]:
+    if not runs:
+        return []
+    merged_runs: list[RunIR] = [runs[0].model_copy(deep=True)]
+    for run in runs[1:]:
+        current = merged_runs[-1]
+        if _can_merge_runs(current, run):
+            current.text += run.text
+            current.meta = _merge_run_meta(current.meta, run.meta)
+            continue
+        merged_runs.append(run.model_copy(deep=True))
+    return merged_runs
+
+
+def _can_merge_runs(left: RunIR, right: RunIR) -> bool:
+    return _run_style_signature(left.run_style) == _run_style_signature(
+        right.run_style
+    ) and _run_meta_signature(left.meta) == _run_meta_signature(right.meta)
+
+
+def _run_style_signature(style: RunStyleInfo | None) -> dict[str, Any] | None:
+    if style is None:
+        return None
+    return style.model_dump(exclude_defaults=True, exclude_none=True)
+
+
+def _run_meta_signature(meta: PdfNodeMeta | None) -> dict[str, Any] | None:
+    if meta is None:
+        return None
+    signature = meta.model_dump(exclude_defaults=True, exclude_none=True)
+    signature.pop("bounding_box", None)
+    return signature
+
+
+def _merge_run_meta(left: PdfNodeMeta | None, right: PdfNodeMeta | None) -> PdfNodeMeta | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    merged = left.model_copy(deep=True)
+    merged.bounding_box = _merge_bounding_boxes(left.bounding_box, right.bounding_box)
+    return merged if merged.model_dump(exclude_defaults=True, exclude_none=True) else None
+
+
+def _merge_bounding_boxes(
+    left: PdfBoundingBox | None,
+    right: PdfBoundingBox | None,
+) -> PdfBoundingBox | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return PdfBoundingBox(
+        left_pt=min(left.left_pt, right.left_pt),
+        bottom_pt=min(left.bottom_pt, right.bottom_pt),
+        right_pt=max(left.right_pt, right.right_pt),
+        top_pt=max(left.top_pt, right.top_pt),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Non-text block conversion
+# Images, tables, table cells, and list containers become normal DocIR content
+# nodes here. The goal is still a flat top-level paragraph stream, with tables
+# nested only where DocIR already supports them.
+# ---------------------------------------------------------------------------
 
 def _append_image_asset(
     assets: dict[str, ImageAsset],
@@ -219,6 +492,11 @@ def _cell_paragraphs(
     default_page_number: int | None,
     assets: dict[str, ImageAsset],
 ) -> list[ParagraphIR]:
+    """Build the paragraph stream for a table cell.
+
+    Cells can still contain nested tables/images, but from the caller's point
+    of view they always become a list of ParagraphIR entries.
+    """
     paragraphs: list[ParagraphIR] = []
     child_index = 0
     for child in children:
@@ -269,16 +547,18 @@ def _table_node_to_ir(
     unit_id: str,
     assets: dict[str, ImageAsset],
 ) -> TableIR:
-    table_meta = build_pdf_node_meta(node)
-    if table_meta is None:
-        table_meta = PdfNodeMeta(source_type="table")
+    """Convert one raw ODL table node into TableIR.
 
+    Table rows are not preserved as first-class IR nodes. Instead, cells are
+    stored flat with row/column indices, which matches the existing DocIR table
+    contract and keeps the model shared across formats.
+    """
     table = TableIR(
         unit_id=unit_id,
         row_count=coerce_int(node.get("number of rows")) or 0,
         col_count=coerce_int(node.get("number of columns")) or 0,
         table_style=_table_style_from_node(node),
-        meta=table_meta,
+        meta=build_pdf_node_meta(node),
     )
     for row in node.get("rows", []):
         for cell in row.get("cells", []):
@@ -290,7 +570,7 @@ def _table_node_to_ir(
                     unit_id=cell_unit_id,
                     row_index=row_index,
                     col_index=col_index,
-                    text=extract_text_from_odl_children(cell.get("kids", [])).strip(),
+                    text=extract_text_from_odl_children(cell.get("kids", [])),
                     cell_style=_cell_style_from_node(cell),
                     meta=build_pdf_node_meta(cell),
                     paragraphs=_cell_paragraphs(
@@ -310,21 +590,19 @@ def _paragraphs_from_list_node(
     unit_prefix: str,
     assets: dict[str, ImageAsset],
 ) -> list[ParagraphIR]:
+    """Flatten list items into normal paragraph units.
+
+    DocIR currently does not keep a dedicated list tree, so list items are
+    emitted as ordinary paragraphs in reading order. Nested tables/images are
+    still preserved inside paragraph content where supported.
+    """
     paragraphs: list[ParagraphIR] = []
-    list_numbering_style = node.get("numbering style") if isinstance(node.get("numbering style"), str) else None
-    previous_list_id = coerce_int(node.get("previous list id"))
-    next_list_id = coerce_int(node.get("next list id"))
     for index, item in enumerate(node.get("list items", []), start=1):
         unit_id = f"{unit_prefix}.li{index}"
         paragraph = _paragraph_from_text_node(
             item,
             unit_id=unit_id,
-            paragraph_meta=_merge_pdf_node_meta(
-                build_pdf_node_meta(item),
-                list_numbering_style=list_numbering_style,
-                previous_list_id=previous_list_id,
-                next_list_id=next_list_id,
-            ),
+            paragraph_meta=build_pdf_node_meta(item),
         )
         if paragraph is not None:
             paragraphs.append(paragraph)
@@ -354,6 +632,12 @@ def _paragraphs_from_list_node(
                     paragraphs.append(nested_paragraph)
     return paragraphs
 
+
+# ---------------------------------------------------------------------------
+# Page/document assembly
+# Raw ODL output is assembled into one flat DocIR paragraph list here. Page and
+# layout provenance stay in metadata; the top-level content model remains flat.
+# ---------------------------------------------------------------------------
 
 def _collect_page_numbers(value: Any, page_numbers: set[int]) -> None:
     if isinstance(value, dict):
@@ -405,6 +689,13 @@ def build_doc_ir_from_odl_result(
     doc_cls: type[DocIR] | None = None,
     **doc_kwargs: Any,
 ) -> DocIR:
+    """Build canonical DocIR from one ODL raw JSON document.
+
+    Important design choice:
+    - top-level content stays flat in ``DocIR.paragraphs``
+    - page/region/layout information remains metadata
+    - preview-only raw fields are intentionally *not* mirrored into DocIR
+    """
     assets: dict[str, ImageAsset] = {}
     paragraphs: list[ParagraphIR] = []
 
@@ -435,7 +726,21 @@ def build_doc_ir_from_odl_result(
                 order += len(list_paragraphs)
                 paragraphs.extend(list_paragraphs)
             continue
+        if node_type in {"header", "footer"}:
+            # Header/footer wrappers are flattened into ordinary paragraphs so
+            # downstream consumers do not need a PDF-only container type.
+            container_paragraphs = _paragraphs_from_container_node(
+                node,
+                unit_prefix=unit_id,
+                assets=assets,
+            )
+            if container_paragraphs:
+                order += len(container_paragraphs)
+                paragraphs.extend(container_paragraphs)
+            continue
         if node_type == "text block":
+            # `text block` is another wrapper-like construct in ODL output.
+            # Its children are emitted directly into the flat paragraph stream.
             for child in node.get("kids", []):
                 child_unit_id = f"p{order + 1}"
                 if child.get("type") == "table":
