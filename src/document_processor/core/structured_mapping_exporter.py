@@ -12,7 +12,7 @@ from .hwpx_structured_exporter import export_hwpx_structured_mapping
 
 if TYPE_CHECKING:
     from docx.document import Document as DocxDocument
-    from hwpx import HwpxDocument
+    from ..hwpx import HwpxDocument
 
 
 DocType = Literal["auto", "hwp", "hwpx", "docx", "pdf"]
@@ -48,4 +48,3 @@ def export_structured_mapping(
 
 
 __all__ = ["DocType", "export_structured_mapping"]
-
