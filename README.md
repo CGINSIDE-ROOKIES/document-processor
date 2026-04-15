@@ -1,12 +1,21 @@
 # document-processor
 
-Installable structural document parser for `hwp`, `hwpx`, and `docx`.
+Batteries-included structural document IR parser for `hwp`, `hwpx`, and `docx`.
+Provides a unified Pydantic-based data model for document structure, styles, and
+content, along with APIs for parsing, editing, annotation, and HTML export.
+
+**Requires Python 3.13+**
 
 Additional docs:
 
 - [Usage Guide](docs/usage-guide.md)
 - [API Reference](docs/api-reference.md)
-- [Editing Notes](docs/llm-editing-notes.md)
+
+## Installation
+
+```bash
+pip install document-processor
+```
 
 Local development:
 
@@ -14,23 +23,43 @@ Local development:
 uv pip install -e /path/to/document-processor
 ```
 
+### Dependencies
+
+| Package | Purpose |
+|---|---|
+| `pydantic` | IR models and validation |
+| `python-docx` | DOCX parsing and native write-back |
+| `jpype1` | HWP conversion via Java interop |
+
+
+## Quick start
+
 ```python
 from document_processor import DocIR
 
 doc = DocIR.from_file("/path/to/file.docx")
+
+print(doc.paragraphs[0].text)
+print(doc.paragraphs[0].runs[0].run_style.bold)
+
+html = doc.to_html(title="Preview")
 ```
 
-The package focuses on:
+The package covers:
 
-- document parsing
-- style extraction
+- document parsing (DOCX, HWPX, HWP)
+- style extraction (fonts, colors, alignment, spacing, borders, ...)
 - structural IR creation
 - embedded image extraction for `docx` and `hwpx`
+- stateless text editing with native file write-back
+- annotation resolution and review HTML rendering
 
 
-for specific uses, you can add metadata for processing (eg. feeding LLMs, RAG, analysis and such)
+## Custom metadata
 
-All IR models include a `.meta` field for this purpose.
+All IR models include a `.meta` field for attaching processing metadata
+(e.g. for LLMs, RAG, analysis).
+
 ```python
 for file_ in files:
     doc = DocIR.from_file(file_)
@@ -39,7 +68,6 @@ for file_ in files:
         a: int = 1
         b: str = "test"
 
-    # add your processing logic
     metainfo = MyMetaData(a=2)
     doc.paragraphs[0].runs[0].meta = metainfo
 
@@ -52,9 +80,8 @@ for file_ in files:
 
     print(f"completed: {file_}")
 ```
-> **! Note !**
->
-> Metadata obj. needs to extend Pydantic BaseModels. If not, it'll thow a validation error.
+
+> **Note:** Metadata objects must extend Pydantic `BaseModel`. Otherwise a validation error is raised.
 
 
 ## Images in the IR
@@ -71,6 +98,61 @@ html = doc.to_html()
 ```
 
 
+## Editing documents
+
+The stateless edit API lets you apply text edits to documents. Edits are
+validated before application, and results can be returned as an updated `DocIR`,
+written back to the native file format, or returned as bytes.
+
+```python
+from document_processor import (
+    apply_text_edits,
+    ApplyTextEditsRequest,
+    DocumentInput,
+    TextEdit,
+)
+
+result = apply_text_edits(ApplyTextEditsRequest(
+    document=DocumentInput(source_path="/path/to/file.docx"),
+    edits=[TextEdit(
+        target_unit_id="s1.p3",
+        expected_text="old text",
+        new_text="new text",
+    )],
+))
+```
+
+Related helpers:
+
+- `get_document_context()` &mdash; fetch surrounding paragraphs for target IDs
+- `list_editable_targets()` &mdash; enumerate safe edit targets
+- `validate_text_edits()` &mdash; dry-run validation without applying
+
+
+## Annotations and review HTML
+
+Resolve text annotations against a document and render a highlighted review page:
+
+```python
+from document_processor import (
+    render_review_html,
+    RenderReviewHtmlRequest,
+    DocumentInput,
+    TextAnnotation,
+)
+
+result = render_review_html(RenderReviewHtmlRequest(
+    document=DocumentInput(source_path="/path/to/file.docx"),
+    annotations=[TextAnnotation(
+        anchor_text="some phrase",
+        comment="Needs revision",
+    )],
+))
+
+html = result.html
+```
+
+
 ## Exporting HTML
 
 Render a parsed document to styled HTML:
@@ -83,7 +165,7 @@ html = doc.to_html(title="Preview")
 ```
 
 
-## Visualizing the Models
+## Visualizing the models
 
 Install the visualization extra first:
 
