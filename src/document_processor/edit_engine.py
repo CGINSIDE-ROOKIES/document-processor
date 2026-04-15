@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import difflib
 from io import BytesIO
 from pathlib import Path
@@ -271,6 +272,19 @@ def _build_docx_index(doc) -> _EditableDocIndex:
 _SECTION_NAME_RE = re.compile(r"^Contents/section(\d+)\.xml$")
 _HP_NS = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 _HP = f"{{{_HP_NS}}}"
+_XML_PREFIX_AND_ROOT_RE = re.compile(
+    rb"^(?P<prefix>\s*(?:<\?xml[^>]*\?>\s*)?)(?P<root_open><[^!?][^>]*>)",
+    re.DOTALL,
+)
+
+
+@dataclass
+class _EditableHwpxSection:
+    name: str
+    root: ET.Element
+    xml_prefix: bytes
+    original_root_open: bytes
+    namespaces: list[tuple[str, str]]
 
 
 def _run_text(run_el: ET.Element) -> str:
@@ -324,22 +338,63 @@ def _logical_table_cells(row_el: ET.Element) -> list[tuple[int, ET.Element]]:
     return logical_cells
 
 
+def _collect_xml_namespaces(xml_bytes: bytes) -> list[tuple[str, str]]:
+    namespaces: list[tuple[str, str]] = []
+    for _event, item in ET.iterparse(BytesIO(xml_bytes), events=("start-ns",)):
+        if item not in namespaces:
+            namespaces.append(item)
+    return namespaces
+
+
+def _split_xml_prefix_and_root_open(xml_bytes: bytes) -> tuple[bytes, bytes] | None:
+    match = _XML_PREFIX_AND_ROOT_RE.match(xml_bytes)
+    if match is None:
+        return None
+    return match.group("prefix"), match.group("root_open")
+
+
+def _serialize_hwpx_section(section: _EditableHwpxSection) -> bytes:
+    for prefix, uri in section.namespaces:
+        ET.register_namespace(prefix, uri)
+
+    serialized = ET.tostring(section.root, encoding="utf-8", xml_declaration=False)
+    generated_parts = _split_xml_prefix_and_root_open(serialized)
+    if generated_parts is None:
+        return serialized if not section.xml_prefix else section.xml_prefix + serialized
+
+    _generated_prefix, generated_root_open = generated_parts
+    generated_body = serialized[len(generated_root_open) :]
+    return section.xml_prefix + section.original_root_open + generated_body
+
+
 class _EditableHwpxArchive:
-    def __init__(self, *, source_path: Path, source_bytes: bytes, section_entries: list[tuple[str, ET.Element]]) -> None:
+    def __init__(
+        self,
+        *,
+        source_path: Path,
+        source_bytes: bytes,
+        section_entries: list[_EditableHwpxSection],
+    ) -> None:
         self.source_path = source_path
         self.source_bytes = source_bytes
         self.section_entries = section_entries
 
     @staticmethod
-    def _load_section_entries(source_bytes: bytes) -> list[tuple[str, ET.Element]]:
+    def _load_section_entries(source_bytes: bytes) -> list[_EditableHwpxSection]:
         with zipfile.ZipFile(BytesIO(source_bytes)) as archive:
             return sorted(
                 [
-                    (name, ET.fromstring(archive.read(name)))
+                    _EditableHwpxSection(
+                        name=name,
+                        root=ET.fromstring(section_bytes := archive.read(name)),
+                        xml_prefix=(split_parts[0] if (split_parts := _split_xml_prefix_and_root_open(section_bytes)) else b""),
+                        original_root_open=(split_parts[1] if split_parts else b""),
+                        namespaces=_collect_xml_namespaces(section_bytes),
+                    )
                     for name in archive.namelist()
                     if _SECTION_NAME_RE.match(name)
                 ],
-                key=lambda item: int(_SECTION_NAME_RE.match(item[0]).group(1)),
+                key=lambda item: int(_SECTION_NAME_RE.match(item.name).group(1)),
             )
 
     @classmethod
@@ -361,12 +416,9 @@ class _EditableHwpxArchive:
         return cls(source_path=path, source_bytes=source_bytes, section_entries=section_entries)
 
     def write_to(self, output_path: str | Path) -> None:
-        ET.register_namespace("hs", "http://www.hancom.co.kr/hwpml/2011/section")
-        ET.register_namespace("hp", _HP_NS)
-
         section_bytes = {
-            name: ET.tostring(root, encoding="utf-8", xml_declaration=True)
-            for name, root in self.section_entries
+            section.name: _serialize_hwpx_section(section)
+            for section in self.section_entries
         }
 
         output = Path(output_path)
@@ -425,8 +477,8 @@ def _build_hwpx_index(archive: _EditableHwpxArchive) -> _EditableDocIndex:
                         paragraph_ref.has_non_run_content = True
                         walk_table(nested_table, f"{paragraph_id}.tbl{nested_index}")
 
-    for section_index, (_section_name, section_root) in enumerate(archive.section_entries, start=1):
-        for paragraph_index, paragraph_el in enumerate(_iter_section_paragraphs(section_root), start=1):
+    for section_index, section in enumerate(archive.section_entries, start=1):
+        for paragraph_index, paragraph_el in enumerate(_iter_section_paragraphs(section.root), start=1):
             paragraph_id = f"s{section_index}.p{paragraph_index}"
             paragraph_ref = register_paragraph(paragraph_el, paragraph_id)
             for table_index, table_el in enumerate(_iter_paragraph_tables(paragraph_el), start=1):
@@ -668,6 +720,37 @@ def _default_output_path(source_path: Path, *, output_suffix: str | None = None)
     return source_path.with_name(f"{source_path.stem}_edited{suffix}")
 
 
+def _expected_writeback_suffix(source_doc_type: str | None) -> str | None:
+    if source_doc_type == "docx":
+        return ".docx"
+    if source_doc_type in {"hwpx", "hwp"}:
+        return ".hwpx"
+    return None
+
+
+def _normalize_output_path_for_source_doc_type(
+    target_path: Path,
+    *,
+    source_doc_type: str | None,
+    result: ApplyEditsResult,
+) -> Path:
+    expected_suffix = _expected_writeback_suffix(source_doc_type)
+    if expected_suffix is None or target_path.suffix.lower() == expected_suffix:
+        return target_path
+
+    adjusted_target_path = target_path.with_suffix(expected_suffix)
+    if source_doc_type == "hwp":
+        result.warnings.append(
+            f"HWP sources are written back as HWPX; adjusted output path to {adjusted_target_path}."
+        )
+    else:
+        result.warnings.append(
+            f"{str(source_doc_type).upper()} write-back keeps the native {expected_suffix} format; "
+            f"adjusted output path to {adjusted_target_path}."
+        )
+    return adjusted_target_path
+
+
 def _same_path(left: Path, right: Path) -> bool:
     return left.expanduser().resolve(strict=False) == right.expanduser().resolve(strict=False)
 
@@ -793,13 +876,11 @@ def apply_edits_to_file(
     result = ApplyEditsResult(source_doc_type=doc.source_doc_type)
     target_suffix = ".hwpx" if doc.source_doc_type == "hwp" else None
     target_path = Path(output_path) if output_path is not None else _default_output_path(source, output_suffix=target_suffix)
-
-    if doc.source_doc_type == "hwp" and target_path.suffix.lower() != ".hwpx":
-        adjusted_target_path = target_path.with_suffix(".hwpx")
-        result.warnings.append(
-            f"HWP sources are written back as HWPX; adjusted output path to {adjusted_target_path}."
-        )
-        target_path = adjusted_target_path
+    target_path = _normalize_output_path_for_source_doc_type(
+        target_path,
+        source_doc_type=doc.source_doc_type,
+        result=result,
+    )
 
     if _same_path(source, target_path):
         raise EditValidationError(

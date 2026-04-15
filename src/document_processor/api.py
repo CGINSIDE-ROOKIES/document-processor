@@ -403,9 +403,7 @@ def _validate_apply_output_request(
     if output_path is None:
         return EditValidationResult()
 
-    final_output_path = output_path
-    if source_doc_type == "hwp" and final_output_path.suffix.lower() != ".hwpx":
-        final_output_path = final_output_path.with_suffix(".hwpx")
+    final_output_path = _normalize_output_path_for_source_doc_type(output_path, source_doc_type)
 
     if _same_path(source, final_output_path):
         return EditValidationResult(
@@ -422,6 +420,14 @@ def _validate_apply_output_request(
         )
 
     return EditValidationResult()
+
+
+def _normalize_output_path_for_source_doc_type(output_path: Path, source_doc_type: str | None) -> Path:
+    if source_doc_type == "docx" and output_path.suffix.lower() != ".docx":
+        return output_path.with_suffix(".docx")
+    if source_doc_type in {"hwpx", "hwp"} and output_path.suffix.lower() != ".hwpx":
+        return output_path.with_suffix(".hwpx")
+    return output_path
 
 
 def _validate_text_annotations_for_doc(

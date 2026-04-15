@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from io import BytesIO
+from pathlib import Path
+import tempfile
 import unittest
+import zipfile
 
 from document_processor import (
     ApplyTextEditsRequest,
@@ -31,6 +34,46 @@ class EditorApiTests(unittest.TestCase):
         buffer = BytesIO()
         docx.save(buffer)
         return buffer.getvalue()
+
+    @staticmethod
+    def _build_sample_hwpx_bytes() -> bytes:
+        hwpx_bytes = BytesIO()
+        with zipfile.ZipFile(hwpx_bytes, "w") as archive:
+            archive.writestr(
+                "Contents/header.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core" />
+""",
+            )
+            archive.writestr(
+                "Contents/section0.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p>
+    <hp:run><hp:t>Hello </hp:t></hp:run>
+    <hp:run><hp:t>World</hp:t></hp:run>
+  </hp:p>
+</hs:sec>
+""",
+            )
+        return hwpx_bytes.getvalue()
+
+    @staticmethod
+    def _build_namespaced_hwpx_bytes() -> bytes:
+        hwpx_bytes = BytesIO()
+        with zipfile.ZipFile(hwpx_bytes, "w") as archive:
+            archive.writestr(
+                "Contents/header.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core" />
+""",
+            )
+            archive.writestr(
+                "Contents/section0.xml",
+                """<?xml version="1.0" encoding="UTF-8" standalone="yes" ?><hs:sec xmlns:ha="http://www.hancom.co.kr/hwpml/2011/app" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core"><hc:pt0 x="0" y="0"/><hp:p><hp:run><hp:t>Hello </hp:t></hp:run><hp:run><hp:t>World</hp:t></hp:run></hp:p></hs:sec>
+""",
+            )
+        return hwpx_bytes.getvalue()
 
     def test_get_document_context_accepts_bytes_backed_input(self) -> None:
         result = get_document_context(
@@ -106,6 +149,67 @@ class EditorApiTests(unittest.TestCase):
         self.assertIsNone(result.output_bytes)
         self.assertIsNotNone(result.updated_doc_ir)
         self.assertEqual(result.updated_doc_ir.paragraphs[0].text, "Hello Contract World")
+
+    def test_apply_text_edits_normalizes_hwpx_output_suffix_for_path_backed_writeback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source = Path(tmp_dir) / "sample.hwpx"
+            requested_output = Path(tmp_dir) / "sample_edited.docx"
+            source.write_bytes(self._build_sample_hwpx_bytes())
+
+            result = apply_text_edits(
+                ApplyTextEditsRequest(
+                    document=DocumentInput(source_path=str(source)),
+                    edits=[
+                        TextEdit(
+                            target_kind="run",
+                            target_unit_id="s1.p1.r2",
+                            expected_text="World",
+                            new_text="HWPX",
+                            reason="Rename token",
+                        )
+                    ],
+                    output_path=str(requested_output),
+                    return_doc_ir=True,
+                )
+            )
+
+            self.assertTrue(result.ok)
+            self.assertEqual(Path(result.output_path).suffix, ".hwpx")
+            self.assertEqual(Path(result.output_path).name, "sample_edited.hwpx")
+            self.assertTrue(any("adjusted output path" in warning for warning in result.warnings))
+            self.assertEqual(result.updated_doc_ir.paragraphs[0].text, "Hello HWPX")
+
+    def test_apply_text_edits_preserves_hwpx_namespace_prefixes_and_declaration(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source = Path(tmp_dir) / "sample.hwpx"
+            output = Path(tmp_dir) / "sample_edited.hwpx"
+            source.write_bytes(self._build_namespaced_hwpx_bytes())
+
+            result = apply_text_edits(
+                ApplyTextEditsRequest(
+                    document=DocumentInput(source_path=str(source)),
+                    edits=[
+                        TextEdit(
+                            target_kind="run",
+                            target_unit_id="s1.p1.r2",
+                            expected_text="World",
+                            new_text="HWPX",
+                            reason="Rename token",
+                        )
+                    ],
+                    output_path=str(output),
+                )
+            )
+
+            self.assertTrue(result.ok)
+            with zipfile.ZipFile(output) as archive:
+                section_xml = archive.read("Contents/section0.xml")
+
+            self.assertTrue(section_xml.startswith(b'<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>'))
+            self.assertIn(b'xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core"', section_xml)
+            self.assertIn(b"<hc:pt0", section_xml)
+            self.assertNotIn(b"xmlns:ns", section_xml)
+            self.assertIn(b"HWPX", section_xml)
 
     def test_render_review_html_accepts_doc_ir_input(self) -> None:
         doc = DocIR.from_mapping({"s1.p1.r1": "Hello"})
