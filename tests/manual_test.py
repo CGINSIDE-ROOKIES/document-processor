@@ -1,9 +1,10 @@
-from document_processor import DocIR
-from pydantic import BaseModel
-
 import json
 from os import listdir
 from pathlib import Path
+
+from document_processor import DocIR
+from pydantic import BaseModel
+
 
 doc_dir = Path("/home/maxjo/Work/LAS-system/apps/backend/doc_processor/tests/doc_samples/new_test")
 out_dir = Path("/home/maxjo/Work/LAS-system/apps/backend/doc_processor/tests/results")
