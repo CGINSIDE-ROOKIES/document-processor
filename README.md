@@ -2,6 +2,18 @@
 
 Installable structural document parser for `hwp`, `hwpx`, and `docx`.
 
+Additional docs:
+
+- [Usage Guide](docs/usage-guide.md)
+- [API Reference](docs/api-reference.md)
+- [Editing Notes](docs/llm-editing-notes.md)
+
+Local development:
+
+```bash
+uv pip install -e /path/to/document-processor
+```
+
 ```python
 from document_processor import DocIR
 

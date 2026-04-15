@@ -109,8 +109,8 @@ Recommended future annotation schema:
 ```python
 class Annotation(BaseModel):
     target_unit_id: str
-    start: int | None = None
-    end: int | None = None
+    selected_text: str | None = None
+    occurrence_index: int | None = None
     label: str
     color: str = "#FFFF00"
     note: str = ""
@@ -119,10 +119,11 @@ class Annotation(BaseModel):
 Recommended anchoring:
 
 - primary: `unit_id`
-- optional: offsets within `RunIR.text` or `ParagraphIR.text`
+- optional exact `selected_text` inside `RunIR.text` or `ParagraphIR.text`
+- optional `occurrence_index` when the same substring repeats
 
-This is preferable to global exact-text matching because repeated text is less
-ambiguous.
+Canonical offsets should be resolved by the backend after exact-text matching
+rather than generated directly by the model.
 
 Native source-document comments/highlights are a separate format-specific
 problem and should not be coupled to the initial HTML annotation feature.
@@ -154,5 +155,5 @@ conversion.
 3. Implement deterministic validation
 4. Implement same-format run write-back
 5. Extend to cell run edits
-6. Add annotation DTOs anchored by `unit_id` + offsets
+6. Add annotation DTOs anchored by `unit_id` + exact `selected_text`
 7. Keep table markdown as read-only LLM context
