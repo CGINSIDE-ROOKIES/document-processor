@@ -7,12 +7,21 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, BinaryIO, Generic, TypeAlias, TypeVar
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field, PrivateAttr, computed_field
 
 from .io_utils import TemporarySourcePath, coerce_source_to_supported_value, get_source_name, infer_doc_type
 from .style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
 
 T = TypeVar("T", bound=BaseModel)
+
+
+class BoundingBox(BaseModel):
+    """Generic layout bounding box in page coordinates."""
+
+    left_pt: float
+    bottom_pt: float
+    right_pt: float
+    top_pt: float
 
 
 class RunIR(BaseModel, Generic[T]):
@@ -23,6 +32,7 @@ class RunIR(BaseModel, Generic[T]):
 
     unit_id: str
     text: str = ""
+    bbox: BoundingBox | None = None
     run_style: RunStyleInfo | None = None
 
 
@@ -84,6 +94,7 @@ class ImageIR(BaseModel, Generic[T]):
     image_id: str
     alt_text: str | None = None
     title: str | None = None
+    bbox: BoundingBox | None = None
     display_width_pt: float | None = None
     display_height_pt: float | None = None
 
@@ -97,6 +108,7 @@ class ParagraphIR(BaseModel, Generic[T]):
     unit_id: str
     text: str = ""
     page_number: int | None = None
+    bbox: BoundingBox | None = None
     para_style: ParaStyleInfo | None = None
     content: list["ParagraphContentNode"] = Field(default_factory=list)
 
@@ -152,6 +164,7 @@ class TableCellIR(BaseModel, Generic[T]):
     row_index: int
     col_index: int
     text: str = ""
+    bbox: BoundingBox | None = None
     cell_style: CellStyleInfo | None = None
     paragraphs: list["ParagraphIR"] = Field(default_factory=list)
 
@@ -168,6 +181,7 @@ class TableIR(BaseModel, Generic[T]):
     unit_id: str
     row_count: int = 0
     col_count: int = 0
+    bbox: BoundingBox | None = None
     table_style: TableStyleInfo | None = None
     cells: list[TableCellIR] = Field(default_factory=list)
 
@@ -178,6 +192,8 @@ class TableIR(BaseModel, Generic[T]):
 
 class DocIR(BaseModel, Generic[T]):
     """Top-level structural document IR."""
+
+    _pdf_preview_context: Any = PrivateAttr(default=None)
 
     meta: T | None = None
 
@@ -196,6 +212,12 @@ class DocIR(BaseModel, Generic[T]):
     def get_image_asset(self, image_or_id: ImageIR | str) -> ImageAsset[T] | None:
         image_id = image_or_id if isinstance(image_or_id, str) else image_or_id.image_id
         return self.assets.get(image_id)
+
+    def set_pdf_preview_context(self, preview_context: Any) -> None:
+        self._pdf_preview_context = preview_context
+
+    def get_pdf_preview_context(self) -> Any:
+        return self._pdf_preview_context
 
     @classmethod
     def from_file(
@@ -303,12 +325,17 @@ class DocIR(BaseModel, Generic[T]):
 
     def to_html(self, *, title: str | None = None) -> str:
         """Render this document IR as styled HTML."""
-        if (self.source_doc_type or "").lower() == "pdf" and self.source_path:
-            from .pdf.pipeline import _build_pdf_preview_context_for_path
+        if (self.source_doc_type or "").lower() == "pdf":
             from .pdf.preview import render_pdf_preview_html
 
-            preview_context = _build_pdf_preview_context_for_path(self.source_path)
-            return render_pdf_preview_html(self, preview_context=preview_context, title=title)
+            preview_context = self.get_pdf_preview_context()
+            if preview_context is None and self.source_path:
+                from .pdf.pipeline import _build_pdf_preview_context_for_path
+
+                preview_context = _build_pdf_preview_context_for_path(self.source_path)
+                self.set_pdf_preview_context(preview_context)
+            if preview_context is not None:
+                return render_pdf_preview_html(self, preview_context=preview_context, title=title)
 
         from .render_prep import prepare_doc_ir_for_html
         from .html_exporter import render_html_document
@@ -429,6 +456,7 @@ def _render_table_markdown(
 
 
 __all__ = [
+    "BoundingBox",
     "DocIR",
     "ImageAsset",
     "ImageIR",

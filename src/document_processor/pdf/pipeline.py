@@ -77,7 +77,11 @@ def _build_pdf_preview_context_for_path(
             "image_output": resolved_config.odl.image_output or "embedded",
         },
     )
-    return build_pdf_preview_context(raw_document)
+    return build_pdf_preview_context(
+        raw_document,
+        pdf_path=source_path,
+        page_numbers=structured_pages,
+    )
 
 
 def _parse_pdf_to_doc_ir_with_preview(
@@ -143,7 +147,11 @@ def _parse_pdf_with_optional_preview(
         # The same raw document feeds two outputs:
         # 1. canonical DocIR
         # 2. preview-only sidecar context
-        preview_context = build_pdf_preview_context(raw_document)
+        preview_context = build_pdf_preview_context(
+            raw_document,
+            pdf_path=source_path,
+            page_numbers=structured_pages,
+        )
         doc_ir = build_doc_ir_from_odl_result(
             raw_document,
             source_path=str(source_path),
@@ -184,6 +192,7 @@ def _parse_pdf_with_optional_preview(
         if decision.page_class == PageClass.SCAN_LIKE
     ]
     doc_ir.meta = document_meta
+    doc_ir.set_pdf_preview_context(preview_context)
     return doc_ir, preview_context
 
 

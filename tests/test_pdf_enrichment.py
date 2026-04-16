@@ -283,6 +283,24 @@ class PdfEnrichmentTests(unittest.TestCase):
         build_preview_context.assert_called_once_with("/tmp/example.pdf")
         render_preview.assert_called_once()
 
+    def test_docir_to_html_uses_attached_pdf_preview_context_before_rebuilding(self) -> None:
+        doc = DocIR(source_doc_type="pdf", source_path="/tmp/example.pdf")
+        attached_context = object()
+        doc.set_pdf_preview_context(attached_context)
+
+        with patch(
+            "document_processor.pdf.pipeline._build_pdf_preview_context_for_path"
+        ) as build_preview_context, patch(
+            "document_processor.pdf.preview.render_pdf_preview_html"
+        ) as render_preview:
+            render_preview.return_value = "<html>preview</html>"
+
+            html = doc.to_html()
+
+        self.assertEqual(html, "<html>preview</html>")
+        build_preview_context.assert_not_called()
+        render_preview.assert_called_once_with(doc, preview_context=attached_context, title=None)
+
     def test_docir_to_html_routes_pdf_without_source_path_through_render_prep(self) -> None:
         doc = DocIR(source_doc_type="pdf")
 
