@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from ...models import PageInfo
 from ..meta import PdfBoundingBox
 from .models import (
     PdfPreviewVisualPrimitive,
@@ -96,6 +97,21 @@ def _bbox_contains(container: PdfBoundingBox, item: PdfBoundingBox, *, tolerance
         and container.bottom_pt - tolerance_pt <= item.bottom_pt
         and container.right_pt + tolerance_pt >= item.right_pt
         and container.top_pt + tolerance_pt >= item.top_pt
+    )
+
+
+def _bbox_distance(left: PdfBoundingBox, right: PdfBoundingBox) -> float:
+    return abs(left.left_pt - right.left_pt) + abs(left.bottom_pt - right.bottom_pt) + abs(
+        left.right_pt - right.right_pt
+    ) + abs(left.top_pt - right.top_pt)
+
+
+def _page_content_margins(page: PageInfo) -> tuple[float, float, float, float]:
+    return (
+        page.margin_top_pt if page.margin_top_pt is not None else 48.0,
+        page.margin_right_pt if page.margin_right_pt is not None else 42.0,
+        page.margin_bottom_pt if page.margin_bottom_pt is not None else 48.0,
+        page.margin_left_pt if page.margin_left_pt is not None else 42.0,
     )
 
 

@@ -7,7 +7,6 @@ from typing import Any
 from ...models import DocIR, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
 from ...style_types import CellStyleInfo, TableStyleInfo
 from ..meta import PdfBoundingBox
-from .render import _page_content_margins
 from .layout import (
     _build_logical_pages_for_page,
     _collapse_image_strip_paragraphs,
@@ -34,7 +33,7 @@ from .models import (
     _PreviewCompositionEntry,
     _PreviewRenderNode,
 )
-from .shared import _bbox_area, _bbox_center, _bbox_contains, _bbox_intersection, _bbox_touches_or_near
+from .shared import _bbox_area, _bbox_center, _bbox_contains, _bbox_distance, _bbox_intersection, _bbox_touches_or_near, _page_content_margins
 
 
 def _paragraph_reading_order(paragraph: ParagraphIR, fallback_index: int) -> tuple[int, int]:
@@ -677,8 +676,6 @@ def _candidate_matches_table_bbox(
     candidate_bbox: PdfBoundingBox,
     table_bbox: PdfBoundingBox,
 ) -> bool:
-    from .prepare import _bbox_distance
-
     intersection = _bbox_intersection(candidate_bbox, table_bbox)
     if intersection is None:
         return False

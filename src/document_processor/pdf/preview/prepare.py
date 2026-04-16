@@ -5,15 +5,9 @@ from __future__ import annotations
 from ...models import DocIR
 from ...style_types import CellStyleInfo
 from ..enhancement import enrich_pdf_table_backgrounds, enrich_pdf_table_borders
-from ..meta import PdfBoundingBox
 from .compose import _normalize_pdf_doc_for_flow
 from .models import PdfPreviewContext, PdfPreviewTableContext
-
-
-def _bbox_distance(left: PdfBoundingBox, right: PdfBoundingBox) -> float:
-    return abs(left.left_pt - right.left_pt) + abs(left.bottom_pt - right.bottom_pt) + abs(
-        left.right_pt - right.right_pt
-    ) + abs(left.top_pt - right.top_pt)
+from .shared import _bbox_distance
 
 
 def prepare_pdf_for_html(

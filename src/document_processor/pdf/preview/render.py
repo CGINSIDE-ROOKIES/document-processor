@@ -27,16 +27,7 @@ from .models import (
     _PreviewCompositionEntry,
     _PreviewRenderNode,
 )
-from .shared import _bbox_area
-
-
-def _page_content_margins(page: PageInfo) -> tuple[float, float, float, float]:
-    return (
-        page.margin_top_pt if page.margin_top_pt is not None else 48.0,
-        page.margin_right_pt if page.margin_right_pt is not None else 42.0,
-        page.margin_bottom_pt if page.margin_bottom_pt is not None else 48.0,
-        page.margin_left_pt if page.margin_left_pt is not None else 42.0,
-    )
+from .shared import _bbox_area, _page_content_margins
 
 
 def _render_preview_body(doc_ir: DocIR, *, preview_context: PdfPreviewContext) -> str:
