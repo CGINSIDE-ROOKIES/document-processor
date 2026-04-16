@@ -7,6 +7,7 @@ from typing import Any
 from ...models import DocIR, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
 from ...style_types import CellStyleInfo, TableStyleInfo
 from ..meta import PdfBoundingBox
+from .render import _page_content_margins
 from .layout import (
     _build_logical_pages_for_page,
     _collapse_image_strip_paragraphs,
@@ -34,21 +35,6 @@ from .models import (
     _PreviewRenderNode,
 )
 from .shared import _bbox_area, _bbox_center, _bbox_contains, _bbox_intersection, _bbox_touches_or_near
-
-
-def _bbox_distance(left: PdfBoundingBox, right: PdfBoundingBox) -> float:
-    return abs(left.left_pt - right.left_pt) + abs(left.bottom_pt - right.bottom_pt) + abs(
-        left.right_pt - right.right_pt
-    ) + abs(left.top_pt - right.top_pt)
-
-
-def _page_content_margins(page: PageInfo) -> tuple[float, float, float, float]:
-    return (
-        page.margin_top_pt if page.margin_top_pt is not None else 48.0,
-        page.margin_right_pt if page.margin_right_pt is not None else 42.0,
-        page.margin_bottom_pt if page.margin_bottom_pt is not None else 48.0,
-        page.margin_left_pt if page.margin_left_pt is not None else 42.0,
-    )
 
 
 def _paragraph_reading_order(paragraph: ParagraphIR, fallback_index: int) -> tuple[int, int]:
@@ -691,6 +677,8 @@ def _candidate_matches_table_bbox(
     candidate_bbox: PdfBoundingBox,
     table_bbox: PdfBoundingBox,
 ) -> bool:
+    from .prepare import _bbox_distance
+
     intersection = _bbox_intersection(candidate_bbox, table_bbox)
     if intersection is None:
         return False
