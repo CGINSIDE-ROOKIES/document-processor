@@ -16,14 +16,16 @@ from document_processor.pdf.preview import (
     PdfPreviewVisualBlockCandidate,
     PdfPreviewVisualPrimitive,
     _build_logical_pages_for_page,
-    _build_visual_block_candidates,
-    _connected_line_components,
-    _extract_pdfium_visual_primitives,
-    build_pdf_preview_context,
-    render_pdf_html,
     prepare_pdf_for_html,
+    render_pdf_html,
     render_pdf_preview_html,
 )
+from document_processor.pdf.preview.candidates import (
+    _build_visual_block_candidates,
+    _connected_line_components,
+)
+from document_processor.pdf.preview.context import build_pdf_preview_context
+from document_processor.pdf.preview.primitives import _extract_pdfium_visual_primitives
 
 
 class PdfPreviewTests(unittest.TestCase):
