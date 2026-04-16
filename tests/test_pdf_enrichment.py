@@ -272,7 +272,7 @@ class PdfEnrichmentTests(unittest.TestCase):
         with patch(
             "document_processor.pdf.pipeline._build_pdf_preview_context_for_path"
         ) as build_preview_context, patch(
-            "document_processor.pdf.preview.render_pdf_preview_html"
+            "document_processor.pdf.preview.render.render_pdf_preview_html"
         ) as render_preview:
             build_preview_context.return_value = object()
             render_preview.return_value = "<html>preview</html>"
@@ -291,7 +291,7 @@ class PdfEnrichmentTests(unittest.TestCase):
         with patch(
             "document_processor.pdf.pipeline._build_pdf_preview_context_for_path"
         ) as build_preview_context, patch(
-            "document_processor.pdf.preview.render_pdf_preview_html"
+            "document_processor.pdf.preview.render.render_pdf_preview_html"
         ) as render_preview:
             render_preview.return_value = "<html>preview</html>"
 

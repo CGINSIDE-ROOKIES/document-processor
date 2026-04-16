@@ -18,7 +18,8 @@ from .enhancement import enrich_pdf_table_borders
 from .meta import PdfDocumentMeta
 from .odl import build_doc_ir_from_odl_result, run_odl_json
 from .parsing import PageClass, PdfProfile, decide_page, probe_pdf
-from .preview import PdfPreviewContext, build_pdf_preview_context
+from .preview.context import build_pdf_preview_context
+from .preview.models import PdfPreviewContext
 
 
 def parse_pdf_to_doc_ir(

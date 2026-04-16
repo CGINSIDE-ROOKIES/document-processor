@@ -12,19 +12,18 @@ if str(SRC_ROOT) not in sys.path:
 
 from document_processor.pdf.odl import build_doc_ir_from_odl_result
 from document_processor.pdf.meta import PdfBoundingBox
-from document_processor.pdf.preview import (
-    PdfPreviewVisualBlockCandidate,
-    PdfPreviewVisualPrimitive,
-    prepare_pdf_for_html,
-    render_pdf_html,
-    render_pdf_preview_html,
-)
 from document_processor.pdf.preview.candidates import (
     _build_visual_block_candidates,
     _connected_line_components,
 )
 from document_processor.pdf.preview.context import build_pdf_preview_context
+from document_processor.pdf.preview.models import (
+    PdfPreviewVisualBlockCandidate,
+    PdfPreviewVisualPrimitive,
+)
 from document_processor.pdf.preview.layout import _build_logical_pages_for_page
+from document_processor.pdf.preview.prepare import prepare_pdf_for_html
+from document_processor.pdf.preview.render import render_pdf_html, render_pdf_preview_html
 from document_processor.pdf.preview.primitives import _extract_pdfium_visual_primitives
 
 

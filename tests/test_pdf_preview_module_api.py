@@ -30,18 +30,22 @@ class PdfPreviewModuleApiTests(unittest.TestCase):
     def test_preview_root_exports_minimal_public_api(self) -> None:
         module = importlib.import_module("document_processor.pdf.preview")
         expected_exports = {
+            "prepare_pdf_for_html",
+            "render_pdf_html",
+            "render_pdf_preview_html",
+            "render_pdf_preview_html_from_file",
+        }
+        forbidden_exports = {
             "PdfLayoutRegion",
             "PdfPreviewVisualBlockCandidate",
             "PdfPreviewContext",
             "PdfPreviewTableContext",
             "PdfPreviewVisualPrimitive",
             "build_pdf_preview_context",
-            "prepare_pdf_for_html",
-            "render_pdf_html",
-            "render_pdf_preview_html",
-            "render_pdf_preview_html_from_file",
         }
 
         self.assertEqual(set(getattr(module, "__all__", [])), expected_exports)
         for export_name in expected_exports:
             self.assertTrue(hasattr(module, export_name))
+        for export_name in forbidden_exports:
+            self.assertFalse(hasattr(module, export_name))
