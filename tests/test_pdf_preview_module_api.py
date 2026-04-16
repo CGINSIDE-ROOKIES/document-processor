@@ -1,7 +1,14 @@
 from __future__ import annotations
 
 import importlib
+from pathlib import Path
+import sys
 import unittest
+
+THIS_DIR = Path(__file__).resolve().parent
+SRC_ROOT = THIS_DIR.parent / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 
 class PdfPreviewModuleApiTests(unittest.TestCase):
