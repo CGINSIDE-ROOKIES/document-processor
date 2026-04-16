@@ -9,6 +9,7 @@ from ..meta import PdfBoundingBox, coerce_bbox, coerce_float, coerce_int
 from .candidates import _build_visual_block_candidates
 from .models import PdfLayoutRegion, PdfPreviewContext, PdfPreviewTableContext
 from .primitives import _extract_pdfium_visual_primitives
+from .shared import _bbox_from_bounds, _has_central_vertical_gutter, _pdfium_text_boxes, _union_box_bounds
 
 
 def build_pdf_preview_context(
@@ -150,8 +151,6 @@ def _augment_layout_regions_with_pdfium(
 
 
 def _detect_pdfium_split_regions(page, *, page_number: int) -> list[PdfLayoutRegion]:  # noqa: ANN001
-    from . import _bbox_from_bounds, _has_central_vertical_gutter, _pdfium_text_boxes, _union_box_bounds
-
     page_width = page.get_width() or 0.0
     page_height = page.get_height() or 0.0
     if page_width <= 0.0 or page_height <= 0.0:

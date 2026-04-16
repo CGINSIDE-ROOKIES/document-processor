@@ -15,13 +15,29 @@ from .models import (
     _VISUAL_OPEN_FRAME_PRIMITIVE_LIMIT,
     _VISUAL_TOUCH_TOLERANCE_PT,
 )
+from .shared import (
+    _bbox_contains,
+    _bbox_overlap_ratio,
+    _dedupe_seed_bboxes,
+    _horizontal_line_matches_box_boundary,
+    _is_open_frame_component,
+    _line_like_bbox_orientation,
+    _line_primitives_belong_to_same_frame,
+    _point_bucket_keys,
+    _primitive_belongs_to_axis_box,
+    _primitive_is_long_rule,
+    _primitive_line_axis_center,
+    _primitive_line_endpoints,
+    _primitive_line_orientation,
+    _primitive_line_span_range,
+    _union_visual_primitive_bboxes,
+    _vertical_line_matches_box_boundary,
+)
 
 
 def _build_visual_block_candidates(
     primitives: list[PdfPreviewVisualPrimitive],
 ) -> list[PdfPreviewVisualBlockCandidate]:
-    from . import _is_open_frame_component, _primitive_is_long_rule
-
     if not primitives:
         return []
 
@@ -74,8 +90,6 @@ def _build_visual_block_candidates(
 def _connected_line_components(
     line_primitives: list[PdfPreviewVisualPrimitive],
 ) -> list[list[PdfPreviewVisualPrimitive]]:
-    from . import _line_primitives_belong_to_same_frame, _point_bucket_keys, _primitive_line_endpoints
-
     if not line_primitives:
         return []
 
@@ -159,8 +173,6 @@ def _line_primitives_are_graph_duplicates(
     left: PdfPreviewVisualPrimitive,
     right: PdfPreviewVisualPrimitive,
 ) -> bool:
-    from . import _bbox_overlap_ratio, _primitive_line_orientation, _primitive_line_span_range
-
     if left.page_number != right.page_number:
         return False
     left_orientation = _primitive_line_orientation(left)
@@ -196,8 +208,6 @@ def _line_primitives_are_graph_duplicates(
 def _build_axis_box_candidates_from_component(
     component: list[PdfPreviewVisualPrimitive],
 ) -> list[PdfPreviewVisualBlockCandidate]:
-    from . import _primitive_belongs_to_axis_box
-
     candidates: list[PdfPreviewVisualBlockCandidate] = []
     for seed_bbox in _find_axis_box_seed_bboxes_from_component(component):
         local_members = [
@@ -225,14 +235,6 @@ def _build_axis_box_candidates_from_component(
 def _find_axis_box_seed_bboxes_from_component(
     component: list[PdfPreviewVisualPrimitive],
 ) -> list[PdfBoundingBox]:
-    from . import (
-        _dedupe_seed_bboxes,
-        _horizontal_line_matches_box_boundary,
-        _primitive_line_axis_center,
-        _primitive_line_orientation,
-        _vertical_line_matches_box_boundary,
-    )
-
     vertical_lines = sorted(
         (
             primitive
@@ -304,8 +306,6 @@ def _find_axis_box_seed_bboxes_from_component(
 def _build_non_box_line_candidates(
     line_primitives: list[PdfPreviewVisualPrimitive],
 ) -> list[PdfPreviewVisualBlockCandidate]:
-    from . import _is_open_frame_component, _primitive_is_long_rule, _union_visual_primitive_bboxes
-
     candidates: list[PdfPreviewVisualBlockCandidate] = []
     for component in _connected_line_components(line_primitives):
         candidate_bbox = _union_visual_primitive_bboxes(component)
@@ -334,8 +334,6 @@ def _component_has_box_outline(
     candidate_bbox: PdfBoundingBox,
     component: list[PdfPreviewVisualPrimitive],
 ) -> bool:
-    from . import _primitive_line_orientation
-
     width = candidate_bbox.right_pt - candidate_bbox.left_pt
     height = candidate_bbox.top_pt - candidate_bbox.bottom_pt
     if width < _VISUAL_FRAME_MIN_SIZE_PT or height < _VISUAL_FRAME_MIN_SIZE_PT:
@@ -372,8 +370,6 @@ def _component_has_box_outline(
 def _dedupe_visual_block_candidates(
     candidates: list[PdfPreviewVisualBlockCandidate],
 ) -> list[PdfPreviewVisualBlockCandidate]:
-    from . import _bbox_contains, _bbox_overlap_ratio
-
     if not candidates:
         return []
 
@@ -437,8 +433,6 @@ def _semantic_line_matches_structure_boundary(
     line_candidate: PdfPreviewVisualBlockCandidate,
     structure_candidate: PdfPreviewVisualBlockCandidate,
 ) -> bool:
-    from . import _line_like_bbox_orientation
-
     line_bbox = line_candidate.bounding_box
     structure_bbox = structure_candidate.bounding_box
     orientation = _line_like_bbox_orientation(line_bbox)

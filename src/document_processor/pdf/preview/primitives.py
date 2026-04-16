@@ -13,6 +13,16 @@ from .models import (
     _VISUAL_SEGMENTED_MIN_SPAN_PT,
     _VISUAL_TOUCH_TOLERANCE_PT,
 )
+from .shared import (
+    _bbox_from_bounds,
+    _has_visible_stroke,
+    _primitive_bbox_line_orientation,
+    _primitive_line_axis_center,
+    _primitive_line_span,
+    _primitive_line_span_range,
+    _primitive_size,
+    _union_visual_primitive_bboxes,
+)
 
 
 def _extract_pdfium_visual_primitives(
@@ -21,8 +31,6 @@ def _extract_pdfium_visual_primitives(
     page_number: int,
     raw_module=None,  # noqa: ANN001
 ) -> list[PdfPreviewVisualPrimitive]:
-    from . import _bbox_from_bounds
-
     raw = raw_module
     if raw is None:
         try:
@@ -88,14 +96,6 @@ def _build_segmented_rule_primitives(
     page_width: float,
     page_height: float,
 ) -> list[PdfPreviewVisualPrimitive]:
-    from . import (
-        _has_visible_stroke,
-        _primitive_bbox_line_orientation,
-        _primitive_line_axis_center,
-        _primitive_line_span,
-        _primitive_line_span_range,
-    )
-
     buckets: dict[tuple[int, str, str, int], list[PdfPreviewVisualPrimitive]] = {}
     for primitive in primitives:
         if not _has_visible_stroke(primitive):
@@ -161,8 +161,6 @@ def _build_segmented_rule_primitives(
 def _build_axis_box_edge_primitives(
     primitives: list[PdfPreviewVisualPrimitive],
 ) -> list[PdfPreviewVisualPrimitive]:
-    from . import _has_visible_stroke
-
     synthetic_primitives: list[PdfPreviewVisualPrimitive] = []
     next_draw_order = max((primitive.draw_order for primitive in primitives), default=-1) + 1
     for primitive in primitives:
@@ -253,8 +251,6 @@ def _segmented_rule_can_extend(
     right: PdfPreviewVisualPrimitive,
     orientation: str,
 ) -> bool:
-    from . import _primitive_line_span_range
-
     if left.page_number != right.page_number:
         return False
     if left.stroke_color != right.stroke_color:
@@ -282,8 +278,6 @@ def _build_segmented_rule_primitive(
     stroke_color: str,
     draw_order: int,
 ) -> PdfPreviewVisualPrimitive | None:
-    from . import _primitive_line_span_range, _union_visual_primitive_bboxes
-
     if len(run) < _VISUAL_SEGMENTED_MIN_PARTS:
         return None
 
@@ -421,8 +415,6 @@ def _candidate_roles_for_visual_primitive(
     page_width: float,
     page_height: float,
 ) -> list[str]:
-    from . import _has_visible_stroke, _primitive_size
-
     roles: list[str] = []
     width, height = _primitive_size(primitive)
     if width <= 0.0 or height <= 0.0:
