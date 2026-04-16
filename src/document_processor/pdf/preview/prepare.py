@@ -7,7 +7,11 @@ from ...style_types import CellStyleInfo
 from ..enhancement import enrich_pdf_table_backgrounds, enrich_pdf_table_borders
 from .compose import _normalize_pdf_doc_for_flow
 from .models import PdfPreviewContext, PdfPreviewTableContext
-from .shared import _bbox_distance
+from .shared import _shared_bbox_distance
+
+
+def _bbox_distance(left, right) -> float:
+    return _shared_bbox_distance(left, right)
 
 
 def prepare_pdf_for_html(

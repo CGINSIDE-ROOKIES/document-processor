@@ -100,13 +100,13 @@ def _bbox_contains(container: PdfBoundingBox, item: PdfBoundingBox, *, tolerance
     )
 
 
-def _bbox_distance(left: PdfBoundingBox, right: PdfBoundingBox) -> float:
+def _shared_bbox_distance(left: PdfBoundingBox, right: PdfBoundingBox) -> float:
     return abs(left.left_pt - right.left_pt) + abs(left.bottom_pt - right.bottom_pt) + abs(
         left.right_pt - right.right_pt
     ) + abs(left.top_pt - right.top_pt)
 
 
-def _page_content_margins(page: PageInfo) -> tuple[float, float, float, float]:
+def _shared_page_content_margins(page: PageInfo) -> tuple[float, float, float, float]:
     return (
         page.margin_top_pt if page.margin_top_pt is not None else 48.0,
         page.margin_right_pt if page.margin_right_pt is not None else 42.0,

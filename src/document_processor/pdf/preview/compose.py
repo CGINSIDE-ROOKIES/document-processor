@@ -33,7 +33,15 @@ from .models import (
     _PreviewCompositionEntry,
     _PreviewRenderNode,
 )
-from .shared import _bbox_area, _bbox_center, _bbox_contains, _bbox_distance, _bbox_intersection, _bbox_touches_or_near, _page_content_margins
+from .shared import (
+    _bbox_area,
+    _bbox_center,
+    _bbox_contains,
+    _bbox_intersection,
+    _bbox_touches_or_near,
+    _shared_bbox_distance,
+    _shared_page_content_margins,
+)
 
 
 def _paragraph_reading_order(paragraph: ParagraphIR, fallback_index: int) -> tuple[int, int]:
@@ -343,7 +351,7 @@ def _build_column_band_paragraph(
     left_region_bbox: PdfBoundingBox | None,
     right_region_bbox: PdfBoundingBox | None,
 ) -> ParagraphIR:
-    margin_top, margin_right, margin_bottom, margin_left = _page_content_margins(page)
+    margin_top, margin_right, margin_bottom, margin_left = _shared_page_content_margins(page)
     content_width = None
     if page.width_pt is not None:
         content_width = max(page.width_pt - margin_left - margin_right, 0.0)
@@ -691,7 +699,7 @@ def _candidate_matches_table_bbox(
     return (
         candidate_overlap >= 0.82
         and table_overlap >= 0.82
-        and _bbox_distance(candidate_bbox, table_bbox) <= 12.0
+        and _shared_bbox_distance(candidate_bbox, table_bbox) <= 12.0
     )
 
 

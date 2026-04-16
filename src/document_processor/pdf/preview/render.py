@@ -24,10 +24,13 @@ from .models import (
     PdfPreviewContext,
     PdfPreviewVisualBlockCandidate,
     _AssignedCandidate,
-    _PreviewCompositionEntry,
     _PreviewRenderNode,
 )
-from .shared import _bbox_area, _page_content_margins
+from .shared import _bbox_area, _shared_page_content_margins
+
+
+def _page_content_margins(page: PageInfo) -> tuple[float, float, float, float]:
+    return _shared_page_content_margins(page)
 
 
 def _render_preview_body(doc_ir: DocIR, *, preview_context: PdfPreviewContext) -> str:
@@ -196,12 +199,6 @@ def _render_page_positioned_candidates(
         + "".join(parts)
         + "</div>"
     )
-
-
-def _render_preview_entry(doc_ir: DocIR, entry: _PreviewCompositionEntry) -> str:
-    if entry.item_type == "paragraph" and entry.paragraph is not None:
-        return _render_paragraph(doc_ir, entry.paragraph)
-    return ""
 
 
 def _render_positioned_candidate(
