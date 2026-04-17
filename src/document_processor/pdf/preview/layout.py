@@ -162,30 +162,43 @@ def _build_logical_pages_for_page(
         right_regions = [region for region in page_regions if region.region_type == "right" and region.bounding_box is not None]
         left_region = max(left_regions, key=lambda region: _bbox_area(region.bounding_box) if region.bounding_box is not None else 0.0)
         right_region = max(right_regions, key=lambda region: _bbox_area(region.bounding_box) if region.bounding_box is not None else 0.0)
+        left_bbox = PdfBoundingBox(
+            left_pt=0.0,
+            bottom_pt=0.0,
+            right_pt=split_x,
+            top_pt=page.height_pt,
+        )
+        right_bbox = PdfBoundingBox(
+            left_pt=split_x,
+            bottom_pt=0.0,
+            right_pt=page.width_pt,
+            top_pt=page.height_pt,
+        )
+        target_width_pt = page.height_pt
+        left_width = max(left_bbox.right_pt - left_bbox.left_pt, 1.0)
+        right_width = max(right_bbox.right_pt - right_bbox.left_pt, 1.0)
+        left_scale_factor = target_width_pt / left_width
+        right_scale_factor = target_width_pt / right_width
         return [
             _LogicalPage(
                 page_number=starting_page_number,
                 physical_page_number=page.page_number,
                 logical_page_type="left",
-                bounding_box=PdfBoundingBox(
-                    left_pt=0.0,
-                    bottom_pt=0.0,
-                    right_pt=split_x,
-                    top_pt=page.height_pt,
-                ),
+                bounding_box=left_bbox,
                 source_region_ids=[left_region.region_id],
+                scale_factor=left_scale_factor,
+                target_width_pt=target_width_pt,
+                target_height_pt=page.height_pt * left_scale_factor,
             ),
             _LogicalPage(
                 page_number=starting_page_number + 1,
                 physical_page_number=page.page_number,
                 logical_page_type="right",
-                bounding_box=PdfBoundingBox(
-                    left_pt=split_x,
-                    bottom_pt=0.0,
-                    right_pt=page.width_pt,
-                    top_pt=page.height_pt,
-                ),
+                bounding_box=right_bbox,
                 source_region_ids=[right_region.region_id],
+                scale_factor=right_scale_factor,
+                target_width_pt=target_width_pt,
+                target_height_pt=page.height_pt * right_scale_factor,
             ),
         ]
 
@@ -599,23 +612,91 @@ def _rebase_bbox(bbox: PdfBoundingBox | None, *, origin_bbox: PdfBoundingBox) ->
     )
 
 
-def _rebase_meta_bbox(meta: Any, *, origin_bbox: PdfBoundingBox) -> Any:
+def _scale_value(value: float | None, *, scale_factor: float) -> float | None:
+    if value is None:
+        return None
+    return value * scale_factor
+
+
+def _scale_bbox(bbox: PdfBoundingBox | None, *, scale_factor: float) -> PdfBoundingBox | None:
+    if bbox is None or scale_factor == 1.0:
+        return bbox
+    return PdfBoundingBox(
+        left_pt=bbox.left_pt * scale_factor,
+        bottom_pt=bbox.bottom_pt * scale_factor,
+        right_pt=bbox.right_pt * scale_factor,
+        top_pt=bbox.top_pt * scale_factor,
+    )
+
+
+def _rebase_meta_bbox(meta: Any, *, origin_bbox: PdfBoundingBox, scale_factor: float = 1.0) -> Any:
     if meta is None or not hasattr(meta, "bounding_box"):
         return meta
     rebased_meta = meta.model_copy(deep=True) if hasattr(meta, "model_copy") else meta
-    rebased_meta.bounding_box = _rebase_bbox(getattr(meta, "bounding_box", None), origin_bbox=origin_bbox)
+    rebased_meta.bounding_box = _scale_bbox(
+        _rebase_bbox(getattr(meta, "bounding_box", None), origin_bbox=origin_bbox),
+        scale_factor=scale_factor,
+    )
     return rebased_meta
 
 
-def _rebase_table_for_logical_page(table: TableIR, *, origin_bbox: PdfBoundingBox) -> TableIR:
+def _scale_para_style(para_style: Any, *, scale_factor: float) -> Any:
+    if para_style is None or scale_factor == 1.0:
+        return para_style
+    clone = para_style.model_copy(deep=True) if hasattr(para_style, "model_copy") else para_style
+    for field_name in ("left_indent_pt", "right_indent_pt", "first_line_indent_pt", "hanging_indent_pt"):
+        value = getattr(clone, field_name, None)
+        if value is not None:
+            setattr(clone, field_name, value * scale_factor)
+    return clone
+
+
+def _scale_run_style(run_style: Any, *, scale_factor: float) -> Any:
+    if run_style is None or scale_factor == 1.0:
+        return run_style
+    clone = run_style.model_copy(deep=True) if hasattr(run_style, "model_copy") else run_style
+    if getattr(clone, "size_pt", None) is not None:
+        clone.size_pt = clone.size_pt * scale_factor
+    return clone
+
+
+def _scale_cell_style(cell_style: Any, *, scale_factor: float) -> Any:
+    if cell_style is None or scale_factor == 1.0:
+        return cell_style
+    clone = cell_style.model_copy(deep=True) if hasattr(cell_style, "model_copy") else cell_style
+    if getattr(clone, "width_pt", None) is not None:
+        clone.width_pt = clone.width_pt * scale_factor
+    if getattr(clone, "height_pt", None) is not None:
+        clone.height_pt = clone.height_pt * scale_factor
+    return clone
+
+
+def _scale_table_style(table_style: Any, *, scale_factor: float) -> Any:
+    if table_style is None or scale_factor == 1.0:
+        return table_style
+    clone = table_style.model_copy(deep=True) if hasattr(table_style, "model_copy") else table_style
+    if getattr(clone, "width_pt", None) is not None:
+        clone.width_pt = clone.width_pt * scale_factor
+    if getattr(clone, "height_pt", None) is not None:
+        clone.height_pt = clone.height_pt * scale_factor
+    return clone
+
+
+def _rebase_table_for_logical_page(table: TableIR, *, origin_bbox: PdfBoundingBox, scale_factor: float = 1.0) -> TableIR:
     clone = table.model_copy(deep=True)
-    clone.bbox = _rebase_bbox(table.bbox, origin_bbox=origin_bbox)
-    clone.meta = _rebase_meta_bbox(table.meta, origin_bbox=origin_bbox)
+    clone.bbox = _scale_bbox(_rebase_bbox(table.bbox, origin_bbox=origin_bbox), scale_factor=scale_factor)
+    clone.meta = _rebase_meta_bbox(table.meta, origin_bbox=origin_bbox, scale_factor=scale_factor)
+    clone.table_style = _scale_table_style(clone.table_style, scale_factor=scale_factor)
     for cell in clone.cells:
-        cell.bbox = _rebase_bbox(cell.bbox, origin_bbox=origin_bbox)
-        cell.meta = _rebase_meta_bbox(cell.meta, origin_bbox=origin_bbox)
+        cell.bbox = _scale_bbox(_rebase_bbox(cell.bbox, origin_bbox=origin_bbox), scale_factor=scale_factor)
+        cell.meta = _rebase_meta_bbox(cell.meta, origin_bbox=origin_bbox, scale_factor=scale_factor)
+        cell.cell_style = _scale_cell_style(cell.cell_style, scale_factor=scale_factor)
         for paragraph in cell.paragraphs:
-            rebased = _rebase_paragraph_for_logical_page(paragraph, origin_bbox=origin_bbox)
+            rebased = _rebase_paragraph_for_logical_page(
+                paragraph,
+                origin_bbox=origin_bbox,
+                scale_factor=scale_factor,
+            )
             paragraph.unit_id = rebased.unit_id
             paragraph.text = rebased.text
             paragraph.page_number = rebased.page_number
@@ -626,27 +707,36 @@ def _rebase_table_for_logical_page(table: TableIR, *, origin_bbox: PdfBoundingBo
     return clone
 
 
-def _rebase_paragraph_content_node(node: Any, *, origin_bbox: PdfBoundingBox) -> Any:
+def _rebase_paragraph_content_node(node: Any, *, origin_bbox: PdfBoundingBox, scale_factor: float = 1.0) -> Any:
     if isinstance(node, RunIR):
         clone = node.model_copy(deep=True)
-        clone.bbox = _rebase_bbox(node.bbox, origin_bbox=origin_bbox)
-        clone.meta = _rebase_meta_bbox(node.meta, origin_bbox=origin_bbox)
+        clone.bbox = _scale_bbox(_rebase_bbox(node.bbox, origin_bbox=origin_bbox), scale_factor=scale_factor)
+        clone.meta = _rebase_meta_bbox(node.meta, origin_bbox=origin_bbox, scale_factor=scale_factor)
+        clone.run_style = _scale_run_style(clone.run_style, scale_factor=scale_factor)
         return clone
     if isinstance(node, ImageIR):
         clone = node.model_copy(deep=True)
-        clone.bbox = _rebase_bbox(node.bbox, origin_bbox=origin_bbox)
+        clone.bbox = _scale_bbox(_rebase_bbox(node.bbox, origin_bbox=origin_bbox), scale_factor=scale_factor)
+        clone.display_width_pt = _scale_value(clone.display_width_pt, scale_factor=scale_factor)
+        clone.display_height_pt = _scale_value(clone.display_height_pt, scale_factor=scale_factor)
         return clone
     if isinstance(node, TableIR):
-        return _rebase_table_for_logical_page(node, origin_bbox=origin_bbox)
+        return _rebase_table_for_logical_page(node, origin_bbox=origin_bbox, scale_factor=scale_factor)
     return node
 
 
-def _rebase_paragraph_for_logical_page(paragraph: ParagraphIR, *, origin_bbox: PdfBoundingBox) -> ParagraphIR:
+def _rebase_paragraph_for_logical_page(
+    paragraph: ParagraphIR,
+    *,
+    origin_bbox: PdfBoundingBox,
+    scale_factor: float = 1.0,
+) -> ParagraphIR:
     clone = paragraph.model_copy(deep=True)
-    clone.bbox = _rebase_bbox(_paragraph_bbox(paragraph), origin_bbox=origin_bbox)
-    clone.meta = _rebase_meta_bbox(paragraph.meta, origin_bbox=origin_bbox)
+    clone.bbox = _scale_bbox(_rebase_bbox(_paragraph_bbox(paragraph), origin_bbox=origin_bbox), scale_factor=scale_factor)
+    clone.meta = _rebase_meta_bbox(paragraph.meta, origin_bbox=origin_bbox, scale_factor=scale_factor)
+    clone.para_style = _scale_para_style(paragraph.para_style, scale_factor=scale_factor)
     clone.content = [
-        _rebase_paragraph_content_node(node, origin_bbox=origin_bbox)
+        _rebase_paragraph_content_node(node, origin_bbox=origin_bbox, scale_factor=scale_factor)
         for node in paragraph.content
     ]
     clone.recompute_text()
@@ -660,25 +750,40 @@ def _rebase_candidate_for_logical_page(
 ) -> PdfPreviewVisualBlockCandidate:
     clone = candidate.model_copy(deep=True)
     clone.page_number = logical_page.page_number
-    clone.bounding_box = _rebase_bbox(candidate.bounding_box, origin_bbox=logical_page.bounding_box) or candidate.bounding_box
+    clone.bounding_box = (
+        _scale_bbox(
+            _rebase_bbox(candidate.bounding_box, origin_bbox=logical_page.bounding_box),
+            scale_factor=logical_page.scale_factor,
+        )
+        or candidate.bounding_box
+    )
     clone.child_cells = [
         rebased
         for cell_bbox in candidate.child_cells
-        if (rebased := _rebase_bbox(cell_bbox, origin_bbox=logical_page.bounding_box)) is not None
+        if (
+            rebased := _scale_bbox(
+                _rebase_bbox(cell_bbox, origin_bbox=logical_page.bounding_box),
+                scale_factor=logical_page.scale_factor,
+            )
+        ) is not None
     ]
     return clone
 
 
 def _logical_page_page_info(logical_page: _LogicalPage, *, source_page: PageInfo) -> PageInfo:
     bbox = logical_page.bounding_box
+    margin_left = _scale_value(source_page.margin_left_pt, scale_factor=logical_page.scale_factor)
+    margin_right = _scale_value(source_page.margin_right_pt, scale_factor=logical_page.scale_factor)
+    margin_top = _scale_value(source_page.margin_top_pt, scale_factor=logical_page.scale_factor)
+    margin_bottom = _scale_value(source_page.margin_bottom_pt, scale_factor=logical_page.scale_factor)
     return PageInfo(
         page_number=logical_page.page_number,
-        width_pt=max(bbox.right_pt - bbox.left_pt, 0.0),
-        height_pt=max(bbox.top_pt - bbox.bottom_pt, 0.0),
-        margin_left_pt=source_page.margin_left_pt,
-        margin_right_pt=source_page.margin_right_pt,
-        margin_top_pt=source_page.margin_top_pt,
-        margin_bottom_pt=source_page.margin_bottom_pt,
+        width_pt=logical_page.target_width_pt or max(bbox.right_pt - bbox.left_pt, 0.0),
+        height_pt=logical_page.target_height_pt or max(bbox.top_pt - bbox.bottom_pt, 0.0),
+        margin_left_pt=margin_left,
+        margin_right_pt=margin_right,
+        margin_top_pt=margin_top,
+        margin_bottom_pt=margin_bottom,
     )
 
 
@@ -721,7 +826,11 @@ def _logical_page_paragraphs(
         )
         if target_page is None or target_page.page_number != logical_page.page_number:
             continue
-        rebased = _rebase_paragraph_for_logical_page(paragraph, origin_bbox=logical_page.bounding_box)
+        rebased = _rebase_paragraph_for_logical_page(
+            paragraph,
+            origin_bbox=logical_page.bounding_box,
+            scale_factor=logical_page.scale_factor,
+        )
         rebased.page_number = logical_page.page_number
         paragraphs.append(rebased)
     return paragraphs

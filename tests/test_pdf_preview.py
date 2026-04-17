@@ -228,20 +228,147 @@ class PdfPreviewTests(unittest.TestCase):
                 ("Right body", 2),
             ],
         )
-        self.assertEqual([page.width_pt for page in doc.pages], [110.0, 140.0])
+        self.assertEqual([page.width_pt for page in doc.pages], [200.0, 200.0])
         self.assertEqual(
             [
                 (
-                    page.margin_left_pt,
-                    page.margin_right_pt,
-                    page.margin_top_pt,
-                    page.margin_bottom_pt,
+                    round(page.margin_left_pt or 0.0, 1),
+                    round(page.margin_right_pt or 0.0, 1),
+                    round(page.margin_top_pt or 0.0, 1),
+                    round(page.margin_bottom_pt or 0.0, 1),
                 )
                 for page in doc.pages
             ],
-            [(11.0, 12.0, 13.0, 14.0), (11.0, 12.0, 13.0, 14.0)],
+            [(20.0, 21.8, 23.6, 25.5), (15.7, 17.1, 18.6, 20.0)],
         )
         self.assertEqual(context.layout_regions, [])
+
+    def test_prepare_pdf_for_html_scales_split_spread_back_up_after_rebasing(self) -> None:
+        raw_document = {
+            "file name": "sample.pdf",
+            "number of pages": 1,
+            "pages": [
+                {
+                    "page number": 1,
+                    "width pt": 300,
+                    "height pt": 200,
+                    "margin left pt": 10,
+                    "margin right pt": 12,
+                    "margin top pt": 8,
+                    "margin bottom pt": 9,
+                },
+            ],
+            "layout regions": [
+                {
+                    "region id": "p1-left",
+                    "region type": "left",
+                    "page number": 1,
+                    "bounding box": [0, 0, 140, 200],
+                },
+                {
+                    "region id": "p1-right",
+                    "region type": "right",
+                    "page number": 1,
+                    "bounding box": [160, 0, 300, 200],
+                },
+            ],
+            "kids": [
+                {
+                    "type": "paragraph",
+                    "content": "Left body",
+                    "page number": 1,
+                    "layout region id": "p1-left",
+                    "bounding box": [20, 60, 80, 80],
+                    "font size": 9,
+                    "reading order index": 1,
+                },
+                {
+                    "type": "table",
+                    "page number": 1,
+                    "layout region id": "p1-left",
+                    "reading order index": 2,
+                    "bounding box": [20, 90, 130, 150],
+                    "width pt": 110,
+                    "height pt": 60,
+                    "number of rows": 1,
+                    "number of columns": 1,
+                    "rows": [
+                        {
+                            "cells": [
+                                {
+                                    "type": "table cell",
+                                    "row number": 1,
+                                    "column number": 1,
+                                    "page number": 1,
+                                    "width pt": 110,
+                                    "height pt": 60,
+                                    "kids": [
+                                        {
+                                            "type": "paragraph",
+                                            "content": "Cell",
+                                            "page number": 1,
+                                            "font size": 8,
+                                        }
+                                    ],
+                                }
+                            ]
+                        }
+                    ],
+                },
+                {
+                    "type": "paragraph",
+                    "content": "- 1 -",
+                    "page number": 1,
+                    "bounding box": [30, 5, 50, 15],
+                    "reading order index": 98,
+                },
+                {
+                    "type": "paragraph",
+                    "content": "- 2 -",
+                    "page number": 1,
+                    "bounding box": [250, 5, 270, 15],
+                    "reading order index": 99,
+                },
+            ],
+        }
+
+        doc = build_doc_ir_from_odl_result(raw_document, source_path="sample.pdf")
+        context = build_pdf_preview_context(raw_document)
+
+        prepare_pdf_for_html(doc, preview_context=context)
+
+        self.assertEqual([page.page_number for page in doc.pages], [1, 2])
+        self.assertAlmostEqual(doc.pages[0].width_pt or 0.0, 200.0, places=1)
+        self.assertAlmostEqual(doc.pages[0].height_pt or 0.0, 266.7, places=1)
+        self.assertAlmostEqual(doc.pages[0].margin_left_pt or 0.0, 13.3, places=1)
+        self.assertAlmostEqual(doc.pages[0].margin_right_pt or 0.0, 16.0, places=1)
+        self.assertAlmostEqual(doc.pages[0].margin_top_pt or 0.0, 10.7, places=1)
+        self.assertAlmostEqual(doc.pages[0].margin_bottom_pt or 0.0, 12.0, places=1)
+
+        left_body = next(paragraph for paragraph in doc.paragraphs if paragraph.text.strip() == "Left body")
+        self.assertEqual(left_body.page_number, 1)
+        self.assertIsNotNone(left_body.bbox)
+        self.assertAlmostEqual(left_body.bbox.left_pt, 26.7, places=1)
+        self.assertAlmostEqual(left_body.bbox.right_pt, 106.7, places=1)
+        self.assertAlmostEqual(left_body.bbox.top_pt, 106.7, places=1)
+        self.assertAlmostEqual(left_body.bbox.bottom_pt, 80.0, places=1)
+        self.assertEqual(len(left_body.runs), 1)
+        self.assertIsNotNone(left_body.runs[0].run_style)
+        self.assertAlmostEqual(left_body.runs[0].run_style.size_pt or 0.0, 12.0, places=1)
+
+        scaled_table = next(
+            table
+            for paragraph in doc.paragraphs
+            for table in paragraph.tables
+            if table.unit_id == "p2.tbl1"
+        )
+        self.assertIsNotNone(scaled_table.table_style)
+        self.assertAlmostEqual(scaled_table.table_style.width_pt or 0.0, 146.7, places=1)
+        self.assertAlmostEqual(scaled_table.table_style.height_pt or 0.0, 80.0, places=1)
+        self.assertEqual(len(scaled_table.cells), 1)
+        self.assertIsNotNone(scaled_table.cells[0].cell_style)
+        self.assertAlmostEqual(scaled_table.cells[0].cell_style.width_pt or 0.0, 146.7, places=1)
+        self.assertAlmostEqual(scaled_table.cells[0].cell_style.height_pt or 0.0, 80.0, places=1)
 
     def test_prepare_pdf_for_html_keeps_portrait_page_single_when_side_regions_are_columns(self) -> None:
         raw_document = {
@@ -425,6 +552,39 @@ class PdfPreviewTests(unittest.TestCase):
         cells = doc.paragraphs[0].tables[0].cells
         self.assertEqual(cells[0].text.strip(), "Left column first")
         self.assertEqual(cells[2].text.strip(), "Right column second")
+
+    def test_prepare_pdf_for_html_preserves_missing_page_margins_when_pdf_margin_metadata_missing(self) -> None:
+        raw_document = {
+            "file name": "sample.pdf",
+            "number of pages": 1,
+            "pages": [
+                {"page number": 1, "width pt": 200, "height pt": 250},
+            ],
+            "kids": [
+                {
+                    "type": "paragraph",
+                    "content": "Body",
+                    "page number": 1,
+                    "reading order index": 1,
+                }
+            ],
+        }
+
+        doc = build_doc_ir_from_odl_result(raw_document, source_path="sample.pdf")
+        context = build_pdf_preview_context(raw_document)
+
+        prepare_pdf_for_html(doc, preview_context=context)
+
+        self.assertEqual(len(doc.pages), 1)
+        self.assertEqual(
+            (
+                doc.pages[0].margin_left_pt,
+                doc.pages[0].margin_right_pt,
+                doc.pages[0].margin_top_pt,
+                doc.pages[0].margin_bottom_pt,
+            ),
+            (None, None, None, None),
+        )
 
     def test_prepare_pdf_for_html_detects_mid_page_two_column_band_without_page_side_regions(self) -> None:
         raw_document = {
@@ -2210,7 +2370,7 @@ class PdfPreviewTests(unittest.TestCase):
         self.assertNotIn("pdf-preview-page-layer", html)
         self.assertIn("Left body", html)
         self.assertIn("Right body", html)
-        self.assertIn("width:50.0pt", html)
+        self.assertIn("width:90.9pt", html)
         self.assertIn("A1", html)
         self.assertIn("B1", html)
 

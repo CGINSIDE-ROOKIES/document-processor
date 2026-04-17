@@ -89,6 +89,7 @@ class PdfPipelineTests(unittest.TestCase):
                     "type": "table",
                     "page number": 2,
                     "id": 202,
+                    "bounding box": [200, 210, 260, 310],
                     "layout region id": "p2-main",
                     "reading order index": 4,
                     "number of rows": 1,
@@ -102,6 +103,7 @@ class PdfPipelineTests(unittest.TestCase):
                                     "row number": 1,
                                     "column number": 1,
                                     "page number": 2,
+                                    "bounding box": [210, 220, 250, 300],
                                     "layout region id": "p2-main",
                                     "reading order index": 5,
                                     "has top border": True,
@@ -123,6 +125,7 @@ class PdfPipelineTests(unittest.TestCase):
                 {
                     "type": "image",
                     "page number": 2,
+                    "bounding box": [300, 100, 420, 140],
                     "data": "data:image/png;base64,QUJD",
                     "width px": 120,
                     "height px": 40,
@@ -141,10 +144,12 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertEqual(doc.meta.modification_date, "2026-04-09T10:00:00Z")
         self.assertEqual([page.page_number for page in doc.pages], [1, 2])
         self.assertEqual(doc.paragraphs[0].text, "Hello PDF")
+        self.assertEqual(doc.paragraphs[0].bbox.left_pt, 10.0)
         self.assertEqual(doc.paragraphs[0].meta.page_number, 1)
         self.assertEqual(doc.paragraphs[0].meta.bounding_box.left_pt, 10.0)
         self.assertEqual(doc.paragraphs[0].meta.layout_region_id, "p1-main")
         self.assertEqual(doc.paragraphs[0].meta.reading_order_index, 1)
+        self.assertEqual(doc.paragraphs[0].runs[0].bbox.left_pt, 10.0)
         self.assertEqual(doc.paragraphs[0].runs[0].meta.page_number, 1)
         self.assertEqual(doc.paragraphs[0].runs[0].run_style.font_family, "Noto Serif KR")
         self.assertEqual(doc.paragraphs[1].text, "\\frac{a}{b}")
@@ -153,13 +158,18 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertEqual(doc.paragraphs[2].meta.layout_region_id, "p1-main")
         self.assertEqual(doc.paragraphs[2].meta.reading_order_index, 3)
         self.assertEqual(doc.paragraphs[3].tables[0].cells[0].text, "A1")
+        self.assertEqual(doc.paragraphs[3].bbox.left_pt, 200.0)
+        self.assertEqual(doc.paragraphs[3].tables[0].bbox.left_pt, 200.0)
         self.assertEqual(doc.paragraphs[3].tables[0].meta.layout_region_id, "p2-main")
         self.assertTrue(doc.paragraphs[3].tables[0].table_style.preview_grid)
+        self.assertEqual(doc.paragraphs[3].tables[0].cells[0].bbox.left_pt, 210.0)
         self.assertEqual(doc.paragraphs[3].tables[0].cells[0].meta.reading_order_index, 5)
         self.assertEqual(doc.paragraphs[3].tables[0].cells[0].cell_style.border_top, "1px solid")
         self.assertEqual(doc.paragraphs[3].tables[0].cells[0].cell_style.border_right, "1px solid")
         self.assertIn("odl-img-p5", doc.assets)
         self.assertEqual(doc.paragraphs[4].images[0].image_id, "odl-img-p5")
+        self.assertEqual(doc.paragraphs[4].bbox.left_pt, 300.0)
+        self.assertEqual(doc.paragraphs[4].images[0].bbox.left_pt, 300.0)
         self.assertEqual(doc.assets["odl-img-p5"].meta.page_number, 2)
 
     def test_build_doc_ir_from_odl_result_preserves_text_whitespace_and_header_footer_children(self) -> None:
@@ -486,12 +496,19 @@ class PdfPipelineTests(unittest.TestCase):
             pdf_path.write_bytes(b"%PDF-1.7\n%fake")
 
             with patch("document_processor.pdf.pipeline.probe_pdf", return_value=profile):
-                with patch("document_processor.pdf.pipeline.run_odl_json", return_value=raw_document) as run_odl:
+                with patch("document_processor.pdf.pipeline.run_odl_json", return_value=raw_document) as run_odl, patch(
+                    "document_processor.pdf.pipeline.build_pdf_preview_context"
+                ) as build_preview_context:
+                    build_preview_context.return_value = object()
                     doc = parse_pdf_to_doc_ir(pdf_path)
 
         self.assertEqual(run_odl.call_args.kwargs, {})
         self.assertEqual(run_odl.call_args.args[1]["pages"], [2, 3])
         self.assertEqual(run_odl.call_args.args[1]["image_output"], "embedded")
+        self.assertEqual(
+            build_preview_context.call_args.kwargs,
+            {"pdf_path": pdf_path, "page_numbers": [2, 3]},
+        )
         self.assertEqual([page.page_number for page in doc.pages], [1, 2, 3])
         self.assertEqual([paragraph.page_number for paragraph in doc.paragraphs], [2, 3])
         self.assertEqual(doc.meta.parser, "odl-local")
@@ -499,6 +516,7 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertEqual(doc.meta.number_of_pages, 3)
         self.assertEqual(doc.meta.structured_pages, [2, 3])
         self.assertEqual(doc.meta.scan_like_pages, [1])
+        self.assertIs(doc.get_pdf_preview_context(), build_preview_context.return_value)
 
     def test_resolve_odl_jar_path_uses_vendored_jar(self) -> None:
         jar_path = resolve_odl_jar_path()

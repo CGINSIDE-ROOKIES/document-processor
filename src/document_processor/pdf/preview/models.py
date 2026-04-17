@@ -101,7 +101,7 @@ class _PreviewRenderNode:
     kind: str
     unit_id: str
     bbox: PdfBoundingBox
-    order_key: tuple[int, int, int]
+    order_key: tuple[float, float, int, int]
     parent_paragraph_id: str | None = None
     parent_para_style: Any = None
     paragraph: ParagraphIR | None = None
@@ -116,7 +116,7 @@ class _AssignedCandidate:
     region_type: str
     top_offset_pt: float | None
     bottom_offset_pt: float | None
-    order_key: tuple[int, int, int]
+    order_key: tuple[float, float, int, int]
     paragraph_nodes: list[_PreviewRenderNode]
     table_nodes: list[_PreviewRenderNode]
     image_nodes: list[_PreviewRenderNode]
@@ -129,7 +129,7 @@ class _AssignedCandidateGroup:
     region_type: str
     top_offset_pt: float | None
     bottom_offset_pt: float | None
-    order_key: tuple[int, int, int]
+    order_key: tuple[float, float, int, int]
     bounding_box: PdfBoundingBox
 
 
@@ -140,6 +140,9 @@ class _LogicalPage:
     logical_page_type: str
     bounding_box: PdfBoundingBox
     source_region_ids: list[str]
+    scale_factor: float = 1.0
+    target_width_pt: float | None = None
+    target_height_pt: float | None = None
 
 
 @dataclass(slots=True)
@@ -148,7 +151,7 @@ class _PreviewCompositionEntry:
     region_type: str
     top_offset_pt: float | None
     bottom_offset_pt: float | None
-    order_key: tuple[int, int, int]
+    order_key: tuple[float, float, int, int]
     bounding_box: PdfBoundingBox | None
     paragraph: ParagraphIR | None = None
 

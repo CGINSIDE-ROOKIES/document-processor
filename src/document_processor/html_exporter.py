@@ -73,12 +73,16 @@ def _wrap_run(doc_ir: DocIR, run: RunIR) -> str:
     return _style_wrap(html, run.run_style)
 
 
-def _render_image(doc_ir: DocIR, image: ImageIR) -> str:
+def _render_image(doc_ir: DocIR, image: ImageIR, *, block: bool = False) -> str:
     asset = doc_ir.assets.get(image.image_id)
     if asset is None:
         return ""
 
-    style_parts = ["max-width:100%", "vertical-align:middle"]
+    style_parts = ["max-width:100%"]
+    if block:
+        style_parts.append("display:block")
+    else:
+        style_parts.append("vertical-align:middle")
     if image.display_width_pt is not None:
         style_parts.append(f"width:{image.display_width_pt:.1f}pt")
     if image.display_height_pt is not None:
@@ -287,6 +291,15 @@ def _render_paragraph_like(
     *,
     clamp_negative_first_line_indent: bool = False,
 ) -> str:
+    if content and all(isinstance(node, ImageIR) for node in content) and len(content) > 1:
+        image_fragments = [
+            _render_image(doc_ir, node, block=True)
+            for node in content
+            if isinstance(node, ImageIR)
+        ]
+        attrs = _html_attrs(style="margin:0;line-height:0")
+        return f"<div {attrs}>{''.join(fragment for fragment in image_fragments if fragment)}</div>"
+
     parts: list[str] = []
     inline_fragments: list[str] = []
 

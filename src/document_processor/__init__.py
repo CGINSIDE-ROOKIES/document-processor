@@ -1,6 +1,6 @@
 from .builder import build_doc_ir_from_mapping
 from .diagram import create_model_diagram, draw_model_diagram
-from .models import DocIR, ImageAsset, ImageIR, PageInfo, ParagraphContentNode, ParagraphIR, RunIR, TableCellIR, TableIR
+from .models import BoundingBox, DocIR, ImageAsset, ImageIR, PageInfo, ParagraphContentNode, ParagraphIR, RunIR, TableCellIR, TableIR
 
 # Keep top-level PDF exports narrow. Advanced preview/context helpers remain in
 # `document_processor.pdf.*` submodules so the main package stays easy to scan.
@@ -16,6 +16,7 @@ from .style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo, StyleMap, T
 __all__ = [
     "DEFAULT_LOCAL_FORMATS",
     "CellStyleInfo",
+    "BoundingBox",
     "DocIR",
     "ImageAsset",
     "ImageIR",

@@ -107,13 +107,9 @@ def _render_preview_page_content(
     *,
     preview_context: PdfPreviewContext,
 ) -> str:
-    from .compose import _compose_logical_page, _page_long_rule_candidates
+    from .compose import _compose_logical_page
 
-    long_rule_overlays = _render_long_rule_overlays(
-        page,
-        _page_long_rule_candidates(preview_context, page_number=page.page_number),
-    )
-    if not page_paragraphs and not long_rule_overlays:
+    if not page_paragraphs:
         return ""
 
     composition = _compose_logical_page(
@@ -134,7 +130,7 @@ def _render_preview_page_content(
     if not composition.ordered_paragraphs:
         return (
             '<div class="pdf-preview-page-layer" style="position:relative;flex:1 1 auto;height:100%">'
-            f"{long_rule_overlays}{candidate_overlays}"
+            f"{candidate_overlays}"
             "</div>"
         )
 
@@ -144,7 +140,7 @@ def _render_preview_page_content(
     )
     return (
         '<div class="pdf-preview-page-layer" style="position:relative;flex:1 1 auto;height:100%">'
-        f"{long_rule_overlays}{candidate_overlays}"
+        f"{candidate_overlays}"
         '<div class="pdf-preview-page-flow" style="position:relative;z-index:2">'
         f"{flow_html}"
         "</div></div>"

@@ -23,6 +23,9 @@ from ..meta import (
     sanitize_css_color,
 )
 
+_STRIP_CONNECTOR_CHARS = frozenset({"➡", "→", "➜", "➝", "←", "↑", "↓", "↔", "↕", ""})
+_STRIP_ROW_TOLERANCE_PT = 18.0
+
 
 # ---------------------------------------------------------------------------
 # Style extraction helpers
@@ -197,6 +200,7 @@ def _paragraph_from_text_node(
         unit_id=unit_id,
         text=text,
         page_number=_page_number_from_node(style_source) or _page_number_from_node(node) or default_page_number,
+        bbox=resolved_meta.bounding_box if resolved_meta is not None else None,
         para_style=_para_style_from_node(style_source),
         meta=resolved_meta,
         content=content,
@@ -325,6 +329,7 @@ def _runs_from_text_node(
             RunIR(
                 unit_id=f"{unit_id}.r1",
                 text=text,
+                bbox=run_meta.bounding_box if run_meta is not None else None,
                 run_style=_run_style_from_node(style_node),
                 meta=run_meta,
             )
@@ -341,6 +346,7 @@ def _runs_from_text_node(
             RunIR(
                 unit_id=f"{unit_id}.r{index}",
                 text=span_text,
+                bbox=span_meta.bounding_box if span_meta is not None else None,
                 run_style=_run_style_from_node(span_style_node),
                 meta=span_meta,
             )
@@ -353,6 +359,7 @@ def _runs_from_text_node(
         RunIR(
             unit_id=f"{unit_id}.r1",
             text=text,
+            bbox=run_meta.bounding_box if run_meta is not None else None,
             run_style=_run_style_from_node(style_node),
             meta=run_meta,
         )
@@ -371,6 +378,7 @@ def _merge_adjacent_runs(runs: list[RunIR]) -> list[RunIR]:
         current = merged_runs[-1]
         if _can_merge_runs(current, run):
             current.text += run.text
+            current.bbox = _merge_bounding_boxes(current.bbox, run.bbox)
             current.meta = _merge_run_meta(current.meta, run.meta)
             continue
         merged_runs.append(run.model_copy(deep=True))
@@ -466,18 +474,21 @@ def _image_paragraph(
 ) -> ParagraphIR:
     _append_image_asset(assets, node=node, unit_id=unit_id)
     display_width_pt, display_height_pt = _display_size_from_node(node)
+    image_meta = build_pdf_node_meta(node)
     return ParagraphIR(
         unit_id=unit_id,
         text="",
         page_number=_page_number_from_node(node),
+        bbox=image_meta.bounding_box if image_meta is not None else None,
         para_style=_para_style_from_node(node),
-        meta=build_pdf_node_meta(node),
+        meta=image_meta,
         content=[
             ImageIR(
                 unit_id=f"{unit_id}.img1",
                 image_id=f"odl-img-{unit_id}",
                 alt_text=node_value(node, "alt text"),
                 title=node_value(node, "title", "name"),
+                bbox=image_meta.bounding_box if image_meta is not None else None,
                 display_width_pt=display_width_pt,
                 display_height_pt=display_height_pt,
             )
@@ -504,13 +515,15 @@ def _cell_paragraphs(
         unit_id = f"{cell_unit_id}.p{child_index + 1}"
         if child_type == "table":
             child_index += 1
+            child_meta = build_pdf_node_meta(child)
             paragraphs.append(
                 ParagraphIR(
                     unit_id=unit_id,
                     text="",
                     page_number=_page_number_from_node(child) or default_page_number,
+                    bbox=child_meta.bounding_box if child_meta is not None else None,
                     para_style=_para_style_from_node(child),
-                    meta=build_pdf_node_meta(child),
+                    meta=child_meta,
                     content=[_table_node_to_ir(child, unit_id=f"{unit_id}.tbl1", assets=assets)],
                 )
             )
@@ -535,6 +548,7 @@ def _cell_paragraphs(
                 unit_id=f"{cell_unit_id}.p1",
                 text="",
                 page_number=default_page_number,
+                bbox=None,
                 meta=PdfNodeMeta(page_number=default_page_number),
             )
         )
@@ -553,26 +567,30 @@ def _table_node_to_ir(
     stored flat with row/column indices, which matches the existing DocIR table
     contract and keeps the model shared across formats.
     """
+    table_meta = build_pdf_node_meta(node)
     table = TableIR(
         unit_id=unit_id,
         row_count=coerce_int(node.get("number of rows")) or 0,
         col_count=coerce_int(node.get("number of columns")) or 0,
+        bbox=table_meta.bounding_box if table_meta is not None else None,
         table_style=_table_style_from_node(node),
-        meta=build_pdf_node_meta(node),
+        meta=table_meta,
     )
     for row in node.get("rows", []):
         for cell in row.get("cells", []):
             row_index = coerce_int(cell.get("row number")) or 1
             col_index = coerce_int(cell.get("column number")) or 1
             cell_unit_id = f"{unit_id}.tr{row_index}.tc{col_index}"
+            cell_meta = build_pdf_node_meta(cell)
             table.cells.append(
                 TableCellIR(
                     unit_id=cell_unit_id,
                     row_index=row_index,
                     col_index=col_index,
                     text=extract_text_from_odl_children(cell.get("kids", [])),
+                    bbox=cell_meta.bounding_box if cell_meta is not None else None,
                     cell_style=_cell_style_from_node(cell),
-                    meta=build_pdf_node_meta(cell),
+                    meta=cell_meta,
                     paragraphs=_cell_paragraphs(
                         cell.get("kids", []),
                         cell_unit_id=cell_unit_id,
@@ -582,6 +600,187 @@ def _table_node_to_ir(
                 )
             )
     return table
+
+
+def _paragraph_is_table_box(paragraph: ParagraphIR) -> bool:
+    return (
+        paragraph.bbox is not None
+        and len(paragraph.content) == 1
+        and isinstance(paragraph.content[0], TableIR)
+    )
+
+
+def _paragraph_is_connector(paragraph: ParagraphIR) -> bool:
+    if paragraph.bbox is None or not paragraph.content:
+        return False
+    if not all(isinstance(node, RunIR) for node in paragraph.content):
+        return False
+    text = "".join(run.text for run in paragraph.content).strip()
+    return bool(text) and all(char in _STRIP_CONNECTOR_CHARS for char in text)
+
+
+def _group_strip_rows(paragraphs: list[ParagraphIR]) -> list[list[ParagraphIR]]:
+    rows: list[list[ParagraphIR]] = []
+    row_tops: list[float] = []
+    for paragraph in paragraphs:
+        bbox = paragraph.bbox
+        if bbox is None:
+            continue
+        assigned_row_index: int | None = None
+        for row_index, row_top in enumerate(row_tops):
+            if abs(bbox.top_pt - row_top) <= _STRIP_ROW_TOLERANCE_PT:
+                assigned_row_index = row_index
+                break
+        if assigned_row_index is None:
+            rows.append([paragraph])
+            row_tops.append(bbox.top_pt)
+            continue
+        rows[assigned_row_index].append(paragraph)
+        row_tops[assigned_row_index] = sum(
+            member.bbox.top_pt for member in rows[assigned_row_index] if member.bbox is not None
+        ) / len(rows[assigned_row_index])
+    rows.sort(
+        key=lambda row: (
+            -max(member.bbox.top_pt for member in row if member.bbox is not None),
+            min(member.bbox.left_pt for member in row if member.bbox is not None),
+        )
+    )
+    for row in rows:
+        row.sort(key=lambda member: member.bbox.left_pt if member.bbox is not None else float("inf"))
+    return rows
+
+
+def _build_strip_table_paragraph(
+    paragraphs: list[ParagraphIR],
+    *,
+    unit_id: str,
+) -> ParagraphIR | None:
+    if not paragraphs:
+        return None
+
+    bboxes = [paragraph.bbox for paragraph in paragraphs if paragraph.bbox is not None]
+    if not bboxes:
+        return None
+
+    group_bbox = bboxes[0]
+    for bbox in bboxes[1:]:
+        group_bbox = _merge_bounding_boxes(group_bbox, bbox)
+    if group_bbox is None:
+        return None
+
+    rows = _group_strip_rows(paragraphs)
+    if not rows:
+        return None
+    col_count = max(len(row) for row in rows)
+
+    cells: list[TableCellIR] = []
+    cell_index = 0
+    for row_index, row in enumerate(rows, start=1):
+        for col_index, paragraph in enumerate(row, start=1):
+            bbox = paragraph.bbox
+            if bbox is None:
+                continue
+            cell_index += 1
+            cells.append(
+                TableCellIR(
+                    unit_id=f"{unit_id}.cell.{cell_index}",
+                    row_index=row_index,
+                    col_index=col_index,
+                    text=paragraph.text,
+                    bbox=bbox,
+                    cell_style=CellStyleInfo(
+                        width_pt=max(bbox.right_pt - bbox.left_pt, 0.0),
+                        height_pt=max(bbox.top_pt - bbox.bottom_pt, 0.0),
+                        horizontal_align="center" if _paragraph_is_connector(paragraph) else None,
+                        vertical_align="middle" if _paragraph_is_connector(paragraph) else None,
+                    ),
+                    paragraphs=[paragraph.model_copy(deep=True)],
+                )
+            )
+    if not cells:
+        return None
+
+    table = TableIR(
+        unit_id=f"{unit_id}.tbl1",
+        row_count=max(len(rows), 1),
+        col_count=max(col_count, 1),
+        bbox=group_bbox,
+        table_style=TableStyleInfo(
+            row_count=max(len(rows), 1),
+            col_count=max(col_count, 1),
+            width_pt=max(group_bbox.right_pt - group_bbox.left_pt, 0.0),
+            height_pt=max(group_bbox.top_pt - group_bbox.bottom_pt, 0.0),
+            preview_grid=False,
+        ),
+        cells=cells,
+    )
+    paragraph = ParagraphIR(
+        unit_id=unit_id,
+        text="",
+        page_number=paragraphs[0].page_number,
+        bbox=group_bbox,
+        content=[table],
+    )
+    paragraph.recompute_text()
+    return paragraph
+
+
+def _collapse_table_connector_sequences(
+    paragraphs: list[ParagraphIR],
+    *,
+    unit_prefix: str,
+) -> list[ParagraphIR]:
+    collapsed: list[ParagraphIR] = []
+    index = 0
+    strip_index = 0
+    while index < len(paragraphs):
+        kind = (
+            "box"
+            if _paragraph_is_table_box(paragraphs[index])
+            else "connector" if _paragraph_is_connector(paragraphs[index]) else None
+        )
+        if kind is None:
+            collapsed.append(paragraphs[index])
+            index += 1
+            continue
+
+        end = index
+        box_count = 0
+        connector_count = 0
+        while end < len(paragraphs):
+            current = paragraphs[end]
+            if _paragraph_is_table_box(current):
+                box_count += 1
+                end += 1
+                continue
+            if _paragraph_is_connector(current):
+                connector_count += 1
+                end += 1
+                continue
+            break
+
+        block = paragraphs[index:end]
+        if (
+            len(block) >= 3
+            and box_count >= 3
+            and connector_count >= 1
+            and _paragraph_is_table_box(block[0])
+            and _paragraph_is_table_box(block[-1])
+        ):
+            strip_index += 1
+            strip_paragraph = _build_strip_table_paragraph(
+                block,
+                unit_id=f"{unit_prefix}.strip{strip_index}",
+            )
+            if strip_paragraph is not None:
+                collapsed.append(strip_paragraph)
+                index = end
+                continue
+
+        collapsed.extend(block)
+        index = end
+
+    return collapsed
 
 
 def _paragraphs_from_list_node(
@@ -599,37 +798,45 @@ def _paragraphs_from_list_node(
     paragraphs: list[ParagraphIR] = []
     for index, item in enumerate(node.get("list items", []), start=1):
         unit_id = f"{unit_prefix}.li{index}"
+        item_paragraphs: list[ParagraphIR] = []
         paragraph = _paragraph_from_text_node(
             item,
             unit_id=unit_id,
             paragraph_meta=build_pdf_node_meta(item),
         )
         if paragraph is not None:
-            paragraphs.append(paragraph)
+            item_paragraphs.append(paragraph)
+        child_paragraphs: list[ParagraphIR] = []
         for child_index, child in enumerate(item.get("kids", []), start=1):
             child_type = child.get("type")
             child_unit_id = f"{unit_id}.c{child_index}"
             if child_type == "list":
-                paragraphs.extend(
+                child_paragraphs.extend(
                     _paragraphs_from_list_node(child, unit_prefix=child_unit_id, assets=assets)
                 )
             elif child_type == "table":
-                paragraphs.append(
+                child_meta = build_pdf_node_meta(child)
+                child_paragraphs.append(
                     ParagraphIR(
                         unit_id=child_unit_id,
                         text="",
                         page_number=_page_number_from_node(child),
+                        bbox=child_meta.bounding_box if child_meta is not None else None,
                         para_style=_para_style_from_node(child),
-                        meta=build_pdf_node_meta(child),
+                        meta=child_meta,
                         content=[_table_node_to_ir(child, unit_id=f"{child_unit_id}.tbl1", assets=assets)],
                     )
                 )
             elif child_type == "image":
-                paragraphs.append(_image_paragraph(child, unit_id=child_unit_id, assets=assets))
+                child_paragraphs.append(_image_paragraph(child, unit_id=child_unit_id, assets=assets))
             else:
                 nested_paragraph = _paragraph_from_text_node(child, unit_id=child_unit_id)
                 if nested_paragraph is not None:
-                    paragraphs.append(nested_paragraph)
+                    child_paragraphs.append(nested_paragraph)
+        item_paragraphs.extend(
+            _collapse_table_connector_sequences(child_paragraphs, unit_prefix=unit_id)
+        )
+        paragraphs.extend(item_paragraphs)
     return paragraphs
 
 
@@ -705,13 +912,15 @@ def build_doc_ir_from_odl_result(
         unit_id = f"p{order + 1}"
         if node_type == "table":
             order += 1
+            node_meta = build_pdf_node_meta(node)
             paragraphs.append(
                 ParagraphIR(
                     unit_id=unit_id,
                     text="",
                     page_number=_page_number_from_node(node),
+                    bbox=node_meta.bounding_box if node_meta is not None else None,
                     para_style=_para_style_from_node(node),
-                    meta=build_pdf_node_meta(node),
+                    meta=node_meta,
                     content=[_table_node_to_ir(node, unit_id=f"{unit_id}.tbl1", assets=assets)],
                 )
             )
@@ -745,13 +954,15 @@ def build_doc_ir_from_odl_result(
                 child_unit_id = f"p{order + 1}"
                 if child.get("type") == "table":
                     order += 1
+                    child_meta = build_pdf_node_meta(child)
                     paragraphs.append(
                         ParagraphIR(
                             unit_id=child_unit_id,
                             text="",
                             page_number=_page_number_from_node(child),
+                            bbox=child_meta.bounding_box if child_meta is not None else None,
                             para_style=_para_style_from_node(child),
-                            meta=build_pdf_node_meta(child),
+                            meta=child_meta,
                             content=[
                                 _table_node_to_ir(
                                     child,

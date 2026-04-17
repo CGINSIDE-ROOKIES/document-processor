@@ -48,7 +48,7 @@ def enrich_pdf_table_borders(
     for page_number, cell, page_height_pt in candidates:
         rendered_page = rendered_pages.get(page_number)
         cell_meta = getattr(cell, "meta", None)
-        cell_bbox = getattr(cell_meta, "bounding_box", None)
+        cell_bbox = getattr(cell, "bbox", None) or getattr(cell_meta, "bounding_box", None)
         if rendered_page is None or cell_bbox is None:
             continue
 
@@ -106,7 +106,7 @@ def enrich_pdf_table_backgrounds(
     for page_number, cell, page_height_pt in candidates:
         rendered_page = rendered_pages.get(page_number)
         cell_meta = getattr(cell, "meta", None)
-        cell_bbox = getattr(cell_meta, "bounding_box", None)
+        cell_bbox = getattr(cell, "bbox", None) or getattr(cell_meta, "bounding_box", None)
         if rendered_page is None or cell_bbox is None:
             continue
 
@@ -161,7 +161,7 @@ def _iter_table_candidates(
     for cell in table.cells:
         cell_meta = getattr(cell, "meta", None)
         page_number = getattr(cell_meta, "page_number", None)
-        cell_bbox = getattr(cell_meta, "bounding_box", None)
+        cell_bbox = getattr(cell, "bbox", None) or getattr(cell_meta, "bounding_box", None)
         page_height_pt = page_heights.get(page_number)
         if page_number is not None and cell_bbox is not None and page_height_pt is not None:
             yield page_number, cell, page_height_pt

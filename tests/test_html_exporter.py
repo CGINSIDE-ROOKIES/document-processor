@@ -312,6 +312,31 @@ class HtmlExporterTests(unittest.TestCase):
         self.assertIn("width:72.0pt", html)
         self.assertIn("height:36.0pt", html)
 
+    def test_export_html_renders_multi_image_paragraph_as_zero_gap_stack(self) -> None:
+        doc = DocIR(
+            assets={
+                "img1": ImageAsset(mime_type="image/png", filename="a.png", data_base64="AAAA"),
+                "img2": ImageAsset(mime_type="image/png", filename="b.png", data_base64="AAAA"),
+                "img3": ImageAsset(mime_type="image/png", filename="c.png", data_base64="AAAA"),
+            },
+            paragraphs=[
+                ParagraphIR(
+                    unit_id="s1.p1",
+                    content=[
+                        ImageIR(unit_id="s1.p1.img1", image_id="img1", display_width_pt=72.0, display_height_pt=4.0),
+                        ImageIR(unit_id="s1.p1.img2", image_id="img2", display_width_pt=72.0, display_height_pt=4.0),
+                        ImageIR(unit_id="s1.p1.img3", image_id="img3", display_width_pt=72.0, display_height_pt=4.0),
+                    ],
+                )
+            ],
+        )
+
+        html = doc.to_html()
+
+        self.assertIn("line-height:0", html)
+        self.assertIn("display:block", html)
+        self.assertEqual(html.count("<img "), 3)
+
     def test_export_html_renders_bordered_page_frames_when_page_metadata_exists(self) -> None:
         doc = DocIR(
             pages=[

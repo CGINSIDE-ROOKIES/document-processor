@@ -7,17 +7,15 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from ..models import BoundingBox
+
 _HEX_COLOR_RE = re.compile(r"^#[0-9A-Fa-f]{3}([0-9A-Fa-f]{3})?([0-9A-Fa-f]{2})?$")
 _RGB_COLOR_RE = re.compile(r"^rgba?\([^)]+\)$")
 _NAMED_COLOR_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9-]*$")
 _BRACKETED_NUMBER_RE = re.compile(r"^\[\s*([^\]]+)\s*\]$")
 
 
-class PdfBoundingBox(BaseModel):
-    left_pt: float
-    bottom_pt: float
-    right_pt: float
-    top_pt: float
+PdfBoundingBox = BoundingBox
 
 
 class PdfNodeMeta(BaseModel):

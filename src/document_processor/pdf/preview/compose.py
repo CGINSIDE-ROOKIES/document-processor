@@ -43,14 +43,15 @@ from .shared import (
     _shared_page_content_margins,
 )
 
-
-def _paragraph_reading_order(paragraph: ParagraphIR, fallback_index: int) -> tuple[int, int]:
-    if paragraph.meta is None:
-        return (fallback_index + 1_000_000, fallback_index)
-    reading_order_index = getattr(paragraph.meta, "reading_order_index", None)
-    if reading_order_index is None:
-        return (fallback_index + 1_000_000, fallback_index)
-    return (reading_order_index, fallback_index)
+def _bbox_order_key(
+    bbox: PdfBoundingBox | None,
+    *,
+    fallback_index: int,
+    subindex: int = 0,
+) -> tuple[float, float, int, int]:
+    if bbox is None:
+        return (1_000_000.0, 1_000_000.0, fallback_index, subindex)
+    return (-bbox.top_pt, bbox.left_pt, fallback_index, subindex)
 
 
 def _paragraph_offsets_from_page(
@@ -229,9 +230,6 @@ def _normalize_pdf_doc_for_flow(
             normalized_pages.append(logical_page_info)
             normalized_paragraphs.extend(composition.ordered_paragraphs)
             residual_candidates.extend(
-                _page_long_rule_candidates(logical_preview_context, page_number=logical_page_info.page_number)
-            )
-            residual_candidates.extend(
                 assigned_candidate.candidate
                 for assigned_candidate in composition.assigned_candidates
                 if id(assigned_candidate.candidate) not in composition.promoted_candidate_ids
@@ -255,11 +253,12 @@ def _build_preview_entries(
     entries: list[_PreviewCompositionEntry] = []
     for fallback_index, paragraph in enumerate(page_paragraphs):
         top_offset, bottom_offset = _paragraph_offsets_from_page(paragraph, page=page)
-        order_key = _paragraph_reading_order(paragraph, fallback_index)
+        paragraph_bbox = _paragraph_bbox(paragraph)
+        order_key = _bbox_order_key(paragraph_bbox, fallback_index=fallback_index)
         entries.append(
             _PreviewCompositionEntry(
                 item_type="paragraph",
-                bounding_box=_paragraph_bbox(paragraph),
+                bounding_box=paragraph_bbox,
                 paragraph=paragraph,
                 region_type=_paragraph_region_type(
                     paragraph,
@@ -273,51 +272,8 @@ def _build_preview_entries(
             )
         )
 
-    has_side_regions = any(region.region_type in {"left", "right"} for region in page_regions)
-    entries.sort(
-        key=lambda entry: _preview_entry_sort_key(entry, has_side_regions=has_side_regions)
-    )
+    entries.sort(key=lambda entry: entry.order_key)
     return entries
-
-
-def _preview_region_rank(region_type: str, *, has_side_regions: bool) -> int:
-    if not has_side_regions:
-        return 0
-    if region_type in {"full", "main"}:
-        return 0
-    if region_type == "left":
-        return 1
-    if region_type == "right":
-        return 2
-    return 3
-
-
-def _preview_entry_sort_key(
-    entry: _PreviewCompositionEntry,
-    *,
-    has_side_regions: bool,
-) -> tuple[int, int, int, float, float, int]:
-    top_offset = 1_000_000.0 if entry.top_offset_pt is None else entry.top_offset_pt
-    left_offset = 1_000_000.0 if entry.bounding_box is None else entry.bounding_box.left_pt
-    explicit_order = entry.order_key[0] < 1_000_000
-    region_rank = _preview_region_rank(entry.region_type, has_side_regions=has_side_regions)
-    if explicit_order:
-        return (
-            0,
-            entry.order_key[0],
-            entry.order_key[1],
-            top_offset,
-            left_offset,
-            region_rank,
-        )
-    return (
-        1,
-        region_rank,
-        0,
-        top_offset,
-        left_offset,
-        entry.order_key[1],
-    )
 
 
 def _primary_region_bbox(
@@ -539,13 +495,7 @@ def _build_candidate_groups(
     if not assigned_candidates:
         return []
 
-    ordered = sorted(
-        assigned_candidates,
-        key=lambda item: (
-            1_000_000.0 if item.top_offset_pt is None else item.top_offset_pt,
-            item.order_key,
-        ),
-    )
+    ordered = sorted(assigned_candidates, key=lambda item: item.order_key)
     index_by_id = {id(candidate): index for index, candidate in enumerate(ordered)}
     groups: list[_AssignedCandidateGroup] = []
     seen: set[int] = set()
@@ -582,26 +532,20 @@ def _build_candidate_groups(
             _AssignedCandidateGroup(
                 candidates=sorted(
                     members,
-                    key=lambda item: (
-                        item.candidate.bounding_box.top_pt,
-                        item.candidate.bounding_box.left_pt,
-                        index_by_id[id(item)],
+                    key=lambda item: _bbox_order_key(
+                        item.candidate.bounding_box,
+                        fallback_index=index_by_id[id(item)],
                     ),
                 ),
                 region_type=members[0].region_type,
                 top_offset_pt=top_offset,
                 bottom_offset_pt=bottom_offset,
-                order_key=min(member.order_key for member in members),
+                order_key=_bbox_order_key(group_bbox, fallback_index=len(groups)),
                 bounding_box=group_bbox,
             )
         )
 
-    groups.sort(
-        key=lambda group: (
-            1_000_000.0 if group.top_offset_pt is None else group.top_offset_pt,
-            group.order_key,
-        )
-    )
+    groups.sort(key=lambda group: group.order_key)
     return groups
 
 
@@ -618,9 +562,8 @@ def _collect_page_render_nodes(
     run_nodes: list[_PreviewRenderNode] = []
 
     for fallback_index, paragraph in enumerate(page_paragraphs):
-        paragraph_order = _paragraph_reading_order(paragraph, fallback_index)
-        paragraph_key = (paragraph_order[0], paragraph_order[1], 0)
         paragraph_bbox = _paragraph_bbox(paragraph)
+        paragraph_key = _bbox_order_key(paragraph_bbox, fallback_index=fallback_index)
         if paragraph_bbox is not None:
             paragraph_nodes.append(
                 _PreviewRenderNode(
@@ -638,7 +581,7 @@ def _collect_page_render_nodes(
             node_bbox = _content_node_bbox(node)
             if node_bbox is None:
                 continue
-            node_key = (paragraph_order[0], paragraph_order[1], content_index)
+            node_key = _bbox_order_key(node_bbox, fallback_index=fallback_index, subindex=content_index)
             common_kwargs = {
                 "unit_id": getattr(node, "unit_id", f"{paragraph.unit_id}.c{content_index}"),
                 "bbox": node_bbox,
@@ -711,10 +654,11 @@ def _assign_page_nodes_to_candidates(
     preview_context: PdfPreviewContext,
 ) -> tuple[list[_AssignedCandidate], set[str], set[str]]:
     paragraph_nodes, table_nodes, image_nodes, run_nodes = _collect_page_render_nodes(page_paragraphs)
+    table_bboxes = [table_node.bbox for table_node in table_nodes]
     candidates = [
         candidate
         for candidate in _page_box_candidates(preview_context, page_number=page.page_number)
-        if not any(_candidate_matches_table_bbox(candidate.bounding_box, table_node.bbox) for table_node in table_nodes)
+        if not any(_candidate_matches_table_bbox(candidate.bounding_box, table_bbox) for table_bbox in table_bboxes)
     ]
     if not candidates:
         return [], set(), set()
@@ -736,7 +680,7 @@ def _assign_page_nodes_to_candidates(
                 ),
                 top_offset_pt=top_offset,
                 bottom_offset_pt=bottom_offset,
-                order_key=(1_000_000, candidate_index, 0),
+                order_key=_bbox_order_key(bbox, fallback_index=candidate_index),
                 paragraph_nodes=[],
                 table_nodes=[],
                 image_nodes=[],
@@ -773,7 +717,21 @@ def _assign_page_nodes_to_candidates(
             assigned.order_key = min(assigned.order_key, node.order_key)
             assigned_child_ids.add(node.unit_id)
 
+    assigned_candidates = [
+        assigned_candidate
+        for assigned_candidate in assigned_candidates
+        if _assigned_candidate_has_content(assigned_candidate)
+    ]
     return assigned_candidates, assigned_paragraph_ids, assigned_child_ids
+
+
+def _assigned_candidate_has_content(assigned_candidate: _AssignedCandidate) -> bool:
+    return bool(
+        assigned_candidate.paragraph_nodes
+        or assigned_candidate.table_nodes
+        or assigned_candidate.image_nodes
+        or assigned_candidate.run_nodes
+    )
 
 
 def _filter_page_flow_paragraphs(
@@ -830,12 +788,12 @@ def _nearest_boundary_index(boundaries: list[float], value: float) -> int:
 
 def _auxiliary_nodes_to_paragraphs(
     nodes: list[_PreviewRenderNode],
-) -> list[tuple[tuple[int, int, int], ParagraphIR]]:
+) -> list[tuple[tuple[float, float, int, int], ParagraphIR]]:
     if not nodes:
         return []
 
     grouped: dict[str, list[_PreviewRenderNode]] = {}
-    group_order: dict[str, tuple[int, int, int]] = {}
+    group_order: dict[str, tuple[float, float, int, int]] = {}
     group_para_style: dict[str, Any] = {}
     group_bbox: dict[str, PdfBoundingBox] = {}
     for node in nodes:
@@ -855,7 +813,7 @@ def _auxiliary_nodes_to_paragraphs(
             )
         )
 
-    paragraphs: list[tuple[tuple[int, int, int], ParagraphIR]] = []
+    paragraphs: list[tuple[tuple[float, float, int, int], ParagraphIR]] = []
     for group_key, group_nodes in grouped.items():
         content_nodes: list[Any] = []
         for node in sorted(group_nodes, key=lambda item: item.order_key):
@@ -880,7 +838,7 @@ def _auxiliary_nodes_to_paragraphs(
 
 
 def _assigned_candidate_cell_paragraphs(assigned_candidate: _AssignedCandidate) -> list[ParagraphIR]:
-    content_blocks: list[tuple[tuple[int, int, int], ParagraphIR]] = []
+    content_blocks: list[tuple[tuple[float, float, int, int], ParagraphIR]] = []
     for paragraph_node in sorted(assigned_candidate.paragraph_nodes, key=lambda item: item.order_key):
         if paragraph_node.paragraph is None:
             continue
@@ -893,6 +851,36 @@ def _assigned_candidate_cell_paragraphs(assigned_candidate: _AssignedCandidate) 
     content_blocks.extend(_auxiliary_nodes_to_paragraphs(auxiliary_nodes))
     content_blocks.sort(key=lambda item: item[0])
     return [paragraph for _, paragraph in content_blocks]
+
+
+def _assigned_candidate_real_table_unit_ids(
+    assigned_candidate: _AssignedCandidate,
+) -> set[str]:
+    table_unit_ids: set[str] = set()
+
+    for paragraph_node in assigned_candidate.paragraph_nodes:
+        if paragraph_node.paragraph is None:
+            continue
+        for content_node in paragraph_node.paragraph.content:
+            if isinstance(content_node, TableIR):
+                table_unit_ids.add(content_node.unit_id)
+
+    for table_node in assigned_candidate.table_nodes:
+        if table_node.table is not None:
+            table_unit_ids.add(table_node.table.unit_id)
+
+    return table_unit_ids
+
+
+def _group_has_many_real_tables(
+    assigned_candidate_group: _AssignedCandidateGroup,
+) -> bool:
+    table_unit_ids: set[str] = set()
+    for assigned_candidate in assigned_candidate_group.candidates:
+        table_unit_ids.update(_assigned_candidate_real_table_unit_ids(assigned_candidate))
+        if len(table_unit_ids) >= 3:
+            return True
+    return False
 
 
 def _layout_table_cell_style(
@@ -998,6 +986,8 @@ def _promote_assigned_candidates_to_layout_tables(
     paragraphs: list[ParagraphIR] = []
     promoted_candidate_ids: set[int] = set()
     for group_index, assigned_candidate_group in enumerate(_build_candidate_groups(assigned_candidates, page=page), start=1):
+        if _group_has_many_real_tables(assigned_candidate_group):
+            continue
         paragraph = _build_layout_table_paragraph_for_group(
             assigned_candidate_group,
             page_number=page.page_number,
