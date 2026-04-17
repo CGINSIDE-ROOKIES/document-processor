@@ -18,10 +18,8 @@ class PdfPreviewModuleApiTests(unittest.TestCase):
             "document_processor.pdf.preview.analyze",
             "document_processor.pdf.preview.shared",
             "document_processor.pdf.preview.context",
-            "document_processor.pdf.preview.layout",
-            "document_processor.pdf.preview.compose",
+            "document_processor.pdf.preview.normalize",
             "document_processor.pdf.preview.render",
-            "document_processor.pdf.preview.prepare",
         ):
             module = importlib.import_module(module_name)
             self.assertIsNotNone(module)

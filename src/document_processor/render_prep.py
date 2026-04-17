@@ -10,7 +10,7 @@ def prepare_doc_ir_for_html(doc_ir: DocIR) -> DocIR:
     # PDF alone gets an extra preview-prep stage because table borders,
     # backgrounds, and layout hints often need format-specific refinement.
     if (doc_ir.source_doc_type or "").lower() == "pdf":
-        from .pdf.preview.prepare import prepare_pdf_for_html
+        from .pdf.preview.normalize import prepare_pdf_for_html
 
         return prepare_pdf_for_html(doc_ir)
     return doc_ir

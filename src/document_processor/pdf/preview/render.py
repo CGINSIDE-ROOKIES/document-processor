@@ -14,11 +14,13 @@ from ...html_exporter import (
 )
 from ...models import DocIR, PageInfo, ParagraphIR
 from ..meta import PdfBoundingBox
-from .layout import (
+from .normalize import (
     _build_logical_pages_for_page,
+    _compose_logical_page,
     _logical_page_page_info,
     _logical_page_paragraphs,
     _logical_page_preview_context,
+    prepare_pdf_for_html,
 )
 from .models import (
     PdfPreviewContext,
@@ -107,8 +109,6 @@ def _render_preview_page_content(
     *,
     preview_context: PdfPreviewContext,
 ) -> str:
-    from .compose import _compose_logical_page
-
     if not page_paragraphs:
         return ""
 
@@ -357,8 +357,6 @@ def render_pdf_preview_html(
     title: str | None = None,
 ) -> str:
     """Internal helper for callers that already hold preview sidecar data."""
-    from .prepare import prepare_pdf_for_html
-
     prepared_doc = doc_ir.model_copy(deep=True)
     prepared_context = preview_context.model_copy(deep=True)
     prepare_pdf_for_html(prepared_doc, preview_context=prepared_context)

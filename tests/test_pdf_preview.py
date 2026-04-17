@@ -22,8 +22,10 @@ from document_processor.pdf.preview.models import (
     PdfPreviewVisualBlockCandidate,
     PdfPreviewVisualPrimitive,
 )
-from document_processor.pdf.preview.layout import _build_logical_pages_for_page
-from document_processor.pdf.preview.prepare import prepare_pdf_for_html
+from document_processor.pdf.preview.normalize import (
+    _build_logical_pages_for_page,
+    prepare_pdf_for_html,
+)
 from document_processor.pdf.preview.render import render_pdf_html, render_pdf_preview_html
 
 

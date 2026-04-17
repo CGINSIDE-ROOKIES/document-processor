@@ -258,8 +258,8 @@ class PdfEnrichmentTests(unittest.TestCase):
     def test_prepare_pdf_for_html_enriches_pdf_tables_by_default(self) -> None:
         doc = DocIR(source_doc_type="pdf", source_path="/tmp/example.pdf")
 
-        with patch("document_processor.pdf.preview.prepare.enrich_pdf_table_borders") as enrich_borders, patch(
-            "document_processor.pdf.preview.prepare.enrich_pdf_table_backgrounds"
+        with patch("document_processor.pdf.preview.normalize.enrich_pdf_table_borders") as enrich_borders, patch(
+            "document_processor.pdf.preview.normalize.enrich_pdf_table_backgrounds"
         ) as enrich_backgrounds:
             prepare_pdf_for_html(doc)
 
