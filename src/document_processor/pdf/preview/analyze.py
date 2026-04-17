@@ -472,6 +472,26 @@ def _extract_pdfium_visual_primitives(
     ]
 
 
+def extract_pdfium_table_rule_primitives(
+    page,  # noqa: ANN001
+    *,
+    page_number: int,
+    raw_module=None,  # noqa: ANN001
+) -> list[PdfPreviewVisualPrimitive]:
+    """Expose line-like PDFium primitives for canonical table split enrichment."""
+
+    primitives = _extract_pdfium_visual_primitives(
+        page,
+        page_number=page_number,
+        raw_module=raw_module,
+    )
+    return [
+        primitive
+        for primitive in primitives
+        if {"horizontal_line_segment", "vertical_line_segment"} & set(primitive.candidate_roles)
+    ]
+
+
 def _build_segmented_rule_primitives(
     primitives: list[PdfPreviewVisualPrimitive],
     *,
