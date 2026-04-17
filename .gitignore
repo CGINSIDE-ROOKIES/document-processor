@@ -217,3 +217,9 @@ __marimo__/
 # PDF-specific generated files have an obvious home when they grow.
 out/
 src/document_processor/pdf/__pycache__/
+
+# docs for local development
+docs
+
+# local experimental scripts
+scripts

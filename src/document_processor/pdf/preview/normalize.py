@@ -157,19 +157,6 @@ def _paragraph_union_bbox(paragraphs: list[ParagraphIR]) -> PdfBoundingBox | Non
     return _union_bboxes(boxes)
 
 
-def _span_overlap_ratio(
-    left_start: float,
-    left_end: float,
-    right_start: float,
-    right_end: float,
-) -> float:
-    overlap = max(min(left_end, right_end) - max(left_start, right_start), 0.0)
-    shorter_span = min(max(left_end - left_start, 0.0), max(right_end - right_start, 0.0))
-    if overlap <= 0.0 or shorter_span <= 0.0:
-        return 0.0
-    return overlap / shorter_span
-
-
 def _build_logical_pages_for_page(
     page: PageInfo,
     page_regions: list[PdfLayoutRegion],
@@ -1463,18 +1450,6 @@ def _page_box_candidates(
     ]
 
 
-def _page_long_rule_candidates(
-    preview_context: PdfPreviewContext,
-    *,
-    page_number: int,
-) -> list[PdfPreviewVisualBlockCandidate]:
-    return [
-        candidate
-        for candidate in preview_context.visual_block_candidates
-        if candidate.page_number == page_number and candidate.candidate_type == "long_rule"
-    ]
-
-
 def _candidate_matches_table_bbox(
     candidate_bbox: PdfBoundingBox,
     table_bbox: PdfBoundingBox,
@@ -1853,10 +1828,6 @@ def _promote_assigned_candidates_to_layout_tables(
     return paragraphs, promoted_candidate_ids
 
 
-def _bbox_distance(left, right) -> float:
-    return _shared_bbox_distance(left, right)
-
-
 def prepare_pdf_for_html(
     doc_ir: DocIR,
     *,
@@ -1931,7 +1902,7 @@ def _match_preview_table_context(
     for candidate in candidates:
         if candidate.page_number != page_number or candidate.bounding_box is None:
             continue
-        if _bbox_distance(candidate.bounding_box, bounding_box) <= 4.0:
+        if _shared_bbox_distance(candidate.bounding_box, bounding_box) <= 4.0:
             return candidate
     return None
 

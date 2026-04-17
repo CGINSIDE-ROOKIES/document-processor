@@ -2039,7 +2039,7 @@ class PdfPreviewTests(unittest.TestCase):
         self.assertEqual(len(semantic_lines), 1)
         self.assertEqual(semantic_lines[0].primitive_draw_orders, [8])
 
-    def test_build_visual_block_candidates_absorbs_long_rule_into_open_frame(self) -> None:
+    def test_build_visual_block_candidates_absorbs_long_line_hint_into_open_frame(self) -> None:
         primitives = [
             PdfPreviewVisualPrimitive(
                 page_number=1,
@@ -2076,11 +2076,29 @@ class PdfPreviewTests(unittest.TestCase):
         candidates = _build_visual_block_candidates(primitives)
 
         open_frames = [candidate for candidate in candidates if candidate.candidate_type == "open_frame"]
-        long_rules = [candidate for candidate in candidates if candidate.candidate_type == "long_rule"]
-
         self.assertEqual(len(open_frames), 1)
         self.assertEqual(open_frames[0].primitive_draw_orders, [0, 1, 2])
-        self.assertEqual(len(long_rules), 0)
+        self.assertEqual({candidate.candidate_type for candidate in candidates}, {"open_frame"})
+
+    def test_build_visual_block_candidates_keeps_standalone_long_line_hint_as_semantic_line(self) -> None:
+        primitives = [
+            PdfPreviewVisualPrimitive(
+                page_number=1,
+                draw_order=0,
+                object_type="path",
+                bounding_box=PdfBoundingBox(left_pt=10.0, bottom_pt=9.5, right_pt=90.0, top_pt=10.5),
+                stroke_color="#000000ff",
+                stroke_width_pt=1.0,
+                has_stroke=True,
+                candidate_roles=["horizontal_line_segment", "long_horizontal_rule"],
+            ),
+        ]
+
+        candidates = _build_visual_block_candidates(primitives)
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].candidate_type, "semantic_line")
+        self.assertEqual(candidates[0].primitive_draw_orders, [0])
 
     def test_build_visual_block_candidates_suppresses_semantic_line_on_open_frame_boundary(self) -> None:
         primitives = [
@@ -2216,7 +2234,7 @@ class PdfPreviewTests(unittest.TestCase):
         self.assertEqual(len(components), 1)
         self.assertEqual(sorted(item.draw_order for item in components[0]), [0, 1])
 
-    def test_build_visual_block_candidates_fast_path_still_groups_long_rules_into_open_frame(self) -> None:
+    def test_build_visual_block_candidates_fast_path_still_groups_long_line_hints_into_open_frame(self) -> None:
         primitives = [
             PdfPreviewVisualPrimitive(
                 page_number=1,
@@ -2272,11 +2290,9 @@ class PdfPreviewTests(unittest.TestCase):
         candidates = _build_visual_block_candidates(primitives)
 
         open_frames = [candidate for candidate in candidates if candidate.candidate_type == "open_frame"]
-        long_rules = [candidate for candidate in candidates if candidate.candidate_type == "long_rule"]
-
         self.assertEqual(len(open_frames), 1)
         self.assertEqual(open_frames[0].primitive_draw_orders, [600, 601, 602])
-        self.assertEqual(len(long_rules), 0)
+        self.assertEqual({candidate.candidate_type for candidate in candidates}, {"open_frame"})
 
     def test_render_pdf_preview_html_uses_region_layout_and_table_geometry(self) -> None:
         raw_document = {

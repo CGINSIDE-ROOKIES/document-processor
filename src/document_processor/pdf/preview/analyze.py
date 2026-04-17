@@ -23,6 +23,17 @@ from .models import (
     _VISUAL_SEGMENTED_MIN_SPAN_PT,
     _VISUAL_TOUCH_TOLERANCE_PT,
 )
+from .shared import (
+    _bbox_area,
+    _bbox_center,
+    _bbox_contains,
+    _bbox_from_bounds,
+    _bbox_intersection,
+    _bbox_touches_or_near,
+    _shared_bbox_distance,
+    _shared_page_content_margins,
+    _union_box_bounds,
+)
 
 def _has_visible_stroke(primitive: PdfPreviewVisualPrimitive) -> bool:
     if not primitive.has_stroke:
@@ -93,36 +104,6 @@ def _primitive_line_axis_center(primitive: PdfPreviewVisualPrimitive, orientatio
     if orientation == "horizontal":
         return (bbox.top_pt + bbox.bottom_pt) / 2.0
     return (bbox.left_pt + bbox.right_pt) / 2.0
-
-
-def _bbox_touches_or_near(left: PdfBoundingBox, right: PdfBoundingBox, *, tolerance_pt: float) -> bool:
-    horizontal_gap = max(left.left_pt - right.right_pt, right.left_pt - left.right_pt, 0.0)
-    vertical_gap = max(left.bottom_pt - right.top_pt, right.bottom_pt - left.top_pt, 0.0)
-    return horizontal_gap <= tolerance_pt and vertical_gap <= tolerance_pt
-
-
-def _bbox_contains(container: PdfBoundingBox, item: PdfBoundingBox, *, tolerance_pt: float) -> bool:
-    return (
-        container.left_pt - tolerance_pt <= item.left_pt
-        and container.bottom_pt - tolerance_pt <= item.bottom_pt
-        and container.right_pt + tolerance_pt >= item.right_pt
-        and container.top_pt + tolerance_pt >= item.top_pt
-    )
-
-
-def _shared_bbox_distance(left: PdfBoundingBox, right: PdfBoundingBox) -> float:
-    return abs(left.left_pt - right.left_pt) + abs(left.bottom_pt - right.bottom_pt) + abs(
-        left.right_pt - right.right_pt
-    ) + abs(left.top_pt - right.top_pt)
-
-
-def _shared_page_content_margins(page: PageInfo) -> tuple[float, float, float, float]:
-    return (
-        page.margin_top_pt if page.margin_top_pt is not None else 48.0,
-        page.margin_right_pt if page.margin_right_pt is not None else 42.0,
-        page.margin_bottom_pt if page.margin_bottom_pt is not None else 48.0,
-        page.margin_left_pt if page.margin_left_pt is not None else 42.0,
-    )
 
 
 def _line_primitives_belong_to_same_frame(
@@ -424,49 +405,6 @@ def _longest_interval_gap(
         cursor = max(cursor, right)
     longest = max(longest, end - cursor)
     return longest
-
-
-def _union_box_bounds(
-    boxes: list[tuple[float, float, float, float]],
-) -> tuple[float, float, float, float] | None:
-    if not boxes:
-        return None
-    left = min(box[0] for box in boxes)
-    bottom = min(box[1] for box in boxes)
-    right = max(box[2] for box in boxes)
-    top = max(box[3] for box in boxes)
-    return (left, bottom, right, top)
-
-
-def _bbox_from_bounds(bounds: tuple[float, float, float, float] | None) -> PdfBoundingBox | None:
-    if bounds is None:
-        return None
-    return PdfBoundingBox(
-        left_pt=bounds[0],
-        bottom_pt=bounds[1],
-        right_pt=bounds[2],
-        top_pt=bounds[3],
-    )
-
-
-def _bbox_center(bbox: PdfBoundingBox) -> tuple[float, float]:
-    return ((bbox.left_pt + bbox.right_pt) / 2.0, (bbox.bottom_pt + bbox.top_pt) / 2.0)
-
-
-def _bbox_area(bbox: PdfBoundingBox) -> float:
-    return max(bbox.right_pt - bbox.left_pt, 0.0) * max(bbox.top_pt - bbox.bottom_pt, 0.0)
-
-
-def _bbox_intersection(left: PdfBoundingBox, right: PdfBoundingBox) -> PdfBoundingBox | None:
-    intersection = PdfBoundingBox(
-        left_pt=max(left.left_pt, right.left_pt),
-        bottom_pt=max(left.bottom_pt, right.bottom_pt),
-        right_pt=min(left.right_pt, right.right_pt),
-        top_pt=min(left.top_pt, right.top_pt),
-    )
-    if intersection.right_pt <= intersection.left_pt or intersection.top_pt <= intersection.bottom_pt:
-        return None
-    return intersection
 
 
 def _extract_pdfium_visual_primitives(
@@ -925,7 +863,7 @@ def _build_visual_block_candidates(
     # Long rules should participate in the same line graph as ordinary line
     # segments. Only when the line set itself is too large do we fall back to
     # a cheap pass, and even then we still let long rules form frames/boxes
-    # among themselves before demoting them to standalone long_rule blocks.
+    # among themselves before falling back to ordinary line candidates.
     if len(line_primitives) > _VISUAL_OPEN_FRAME_PRIMITIVE_LIMIT:
         long_line_primitives = [
             primitive for primitive in line_primitives if _primitive_is_long_rule(primitive)
@@ -1184,8 +1122,6 @@ def _build_non_box_line_candidates(
         candidate_type = "semantic_line"
         if _is_open_frame_component(component):
             candidate_type = "axis_box" if _component_has_box_outline(candidate_bbox, component) else "open_frame"
-        elif any(_primitive_is_long_rule(primitive) for primitive in component):
-            candidate_type = "long_rule"
 
         candidates.append(
             PdfPreviewVisualBlockCandidate(

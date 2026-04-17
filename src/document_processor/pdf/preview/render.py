@@ -296,38 +296,6 @@ def _render_candidate_child_cell_overlays(candidate: PdfPreviewVisualBlockCandid
     return ""
 
 
-def _render_long_rule_overlays(page: PageInfo, long_rules: list[PdfPreviewVisualBlockCandidate]) -> str:
-    if not long_rules:
-        return ""
-    if page.height_pt is None:
-        return ""
-
-    margin_top, _margin_right, _margin_bottom, margin_left = _page_content_margins(page)
-    parts: list[str] = []
-    for candidate in long_rules:
-        bbox = candidate.bounding_box
-        left = max(bbox.left_pt - margin_left, 0.0)
-        top = max(page.height_pt - bbox.top_pt - margin_top, 0.0)
-        width = max(bbox.right_pt - bbox.left_pt, 0.0)
-        height = max(bbox.top_pt - bbox.bottom_pt, 0.0)
-        if width <= 0.0 or height <= 0.0:
-            continue
-        parts.append(
-            '<div class="pdf-preview-long-rule" '
-            f'style="position:absolute;left:{left:.1f}pt;top:{top:.1f}pt;'
-            f'width:{width:.1f}pt;height:{height:.1f}pt;'
-            'background:#4a4f57;opacity:0.8"></div>'
-        )
-    if not parts:
-        return ""
-    return (
-        '<div class="pdf-preview-long-rules" '
-        'style="position:absolute;inset:0;z-index:0;pointer-events:none">'
-        + "".join(parts)
-        + "</div>"
-    )
-
-
 def render_pdf_html(
     path: str | Path,
     *,
