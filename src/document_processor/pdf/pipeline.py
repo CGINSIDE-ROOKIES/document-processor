@@ -7,7 +7,7 @@ from typing import Any
 
 from ..models import DocIR, PageInfo
 from .config import PdfParseConfig
-from .enhancement import enrich_pdf_table_borders
+from .enhancement import enrich_pdf_table_borders, enrich_pdf_table_splits
 from .meta import PdfDocumentMeta
 from .odl import build_doc_ir_from_odl_result, run_odl_json
 from .parsing import PageClass, PdfProfile, decide_page, probe_pdf
@@ -101,6 +101,11 @@ def _parse_pdf_to_doc_ir_with_preview(
         )
 
     _apply_probe_page_sizes(doc_ir, profile=profile)
+    if resolved_config.infer_table_splits:
+        enrich_pdf_table_splits(
+            doc_ir,
+            pdf_path=source_path,
+        )
     if resolved_config.infer_table_borders:
         # Parse-time border inference is optional because it rasterizes pages and
         # is noticeably more expensive than the base ODL conversion path.

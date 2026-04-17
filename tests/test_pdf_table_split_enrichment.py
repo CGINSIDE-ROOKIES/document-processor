@@ -269,3 +269,60 @@ class PdfTableSplitEnrichmentTests(unittest.TestCase):
             [(cell.row_index, cell.col_index, cell.text) for cell in table.cells],
             [(1, 1, "Only left")],
         )
+
+    def test_enrich_pdf_table_splits_splits_horizontal_text_bearing_cell(self) -> None:
+        cell_bbox = PdfBoundingBox(left_pt=10.0, bottom_pt=10.0, right_pt=90.0, top_pt=70.0)
+        top_para = _text_paragraph("p1.tbl1.tr1.tc1.p1", "Top", left=20.0, bottom=50.0, right=50.0, top=60.0)
+        bottom_para = _text_paragraph("p1.tbl1.tr1.tc1.p2", "Bottom", left=20.0, bottom=18.0, right=60.0, top=28.0)
+        cell = TableCellIR(
+            unit_id="p1.tbl1.tr1.tc1",
+            row_index=1,
+            col_index=1,
+            bbox=cell_bbox,
+            meta=PdfNodeMeta(page_number=1, bounding_box=cell_bbox),
+            paragraphs=[top_para, bottom_para],
+        )
+        cell.recompute_text()
+        table = TableIR(
+            unit_id="p1.tbl1",
+            row_count=1,
+            col_count=1,
+            bbox=cell_bbox,
+            meta=PdfNodeMeta(page_number=1, bounding_box=cell_bbox),
+            cells=[cell],
+        )
+        doc = DocIR(
+            source_doc_type="pdf",
+            source_path="/tmp/example.pdf",
+            pages=[PageInfo(page_number=1, width_pt=100.0, height_pt=80.0)],
+            paragraphs=[ParagraphIR(unit_id="p1", content=[table])],
+        )
+        primitive = PdfPreviewVisualPrimitive(
+            page_number=1,
+            draw_order=1,
+            object_type="segmented_horizontal_rule",
+            bounding_box=PdfBoundingBox(left_pt=11.0, bottom_pt=39.5, right_pt=89.0, top_pt=40.5),
+            stroke_color="#0000ffff",
+            stroke_width_pt=1.0,
+            has_stroke=True,
+            candidate_roles=["horizontal_line_segment", "segmented_horizontal_rule"],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            pdf_path = Path(tmp_dir) / "sample.pdf"
+            pdf_path.write_bytes(b"%PDF-1.7\n%fake")
+            doc.source_path = str(pdf_path)
+
+            with patch(
+                "document_processor.pdf.enhancement.table_split_inference._extract_rule_primitives_for_pages",
+                return_value={1: [primitive]},
+            ):
+                enrich_pdf_table_splits(doc, pdf_path=pdf_path)
+
+        table = doc.paragraphs[0].tables[0]
+        self.assertEqual(table.row_count, 2)
+        self.assertEqual(table.col_count, 1)
+        self.assertEqual(
+            [(cell.row_index, cell.col_index, cell.text) for cell in table.cells],
+            [(1, 1, "Top"), (2, 1, "Bottom")],
+        )

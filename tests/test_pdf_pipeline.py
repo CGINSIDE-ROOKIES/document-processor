@@ -16,8 +16,9 @@ from document_processor import DocIR
 from document_processor.pdf import export_pdf_local_outputs
 from document_processor.pdf.odl import build_doc_ir_from_odl_result, convert_pdf_local, resolve_odl_jar_path
 from document_processor.pdf.pipeline import parse_pdf_to_doc_ir
-from document_processor.pdf.parsing import PageProfile, PdfProfile
+from document_processor.pdf.parsing import PageClass, PageDecision, PageProfile, PdfProfile
 from document_processor.pdf.preview.context import build_pdf_preview_context
+from document_processor.pdf.preview.models import PdfPreviewContext
 
 
 class PdfPipelineTests(unittest.TestCase):
@@ -596,6 +597,55 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertEqual(doc.meta.structured_pages, [2, 3])
         self.assertEqual(doc.meta.scan_like_pages, [1])
         self.assertIs(doc.get_pdf_preview_context(), build_preview_context.return_value)
+
+    def test_parse_pdf_to_doc_ir_applies_table_split_enrichment_when_enabled(self) -> None:
+        profile = PdfProfile(
+            page_count=1,
+            avg_chars_per_page=100.0,
+            normal_text_ratio=0.9,
+            text_readable=True,
+            text_readable_page_ratio=1.0,
+            page_profiles=[
+                PageProfile(
+                    page_number=1,
+                    char_count=100,
+                    normal_text_ratio=0.9,
+                    replacement_char_ratio=0.0,
+                    text_readable=True,
+                    image_area_ratio=0.0,
+                    image_area_in_content_ratio=0.0,
+                    page_width_pt=612.0,
+                    page_height_pt=792.0,
+                ),
+            ],
+        )
+        raw_document = {
+            "file name": "sample.pdf",
+            "number of pages": 1,
+            "kids": [],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            pdf_path = Path(tmp_dir) / "sample.pdf"
+            pdf_path.write_bytes(b"%PDF-1.7\n%fake")
+
+            with patch("document_processor.pdf.pipeline.probe_pdf", return_value=profile), patch(
+                "document_processor.pdf.pipeline.decide_page",
+                return_value=PageDecision(page_number=1, page_class=PageClass.STRUCTURED),
+            ), patch("document_processor.pdf.pipeline.run_odl_json", return_value=raw_document), patch(
+                "document_processor.pdf.pipeline.build_pdf_preview_context",
+                return_value=PdfPreviewContext(),
+            ), patch(
+                "document_processor.pdf.pipeline.build_doc_ir_from_odl_result",
+                return_value=DocIR(source_doc_type="pdf", source_path=str(pdf_path)),
+            ) as build_doc, patch(
+                "document_processor.pdf.pipeline.enrich_pdf_table_splits"
+            ) as enrich_splits:
+                parse_pdf_to_doc_ir(pdf_path, config={"infer_table_splits": True})
+
+        enrich_splits.assert_called_once()
+        self.assertIs(enrich_splits.call_args.args[0], build_doc.return_value)
+        self.assertEqual(enrich_splits.call_args.kwargs, {"pdf_path": pdf_path})
 
     def test_resolve_odl_jar_path_uses_vendored_jar(self) -> None:
         jar_path = resolve_odl_jar_path()
