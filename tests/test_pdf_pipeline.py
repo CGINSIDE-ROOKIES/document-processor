@@ -17,6 +17,7 @@ from document_processor.pdf import export_pdf_local_outputs
 from document_processor.pdf.odl import build_doc_ir_from_odl_result, convert_pdf_local, resolve_odl_jar_path
 from document_processor.pdf.pipeline import parse_pdf_to_doc_ir
 from document_processor.pdf.parsing import PageProfile, PdfProfile
+from document_processor.pdf.preview.context import build_pdf_preview_context
 
 
 class PdfPipelineTests(unittest.TestCase):
@@ -34,6 +35,84 @@ class PdfPipelineTests(unittest.TestCase):
         parsed_path = parse_pdf.call_args.args[0]
         self.assertTrue(str(parsed_path).endswith(".pdf"))
         self.assertNotIn("config", parse_pdf.call_args.kwargs)
+
+    def test_docir_from_file_pdf_to_html_renders_preview_content(self) -> None:
+        raw_document = {
+            "file name": "sample.pdf",
+            "number of pages": 1,
+            "pages": [{"page number": 1, "width pt": 200, "height pt": 120}],
+            "layout regions": [
+                {
+                    "region id": "p1-main",
+                    "region type": "full",
+                    "page number": 1,
+                    "bounding box": [0, 0, 200, 120],
+                }
+            ],
+            "kids": [
+                {
+                    "type": "paragraph",
+                    "content": "Preview body",
+                    "page number": 1,
+                    "layout region id": "p1-main",
+                    "reading order index": 1,
+                },
+                {
+                    "type": "table",
+                    "page number": 1,
+                    "layout region id": "p1-main",
+                    "reading order index": 2,
+                    "bounding box": [20, 30, 180, 90],
+                    "rows": [
+                        {
+                            "cells": [
+                                {
+                                    "type": "table cell",
+                                    "row number": 1,
+                                    "column number": 1,
+                                    "page number": 1,
+                                    "kids": [{"type": "paragraph", "content": "A1", "page number": 1}],
+                                }
+                            ]
+                        }
+                    ],
+                },
+            ],
+        }
+        profile = PdfProfile(
+            page_count=1,
+            avg_chars_per_page=10.0,
+            normal_text_ratio=1.0,
+            text_readable=True,
+            text_readable_page_ratio=1.0,
+            page_profiles=[
+                PageProfile(
+                    page_number=1,
+                    char_count=10,
+                    normal_text_ratio=1.0,
+                    replacement_char_ratio=0.0,
+                    text_readable=True,
+                    image_area_ratio=0.0,
+                    image_area_in_content_ratio=0.0,
+                    page_width_pt=200.0,
+                    page_height_pt=120.0,
+                )
+            ],
+        )
+
+        with patch("document_processor.pdf.pipeline.probe_pdf", return_value=profile), patch(
+            "document_processor.pdf.pipeline.run_odl_json", return_value=raw_document
+        ), patch("document_processor.pdf.preview.context._augment_layout_regions_with_pdfium", return_value=None):
+            doc = DocIR.from_file(BytesIO(b"%PDF-1.7\n%fake"), doc_type="pdf")
+            preview_context = doc.get_pdf_preview_context()
+            self.assertIsNotNone(preview_context)
+            self.assertTrue(any(region.region_id == "p1-main" for region in preview_context.layout_regions))
+            self.assertTrue(any(table.layout_region_id == "p1-main" for table in preview_context.tables))
+            html = doc.to_html(title="Preview")
+
+        self.assertIn("Preview body", html)
+        self.assertEqual(html.count('<section class="document-page"'), 1)
+        self.assertNotIn("document-region-band--columns", html)
 
     def test_build_doc_ir_from_odl_result_builds_paragraph_table_and_asset(self) -> None:
         raw_document = {

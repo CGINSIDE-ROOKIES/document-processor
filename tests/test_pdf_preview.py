@@ -2366,13 +2366,13 @@ class PdfPreviewTests(unittest.TestCase):
         html = render_pdf_preview_html(doc, preview_context=context, title="Preview")
 
         self.assertEqual(html.count('<section class="document-page"'), 2)
-        self.assertNotIn("document-region-band--columns", html)
-        self.assertNotIn("pdf-preview-page-layer", html)
         self.assertIn("Left body", html)
         self.assertIn("Right body", html)
-        self.assertIn("width:90.9pt", html)
         self.assertIn("A1", html)
         self.assertIn("B1", html)
+        self.assertIn("width:90.9pt", html)
+        self.assertNotIn("document-region-band--columns", html)
+        self.assertNotIn("pdf-preview-page-layer", html)
 
     def test_render_pdf_html_matches_render_pdf_preview_html_for_minimal_input(self) -> None:
         raw_document = {
