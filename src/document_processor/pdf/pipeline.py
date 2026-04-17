@@ -1,11 +1,4 @@
-"""PDF parsing pipeline.
-
-Public surface:
-- ``parse_pdf_to_doc_ir()`` for canonical DocIR construction
-
-Internal helpers:
-- preview-sidecar parsing used only by the PDF HTML preview path
-"""
+"""PDF parsing pipeline."""
 
 from __future__ import annotations
 
@@ -30,81 +23,16 @@ def parse_pdf_to_doc_ir(
     doc_cls: type[DocIR] | None = None,
     **doc_kwargs: Any,
 ) -> DocIR:
-    # Canonical PDF parse path:
-    # raw ODL JSON -> DocIR
-    # Preview-only sidecar data is intentionally dropped here.
-    doc_ir, _preview_context = _parse_pdf_with_optional_preview(
+    return _parse_pdf_to_doc_ir_with_preview(
         path,
         config=config,
         doc_id=doc_id,
         doc_cls=doc_cls,
         **doc_kwargs,
-    )
-    return doc_ir
-
-
-def _build_pdf_preview_context_for_path(
-    path: str | Path,
-    *,
-    config: PdfParseConfig | dict[str, Any] | None = None,
-) -> PdfPreviewContext:
-    """Internal helper for preview-only ODL sidecar loading."""
-    resolved_config = (
-        config
-        if isinstance(config, PdfParseConfig)
-        else PdfParseConfig.model_validate(config or {})
-    )
-    source_path = Path(path)
-    profile = probe_pdf(source_path)
-    if profile is None:
-        raise RuntimeError("PDF probe failed before ODL parsing.")
-
-    structured_pages = [
-        decision.page_number
-        for decision in (
-            decide_page(page_profile, resolved_config.triage)
-            for page_profile in profile.page_profiles
-        )
-        if decision.page_class == PageClass.STRUCTURED
-    ]
-    if not structured_pages:
-        return PdfPreviewContext()
-
-    raw_document = run_odl_json(
-        source_path,
-        {
-            **resolved_config.odl.model_dump(),
-            "pages": structured_pages,
-            "image_output": resolved_config.odl.image_output or "embedded",
-        },
-    )
-    return build_pdf_preview_context(
-        raw_document,
-        pdf_path=source_path,
-        page_numbers=structured_pages,
-    )
+    )[0]
 
 
 def _parse_pdf_to_doc_ir_with_preview(
-    path: str | Path,
-    *,
-    config: PdfParseConfig | dict[str, Any] | None = None,
-    doc_id: str | None = None,
-    doc_cls: type[DocIR] | None = None,
-    **doc_kwargs: Any,
-) -> tuple[DocIR, PdfPreviewContext]:
-    # Internal preview parse path:
-    # raw ODL JSON -> DocIR + PdfPreviewContext sidecar
-    return _parse_pdf_with_optional_preview(
-        path,
-        config=config,
-        doc_id=doc_id,
-        doc_cls=doc_cls,
-        **doc_kwargs,
-    )
-
-
-def _parse_pdf_with_optional_preview(
     path: str | Path,
     *,
     config: PdfParseConfig | dict[str, Any] | None = None,

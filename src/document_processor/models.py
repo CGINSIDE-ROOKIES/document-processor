@@ -329,11 +329,6 @@ class DocIR(BaseModel, Generic[T]):
             from .pdf.preview.render import render_pdf_preview_html
 
             preview_context = self.get_pdf_preview_context()
-            if preview_context is None and self.source_path:
-                from .pdf.pipeline import _build_pdf_preview_context_for_path
-
-                preview_context = _build_pdf_preview_context_for_path(self.source_path)
-                self.set_pdf_preview_context(preview_context)
             if preview_context is not None:
                 return render_pdf_preview_html(self, preview_context=preview_context, title=title)
 
