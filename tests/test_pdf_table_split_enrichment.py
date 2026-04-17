@@ -1,15 +1,22 @@
 from __future__ import annotations
 
 from pathlib import Path
+import tempfile
 import sys
 import unittest
+from unittest.mock import patch
 
 THIS_DIR = Path(__file__).resolve().parent
 SRC_ROOT = THIS_DIR.parent / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from document_processor import DocIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
+from document_processor.models import BoundingBox
+from document_processor.pdf.enhancement import enrich_pdf_table_splits
+from document_processor.pdf.meta import PdfBoundingBox, PdfNodeMeta
 from document_processor.pdf.preview.analyze import extract_pdfium_table_rule_primitives
+from document_processor.pdf.preview.models import PdfPreviewVisualPrimitive
 
 
 class _FakeSegment:
@@ -149,4 +156,116 @@ class PdfTableSplitPrimitiveTests(unittest.TestCase):
         self.assertEqual(
             set(primitives[0].candidate_roles),
             {"vertical_line_segment", "segmented_vertical_rule"},
+        )
+
+
+def _text_paragraph(unit_id: str, text: str, *, left: float, bottom: float, right: float, top: float) -> ParagraphIR:
+    bbox = BoundingBox(left_pt=left, bottom_pt=bottom, right_pt=right, top_pt=top)
+    paragraph = ParagraphIR(
+        unit_id=unit_id,
+        bbox=bbox,
+        content=[RunIR(unit_id=f"{unit_id}.r1", text=text, bbox=bbox)],
+    )
+    paragraph.recompute_text()
+    return paragraph
+
+
+def _single_cell_doc(*, left_para: ParagraphIR, right_para: ParagraphIR | None = None) -> DocIR:
+    cell_bbox = PdfBoundingBox(left_pt=10.0, bottom_pt=10.0, right_pt=90.0, top_pt=40.0)
+    paragraphs = [left_para]
+    if right_para is not None:
+        paragraphs.append(right_para)
+    cell = TableCellIR(
+        unit_id="p1.tbl1.tr1.tc1",
+        row_index=1,
+        col_index=1,
+        bbox=cell_bbox,
+        meta=PdfNodeMeta(page_number=1, bounding_box=cell_bbox),
+        paragraphs=paragraphs,
+    )
+    cell.recompute_text()
+    table = TableIR(
+        unit_id="p1.tbl1",
+        row_count=1,
+        col_count=1,
+        bbox=cell_bbox,
+        meta=PdfNodeMeta(page_number=1, bounding_box=cell_bbox),
+        cells=[cell],
+    )
+    return DocIR(
+        source_doc_type="pdf",
+        source_path="/tmp/example.pdf",
+        pages=[PageInfo(page_number=1, width_pt=100.0, height_pt=50.0)],
+        paragraphs=[ParagraphIR(unit_id="p1", content=[table])],
+    )
+
+
+class PdfTableSplitEnrichmentTests(unittest.TestCase):
+    def test_enrich_pdf_table_splits_splits_vertical_text_bearing_cell(self) -> None:
+        doc = _single_cell_doc(
+            left_para=_text_paragraph("p1.tbl1.tr1.tc1.p1", "Left", left=14.0, bottom=14.0, right=42.0, top=22.0),
+            right_para=_text_paragraph("p1.tbl1.tr1.tc1.p2", "Right", left=58.0, bottom=14.0, right=86.0, top=22.0),
+        )
+        primitive = PdfPreviewVisualPrimitive(
+            page_number=1,
+            draw_order=1,
+            object_type="segmented_vertical_rule",
+            bounding_box=PdfBoundingBox(left_pt=49.5, bottom_pt=11.0, right_pt=50.5, top_pt=39.0),
+            stroke_color="#0000ffff",
+            stroke_width_pt=1.0,
+            has_stroke=True,
+            candidate_roles=["vertical_line_segment", "segmented_vertical_rule"],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            pdf_path = Path(tmp_dir) / "sample.pdf"
+            pdf_path.write_bytes(b"%PDF-1.7\n%fake")
+            doc.source_path = str(pdf_path)
+
+            with patch(
+                "document_processor.pdf.enhancement.table_split_inference._extract_rule_primitives_for_pages",
+                return_value={1: [primitive]},
+            ):
+                enrich_pdf_table_splits(doc, pdf_path=pdf_path)
+
+        table = doc.paragraphs[0].tables[0]
+        self.assertEqual(table.row_count, 1)
+        self.assertEqual(table.col_count, 2)
+        self.assertEqual(
+            [(cell.row_index, cell.col_index, cell.text) for cell in table.cells],
+            [(1, 1, "Left"), (1, 2, "Right")],
+        )
+
+    def test_enrich_pdf_table_splits_leaves_single_sided_text_unsplit(self) -> None:
+        doc = _single_cell_doc(
+            left_para=_text_paragraph("p1.tbl1.tr1.tc1.p1", "Only left", left=14.0, bottom=14.0, right=42.0, top=22.0),
+        )
+        primitive = PdfPreviewVisualPrimitive(
+            page_number=1,
+            draw_order=1,
+            object_type="segmented_vertical_rule",
+            bounding_box=PdfBoundingBox(left_pt=49.5, bottom_pt=11.0, right_pt=50.5, top_pt=39.0),
+            stroke_color="#0000ffff",
+            stroke_width_pt=1.0,
+            has_stroke=True,
+            candidate_roles=["vertical_line_segment", "segmented_vertical_rule"],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            pdf_path = Path(tmp_dir) / "sample.pdf"
+            pdf_path.write_bytes(b"%PDF-1.7\n%fake")
+            doc.source_path = str(pdf_path)
+
+            with patch(
+                "document_processor.pdf.enhancement.table_split_inference._extract_rule_primitives_for_pages",
+                return_value={1: [primitive]},
+            ):
+                enrich_pdf_table_splits(doc, pdf_path=pdf_path)
+
+        table = doc.paragraphs[0].tables[0]
+        self.assertEqual(table.row_count, 1)
+        self.assertEqual(table.col_count, 1)
+        self.assertEqual(
+            [(cell.row_index, cell.col_index, cell.text) for cell in table.cells],
+            [(1, 1, "Only left")],
         )
