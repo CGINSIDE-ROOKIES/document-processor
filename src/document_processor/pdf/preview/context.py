@@ -6,10 +6,12 @@ from pathlib import Path
 from typing import Any
 
 from ..meta import PdfBoundingBox, coerce_bbox, coerce_float, coerce_int
-from .candidates import _build_visual_block_candidates
+from .analyze import (
+    _build_visual_block_candidates,
+    _detect_pdfium_split_regions,
+    _extract_pdfium_visual_primitives,
+)
 from .models import PdfLayoutRegion, PdfPreviewContext, PdfPreviewTableContext
-from .primitives import _extract_pdfium_visual_primitives
-from .shared import _bbox_from_bounds, _has_central_vertical_gutter, _pdfium_text_boxes, _union_box_bounds
 
 
 def build_pdf_preview_context(
@@ -149,51 +151,6 @@ def _augment_layout_regions_with_pdfium(
     finally:
         doc.close()
 
-
-def _detect_pdfium_split_regions(page, *, page_number: int) -> list[PdfLayoutRegion]:  # noqa: ANN001
-    page_width = page.get_width() or 0.0
-    page_height = page.get_height() or 0.0
-    if page_width <= 0.0 or page_height <= 0.0:
-        return []
-
-    text_boxes = _pdfium_text_boxes(page)
-    if not text_boxes:
-        return []
-
-    center_x = page_width / 2.0
-    left_boxes = [box for box in text_boxes if ((box[0] + box[2]) / 2.0) < center_x - page_width * 0.08]
-    right_boxes = [box for box in text_boxes if ((box[0] + box[2]) / 2.0) > center_x + page_width * 0.08]
-    min_cluster_boxes = max(int(len(text_boxes) * 0.10), 12)
-    if len(left_boxes) < min_cluster_boxes or len(right_boxes) < min_cluster_boxes:
-        return []
-
-    # Treat a long empty strip near the physical page center as the primary
-    # signal for a left/right split. This catches scanned spreads and booklet
-    # layouts more reliably than waiting for an explicit separator line.
-    if not _has_central_vertical_gutter(text_boxes, page_width=page_width):
-        return []
-
-    left_bbox = _bbox_from_bounds(_union_box_bounds(left_boxes))
-    right_bbox = _bbox_from_bounds(_union_box_bounds(right_boxes))
-    if left_bbox is None or right_bbox is None:
-        return []
-
-    return [
-        PdfLayoutRegion(
-            region_id=f"pdfium-p{page_number}-left",
-            region_type="left",
-            page_number=page_number,
-            bounding_box=left_bbox,
-        ),
-        PdfLayoutRegion(
-            region_id=f"pdfium-p{page_number}-right",
-            region_type="right",
-            page_number=page_number,
-            bounding_box=right_bbox,
-        ),
-    ]
-
-
 __all__ = [
     "build_pdf_preview_context",
     "_layout_regions_from_raw",
@@ -202,5 +159,4 @@ __all__ = [
     "_float_list",
     "_line_art_boxes",
     "_augment_layout_regions_with_pdfium",
-    "_detect_pdfium_split_regions",
 ]
