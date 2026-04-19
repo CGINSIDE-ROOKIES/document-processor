@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from copy import deepcopy
 from typing import Any
 
 from ...models import DocIR, ImageAsset, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
@@ -668,16 +669,51 @@ def _split_raw_cell(
         orientation=split_orientation,
         axis_pt=split_axis_pt,
     )
-    first_piece = dict(shifted_cell)
-    second_piece = dict(shifted_cell)
+    first_piece = deepcopy(shifted_cell)
+    second_piece = deepcopy(shifted_cell)
+    cell_bbox = coerce_bbox(cell.get("bounding box"))
 
     if split_orientation == "horizontal":
+        if cell_bbox is not None:
+            first_piece["bounding box"] = [
+                cell_bbox.left_pt,
+                split_axis_pt,
+                cell_bbox.right_pt,
+                cell_bbox.top_pt,
+            ]
+            second_piece["bounding box"] = [
+                cell_bbox.left_pt,
+                cell_bbox.bottom_pt,
+                cell_bbox.right_pt,
+                split_axis_pt,
+            ]
+            first_piece["display width pt"] = cell_bbox.right_pt - cell_bbox.left_pt
+            first_piece["display height pt"] = cell_bbox.top_pt - split_axis_pt
+            second_piece["display width pt"] = cell_bbox.right_pt - cell_bbox.left_pt
+            second_piece["display height pt"] = split_axis_pt - cell_bbox.bottom_pt
         first_piece["row span"] = 1
         second_piece["row number"] = (coerce_int(first_piece.get("row number")) or 1) + 1
         second_piece["row span"] = 1
         first_piece["kids"] = kids_after
         second_piece["kids"] = kids_before
     else:
+        if cell_bbox is not None:
+            first_piece["bounding box"] = [
+                cell_bbox.left_pt,
+                cell_bbox.bottom_pt,
+                split_axis_pt,
+                cell_bbox.top_pt,
+            ]
+            second_piece["bounding box"] = [
+                split_axis_pt,
+                cell_bbox.bottom_pt,
+                cell_bbox.right_pt,
+                cell_bbox.top_pt,
+            ]
+            first_piece["display width pt"] = split_axis_pt - cell_bbox.left_pt
+            first_piece["display height pt"] = cell_bbox.top_pt - cell_bbox.bottom_pt
+            second_piece["display width pt"] = cell_bbox.right_pt - split_axis_pt
+            second_piece["display height pt"] = cell_bbox.top_pt - cell_bbox.bottom_pt
         first_piece["column span"] = 1
         second_piece["column number"] = (coerce_int(first_piece.get("column number")) or 1) + 1
         second_piece["column span"] = 1
@@ -772,13 +808,18 @@ def _table_node_to_ir(
         table_style=table_style,
         meta=table_meta,
     )
-    for cell in sorted(
-        resolved_cells,
-        key=lambda item: (
-            coerce_int(item.get("row number")) or 1,
-            coerce_int(item.get("column number")) or 1,
-        ),
-    ):
+    ordered_cells = (
+        sorted(
+            resolved_cells,
+            key=lambda item: (
+                coerce_int(item.get("row number")) or 1,
+                coerce_int(item.get("column number")) or 1,
+            ),
+        )
+        if plan is not None
+        else resolved_cells
+    )
+    for cell in ordered_cells:
         row_index = coerce_int(cell.get("row number")) or 1
         col_index = coerce_int(cell.get("column number")) or 1
         cell_unit_id = f"{unit_id}.tr{row_index}.tc{col_index}"

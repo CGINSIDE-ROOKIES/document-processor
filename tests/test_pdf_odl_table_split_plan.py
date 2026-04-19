@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 import sys
 import unittest
@@ -118,6 +119,17 @@ def _table_cell_text(table, row_index: int, col_index: int) -> str:
     return _table_cell(table, row_index, col_index).text
 
 
+def _bbox_tuple(cell) -> tuple[float, float, float, float] | None:
+    if cell.bbox is None:
+        return None
+    return (
+        cell.bbox.left_pt,
+        cell.bbox.bottom_pt,
+        cell.bbox.right_pt,
+        cell.bbox.top_pt,
+    )
+
+
 def _table_cell(table, row_index: int, col_index: int):
     for cell in table.cells:
         rowspan = cell.cell_style.rowspan if cell.cell_style is not None else 1
@@ -157,11 +169,14 @@ class AdapterSplitPlanTests(unittest.TestCase):
         )
 
         table = document.paragraphs[0].tables[0]
+        self.assertEqual(len(table.cells), 4)
         self.assertEqual((table.row_count, table.col_count), (3, 2))
         self.assertEqual(_table_cell_text(table, 1, 1), "Top")
         self.assertEqual(_table_cell_text(table, 2, 1), "Bottom")
         self.assertEqual(_table_cell_text(table, 3, 1), "Tail")
         self.assertEqual(_table_cell(table, 1, 2).cell_style.rowspan, 3)
+        self.assertEqual(_bbox_tuple(_table_cell(table, 1, 1)), (10.0, 67.0, 60.0, 90.0))
+        self.assertEqual(_bbox_tuple(_table_cell(table, 2, 1)), (10.0, 50.0, 60.0, 67.0))
 
     def test_build_doc_ir_from_odl_result_applies_vertical_column_insertion(self) -> None:
         table_node = _table_node()
@@ -182,10 +197,26 @@ class AdapterSplitPlanTests(unittest.TestCase):
         )
 
         table = document.paragraphs[0].tables[0]
+        self.assertEqual(len(table.cells), 4)
         self.assertEqual((table.row_count, table.col_count), (2, 3))
         self.assertEqual(_table_cell_text(table, 2, 1), "Left")
         self.assertEqual(_table_cell_text(table, 2, 2), "Right")
         self.assertEqual(_table_cell_text(table, 2, 3), "Merged")
+        self.assertEqual(_bbox_tuple(_table_cell(table, 2, 1)), (10.0, 10.0, 35.0, 50.0))
+        self.assertEqual(_bbox_tuple(_table_cell(table, 2, 2)), (35.0, 10.0, 60.0, 50.0))
+
+    def test_build_doc_ir_from_odl_result_preserves_no_plan_cell_order(self) -> None:
+        table_node = _table_node()
+        table_node["rows"] = list(reversed(table_node["rows"]))
+        raw_document = _raw_document_with_table(table_node)
+
+        document = build_doc_ir_from_odl_result(
+            deepcopy(raw_document),
+            source_path="sample.pdf",
+        )
+        table = document.paragraphs[0].tables[0]
+
+        self.assertEqual([cell.text for cell in table.cells], ["Tail", "Top\nBottom", "Merged"])
 
     def test_build_table_split_plan_for_table_node_creates_row_event_for_text_bearing_horizontal_rule(self) -> None:
         plan = build_table_split_plan_for_table_node(_table_node(), primitives=[_horizontal_rule(67.0)])
