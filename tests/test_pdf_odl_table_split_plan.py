@@ -10,10 +10,11 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from document_processor.pdf.meta import PdfBoundingBox
+from document_processor.pdf.odl.adapter import build_doc_ir_from_odl_result
 from document_processor.pdf.odl.table_split_plan import (
     CellKey,
-    TableNodeKey,
     build_table_split_plan_for_table_node,
+    table_node_key,
 )
 from document_processor.pdf.preview.models import PdfPreviewVisualPrimitive
 
@@ -104,6 +105,30 @@ def _vertical_rule(x_pt: float) -> PdfPreviewVisualPrimitive:
     )
 
 
+def _raw_document_with_table(table_node: dict[str, object]) -> dict[str, object]:
+    return {
+        "file name": "sample.pdf",
+        "number of pages": 1,
+        "pages": [{"page number": 1}],
+        "kids": [table_node],
+    }
+
+
+def _table_cell_text(table, row_index: int, col_index: int) -> str:
+    return _table_cell(table, row_index, col_index).text
+
+
+def _table_cell(table, row_index: int, col_index: int):
+    for cell in table.cells:
+        rowspan = cell.cell_style.rowspan if cell.cell_style is not None else 1
+        colspan = cell.cell_style.colspan if cell.cell_style is not None else 1
+        row_end = cell.row_index + max(rowspan, 1) - 1
+        col_end = cell.col_index + max(colspan, 1) - 1
+        if cell.row_index <= row_index <= row_end and cell.col_index <= col_index <= col_end:
+            return cell
+    raise AssertionError(f"missing cell at ({row_index}, {col_index})")
+
+
 class TableSplitPlanTests(unittest.TestCase):
     def test_build_table_split_plan_for_table_node_ignores_segmented_rule_from_different_page(self) -> None:
         plan = build_table_split_plan_for_table_node(
@@ -112,6 +137,55 @@ class TableSplitPlanTests(unittest.TestCase):
         )
 
         self.assertIsNone(plan)
+
+
+class AdapterSplitPlanTests(unittest.TestCase):
+    def test_build_doc_ir_from_odl_result_applies_horizontal_row_insertion_and_expands_unsplit_rowspan(
+        self,
+    ) -> None:
+        table_node = _table_node()
+        raw_document = _raw_document_with_table(table_node)
+        plan = build_table_split_plan_for_table_node(table_node, primitives=[_horizontal_rule(67.0)])
+
+        self.assertIsNotNone(plan)
+        assert plan is not None
+
+        document = build_doc_ir_from_odl_result(
+            raw_document,
+            source_path="sample.pdf",
+            table_split_plans={table_node_key(table_node): plan},
+        )
+
+        table = document.paragraphs[0].tables[0]
+        self.assertEqual((table.row_count, table.col_count), (3, 2))
+        self.assertEqual(_table_cell_text(table, 1, 1), "Top")
+        self.assertEqual(_table_cell_text(table, 2, 1), "Bottom")
+        self.assertEqual(_table_cell_text(table, 3, 1), "Tail")
+        self.assertEqual(_table_cell(table, 1, 2).cell_style.rowspan, 3)
+
+    def test_build_doc_ir_from_odl_result_applies_vertical_column_insertion(self) -> None:
+        table_node = _table_node()
+        table_node["rows"][1]["cells"][0]["kids"] = [
+            _text_box("Left", left=14.0, bottom=14.0, right=30.0, top=42.0),
+            _text_box("Right", left=40.0, bottom=14.0, right=56.0, top=42.0),
+        ]
+        raw_document = _raw_document_with_table(table_node)
+        plan = build_table_split_plan_for_table_node(table_node, primitives=[_vertical_rule(35.0)])
+
+        self.assertIsNotNone(plan)
+        assert plan is not None
+
+        document = build_doc_ir_from_odl_result(
+            raw_document,
+            source_path="sample.pdf",
+            table_split_plans={table_node_key(table_node): plan},
+        )
+
+        table = document.paragraphs[0].tables[0]
+        self.assertEqual((table.row_count, table.col_count), (2, 3))
+        self.assertEqual(_table_cell_text(table, 2, 1), "Left")
+        self.assertEqual(_table_cell_text(table, 2, 2), "Right")
+        self.assertEqual(_table_cell_text(table, 2, 3), "Merged")
 
     def test_build_table_split_plan_for_table_node_creates_row_event_for_text_bearing_horizontal_rule(self) -> None:
         plan = build_table_split_plan_for_table_node(_table_node(), primitives=[_horizontal_rule(67.0)])
