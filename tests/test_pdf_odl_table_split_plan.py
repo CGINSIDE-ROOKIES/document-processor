@@ -105,6 +105,14 @@ def _vertical_rule(x_pt: float) -> PdfPreviewVisualPrimitive:
 
 
 class TableSplitPlanTests(unittest.TestCase):
+    def test_build_table_split_plan_for_table_node_ignores_segmented_rule_from_different_page(self) -> None:
+        plan = build_table_split_plan_for_table_node(
+            _table_node(),
+            primitives=[_horizontal_rule(67.0).model_copy(update={"page_number": 2})],
+        )
+
+        self.assertIsNone(plan)
+
     def test_build_table_split_plan_for_table_node_creates_row_event_for_text_bearing_horizontal_rule(self) -> None:
         plan = build_table_split_plan_for_table_node(_table_node(), primitives=[_horizontal_rule(67.0)])
 
@@ -137,3 +145,18 @@ class TableSplitPlanTests(unittest.TestCase):
         self.assertIsNotNone(plan)
         assert plan is not None
         self.assertEqual([(event.source_col, round(event.axis_pt, 1)) for event in plan.column_events], [(1, 35.0)])
+
+    def test_build_table_split_plan_for_table_node_drops_conflicting_multi_axis_split_for_same_cell(self) -> None:
+        node = _table_node()
+        node["rows"][0]["cells"][0]["kids"] = [
+            _text_box("TopLeft", left=14.0, bottom=74.0, right=30.0, top=86.0),
+            _text_box("TopRight", left=40.0, bottom=74.0, right=56.0, top=86.0),
+            _text_box("BottomLeft", left=14.0, bottom=52.0, right=30.0, top=64.0),
+        ]
+
+        plan = build_table_split_plan_for_table_node(
+            node,
+            primitives=[_horizontal_rule(67.0), _vertical_rule(35.0)],
+        )
+
+        self.assertIsNone(plan)

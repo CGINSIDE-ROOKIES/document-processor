@@ -89,11 +89,12 @@ def build_table_split_plan_for_table_node(
     if table_bbox is None or page_number is None:
         return None
 
-    row_events: list[BoundaryEvent] = []
-    column_events: list[BoundaryEvent] = []
-    cell_splits: dict[CellKey, CellSplitPlan] = {}
+    proposals: dict[CellKey, tuple[str, BoundaryEvent]] = {}
+    ambiguous_cells: set[CellKey] = set()
 
     for primitive in _segmented_primitives_within_table_bbox(table_bbox, primitives):
+        if primitive.page_number != page_number:
+            continue
         orientation = _primitive_orientation(primitive)
         for cell in _iter_raw_cells(node):
             proposal = _proposal_for_crossed_cell(
@@ -104,15 +105,34 @@ def build_table_split_plan_for_table_node(
             if proposal is None:
                 continue
             cell_key, boundary_event = proposal
-            cell_splits[cell_key] = CellSplitPlan(
-                orientation=orientation,
-                axis_pt=boundary_event.axis_pt,
-            )
-            if orientation == "horizontal":
-                row_events.append(boundary_event)
-            else:
-                column_events.append(boundary_event)
+            if cell_key in ambiguous_cells:
+                continue
+            existing = proposals.get(cell_key)
+            if existing is None:
+                proposals[cell_key] = (orientation, boundary_event)
+                continue
+            existing_orientation, existing_event = existing
+            if (
+                existing_orientation == orientation
+                and abs(existing_event.axis_pt - boundary_event.axis_pt)
+                <= _BOUNDARY_DEDUPE_TOLERANCE_PT
+            ):
+                continue
+            proposals.pop(cell_key, None)
+            ambiguous_cells.add(cell_key)
 
+    row_events: list[BoundaryEvent] = []
+    column_events: list[BoundaryEvent] = []
+    cell_splits: dict[CellKey, CellSplitPlan] = {}
+    for cell_key, (orientation, boundary_event) in proposals.items():
+        cell_splits[cell_key] = CellSplitPlan(
+            orientation=orientation,
+            axis_pt=boundary_event.axis_pt,
+        )
+        if orientation == "horizontal":
+            row_events.append(boundary_event)
+        else:
+            column_events.append(boundary_event)
     row_events = _dedupe_boundary_events(row_events)
     column_events = _dedupe_boundary_events(column_events)
     if not row_events and not column_events:
