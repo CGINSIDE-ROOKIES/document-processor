@@ -1,0 +1,95 @@
+from __future__ import annotations
+
+from pathlib import Path
+import sys
+import unittest
+
+THIS_DIR = Path(__file__).resolve().parent
+SRC_ROOT = THIS_DIR.parent / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from document_processor.pdf.meta import PdfBoundingBox
+from document_processor.pdf.odl.table_reconstruct import (
+    MergeGroup,
+    collect_lines,
+    reconstruct_table_grid,
+)
+from document_processor.pdf.preview.models import PdfPreviewVisualPrimitive
+
+
+def _primitive(*, object_type: str, roles: list[str], left: float, bottom: float, right: float, top: float):
+    return PdfPreviewVisualPrimitive(
+        page_number=1,
+        draw_order=1,
+        object_type=object_type,
+        bounding_box=PdfBoundingBox(left_pt=left, bottom_pt=bottom, right_pt=right, top_pt=top),
+        stroke_color="#000000ff",
+        stroke_width_pt=1.0,
+        has_stroke=True,
+        candidate_roles=roles,
+    )
+
+
+def _table_node() -> dict[str, object]:
+    return {
+        "type": "table",
+        "page number": 1,
+        "reading order index": 9,
+        "bounding box": [10.0, 10.0, 110.0, 90.0],
+    }
+
+
+class TableReconstructTests(unittest.TestCase):
+    def test_collect_lines_adds_outer_border_lines(self) -> None:
+        table_bbox = PdfBoundingBox(left_pt=10.0, bottom_pt=10.0, right_pt=110.0, top_pt=90.0)
+        h_lines, v_lines = collect_lines([], table_bbox)
+
+        self.assertIn((90.0, 10.0, 110.0), h_lines)
+        self.assertIn((10.0, 10.0, 110.0), h_lines)
+        self.assertIn((10.0, 10.0, 90.0), v_lines)
+        self.assertIn((110.0, 10.0, 90.0), v_lines)
+
+    def test_reconstruct_table_grid_splits_rows_from_horizontal_segmented_rules(self) -> None:
+        node = _table_node()
+        primitives = [
+            _primitive(
+                object_type="segmented_horizontal_rule",
+                roles=["horizontal_line_segment", "segmented_horizontal_rule"],
+                left=12.0,
+                bottom=39.5,
+                right=108.0,
+                top=40.5,
+            )
+        ]
+
+        grid = reconstruct_table_grid(node, primitives)
+
+        self.assertIsNotNone(grid)
+        assert grid is not None
+        self.assertEqual((grid.row_count, grid.col_count), (2, 1))
+
+    def test_reconstruct_table_grid_returns_none_for_non_rectangular_merge_component(self) -> None:
+        node = _table_node()
+        primitives = [
+            _primitive(
+                object_type="segmented_horizontal_rule",
+                roles=["horizontal_line_segment"],
+                left=12.0,
+                bottom=49.5,
+                right=60.0,
+                top=50.5,
+            ),
+            _primitive(
+                object_type="segmented_vertical_rule",
+                roles=["vertical_line_segment"],
+                left=59.5,
+                bottom=50.5,
+                right=60.5,
+                top=88.0,
+            ),
+        ]
+
+        grid = reconstruct_table_grid(node, primitives)
+
+        self.assertIsNone(grid)
