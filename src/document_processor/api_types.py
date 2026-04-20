@@ -8,12 +8,14 @@ from pydantic import BaseModel, Field, model_validator
 from .io_utils import SourceDocType
 from .models import DocIR
 
-TargetKind = Literal["paragraph", "run"]
+TargetKind = Literal["paragraph", "run", "cell"]
+AnnotationTargetKind = Literal["paragraph", "run"]
 EditValidationCode = Literal[
     "target_not_found",
     "target_kind_mismatch",
     "text_mismatch",
     "mixed_content_not_supported",
+    "paragraph_count_mismatch",
     "unsupported_source_doc_type",
     "output_path_conflicts_with_source",
     "native_source_required",
@@ -58,15 +60,17 @@ class DocumentInput(BaseModel):
 
 
 class TextEdit(BaseModel):
-    target_kind: TargetKind = Field(description="Whether this edit targets a paragraph or a run.")
-    target_unit_id: str = Field(description="Stable unit id from the parsed document, such as `s1.p22` or `s1.p22.r1`.")
+    target_kind: TargetKind = Field(description="Whether this edit targets a paragraph, run, or table cell.")
+    target_unit_id: str = Field(
+        description="Stable unit id from the parsed document, such as `s1.p22`, `s1.p22.r1`, or `s1.p2.r1.tbl1.tr1.tc1`."
+    )
     expected_text: str = Field(description="Exact current text that must match before the edit is applied.")
     new_text: str = Field(description="Replacement text for the target.")
     reason: str = Field(default="", description="Short rationale for the change.")
 
 
 class TextAnnotation(BaseModel):
-    target_kind: TargetKind = Field(description="Whether this annotation targets a paragraph or a run.")
+    target_kind: AnnotationTargetKind = Field(description="Whether this annotation targets a paragraph or a run.")
     target_unit_id: str = Field(description="Stable unit id from the parsed document.")
     selected_text: str | None = Field(
         default=None,
@@ -133,7 +137,7 @@ class ApplyTextEditsResult(BaseModel):
 
 class AnnotationValidationIssue(BaseModel):
     code: AnnotationValidationCode
-    target_kind: TargetKind | None = None
+    target_kind: AnnotationTargetKind | None = None
     target_unit_id: str | None = None
     message: str
     selected_text: str | None = None
@@ -148,7 +152,7 @@ class AnnotationValidationResult(BaseModel):
 
 
 class ResolvedTextAnnotation(BaseModel):
-    target_kind: TargetKind
+    target_kind: AnnotationTargetKind
     target_unit_id: str
     selected_text: str
     occurrence_index: int | None = None
@@ -216,10 +220,10 @@ class DocumentContextResult(BaseModel):
 
 class ListEditableTargetsRequest(DocumentBoundRequest):
     unit_ids: list[str] = Field(default_factory=list, description="Optional exact unit ids to filter by.")
-    target_kinds: list[TargetKind] = Field(default_factory=lambda: ["paragraph", "run"])
+    target_kinds: list[TargetKind] = Field(default_factory=lambda: ["paragraph", "cell", "run"])
     include_child_runs: bool = Field(
         default=False,
-        description="When a paragraph id is requested, also return its run targets.",
+        description="When a paragraph or cell id is requested, also return its run targets.",
     )
     only_writable: bool = Field(default=True)
     max_targets: int | None = Field(default=200, ge=1)
@@ -275,6 +279,7 @@ class RenderReviewHtmlRequest(DocumentBoundRequest):
 
 
 __all__ = [
+    "AnnotationTargetKind",
     "AnnotationValidationCode",
     "AnnotationValidationIssue",
     "AnnotationValidationResult",

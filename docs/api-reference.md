@@ -10,6 +10,7 @@ Import directly from the package root:
 from document_processor import (
     Annotation,
     ApplyTextEditsRequest,
+    CellTextEdit,
     DocIR,
     DocumentInput,
     GetDocumentContextRequest,
@@ -184,7 +185,7 @@ Response fields:
 
 ### `list_editable_targets(request: ListEditableTargetsRequest) -> ListEditableTargetsResult`
 
-Enumerate paragraph and run targets that can be edited safely.
+Enumerate paragraph, run, and cell targets that can be edited safely.
 
 Request fields:
 
@@ -213,6 +214,7 @@ Validation checks include:
 - target kind matches
 - expected text matches exactly
 - paragraph target is not mixed content
+- cell target is not mixed content and preserves the existing paragraph count
 - native write-back type is supported when native source data is present
 
 ### `apply_text_edits(request: ApplyTextEditsRequest) -> ApplyTextEditsResult`
@@ -283,11 +285,15 @@ Response fields:
 
 Fields:
 
-- `target_kind: Literal["paragraph", "run"]`
+- `target_kind: Literal["paragraph", "run", "cell"]`
 - `target_unit_id: str`
 - `expected_text: str`
 - `new_text: str`
 - `reason: str = ""`
+
+Cell text edits replace the full text of a table cell. For multi-paragraph cells, `new_text`
+must contain the same number of newline-separated lines as the current cell text; the API
+does not create or delete paragraphs inside cells.
 
 ### `TextAnnotation`
 
@@ -345,11 +351,24 @@ Fields:
 - `new_text`
 - `reason`
 
-### `validate_edit_commands(doc: DocIR, edits: list[RunTextEdit | ParagraphTextEdit]) -> None`
+### `CellTextEdit`
+
+Low-level table-cell text edit DTO.
+
+Fields:
+
+- `cell_unit_id`
+- `old_text`
+- `new_text`
+- `reason`
+
+Cell edits preserve the existing cell paragraph count and reject nested tables/images.
+
+### `validate_edit_commands(doc: DocIR, edits: list[RunTextEdit | ParagraphTextEdit | CellTextEdit]) -> None`
 
 Raise `EditValidationError` if any low-level edit is invalid.
 
-### `apply_edits_to_doc_ir(doc: DocIR, edits: list[RunTextEdit | ParagraphTextEdit]) -> tuple[DocIR, ApplyEditsResult]`
+### `apply_edits_to_doc_ir(doc: DocIR, edits: list[RunTextEdit | ParagraphTextEdit | CellTextEdit]) -> tuple[DocIR, ApplyEditsResult]`
 
 Apply edits to a deep copy of the given `DocIR`.
 

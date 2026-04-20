@@ -115,6 +115,7 @@ from document_processor import (
 result = apply_text_edits(ApplyTextEditsRequest(
     document=DocumentInput(source_path="/path/to/file.docx"),
     edits=[TextEdit(
+        target_kind="paragraph",
         target_unit_id="s1.p3",
         expected_text="old text",
         new_text="new text",
@@ -125,7 +126,7 @@ result = apply_text_edits(ApplyTextEditsRequest(
 Related helpers:
 
 - `get_document_context()` &mdash; fetch surrounding paragraphs for target IDs
-- `list_editable_targets()` &mdash; enumerate safe edit targets
+- `list_editable_targets()` &mdash; enumerate safe paragraph, run, and cell edit targets
 - `validate_text_edits()` &mdash; dry-run validation without applying
 
 
@@ -144,8 +145,10 @@ from document_processor import (
 result = render_review_html(RenderReviewHtmlRequest(
     document=DocumentInput(source_path="/path/to/file.docx"),
     annotations=[TextAnnotation(
-        anchor_text="some phrase",
-        comment="Needs revision",
+        target_kind="paragraph",
+        target_unit_id="s1.p3",
+        selected_text="some phrase",
+        label="Needs revision",
     )],
 ))
 
