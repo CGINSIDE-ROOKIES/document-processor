@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from copy import deepcopy
 from typing import Any
 
 from ...models import DocIR, ImageAsset, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
@@ -30,13 +29,6 @@ from .table_reconstruct import (
     TableNodeKey,
     assign_fragments_to_groups,
     table_node_key,
-)
-from .table_split_plan import (
-    BoundaryEvent,
-    CellKey,
-    TableNodeKey as SplitPlanTableNodeKey,
-    TableSplitPlan,
-    table_node_key as split_plan_table_node_key,
 )
 
 _STRIP_CONNECTOR_CHARS = frozenset({"➡", "→", "➜", "➝", "←", "↑", "↓", "↔", "↕", ""})
@@ -229,7 +221,6 @@ def _paragraphs_from_container_node(
     unit_prefix: str,
     assets: dict[str, ImageAsset],
     table_grids: dict[TableNodeKey, TableGrid] | None = None,
-    table_split_plans: dict[SplitPlanTableNodeKey, TableSplitPlan] | None = None,
 ) -> list[ParagraphIR]:
     """Flatten header/footer-like wrapper nodes into paragraph units.
 
@@ -258,7 +249,6 @@ def _paragraphs_from_container_node(
                             unit_id=f"{child_unit_id}.tbl1",
                             assets=assets,
                             table_grids=table_grids,
-                            table_split_plans=table_split_plans,
                         )
                     ],
                 )
@@ -279,7 +269,6 @@ def _paragraphs_from_container_node(
                     unit_prefix=child_unit_id,
                     assets=assets,
                     table_grids=table_grids,
-                    table_split_plans=table_split_plans,
                 )
             )
             continue
@@ -537,7 +526,6 @@ def _cell_paragraphs(
     default_page_number: int | None,
     assets: dict[str, ImageAsset],
     table_grids: dict[TableNodeKey, TableGrid] | None = None,
-    table_split_plans: dict[SplitPlanTableNodeKey, TableSplitPlan] | None = None,
 ) -> list[ParagraphIR]:
     """Build the paragraph stream for a table cell.
 
@@ -566,7 +554,6 @@ def _cell_paragraphs(
                             unit_id=f"{unit_id}.tbl1",
                             assets=assets,
                             table_grids=table_grids,
-                            table_split_plans=table_split_plans,
                         )
                     ],
                 )
@@ -610,164 +597,6 @@ def _iter_raw_table_cells(node: dict[str, Any]) -> list[dict[str, Any]]:
     return cells
 
 
-def _cell_key_from_raw_cell(cell: dict[str, Any]) -> CellKey:
-    return CellKey(
-        row_index=coerce_int(cell.get("row number")) or 1,
-        col_index=coerce_int(cell.get("column number")) or 1,
-        rowspan=max(coerce_int(cell.get("row span")) or 1, 1),
-        colspan=max(coerce_int(cell.get("column span")) or 1, 1),
-    )
-
-
-def _resolved_raw_cells_from_split_plan(
-    raw_cells: list[dict[str, Any]],
-    plan: TableSplitPlan,
-) -> list[dict[str, Any]]:
-    resolved_cells: list[dict[str, Any]] = []
-    for cell in raw_cells:
-        split = plan.cell_splits.get(_cell_key_from_raw_cell(cell))
-        if split is None:
-            resolved_cells.append(
-                _shift_or_expand_raw_cell(
-                    cell,
-                    row_events=plan.row_events,
-                    column_events=plan.column_events,
-                )
-            )
-            continue
-        resolved_cells.extend(
-            _split_raw_cell(
-                cell,
-                split_orientation=split.orientation,
-                split_axis_pt=split.axis_pt,
-                row_events=plan.row_events,
-                column_events=plan.column_events,
-            )
-        )
-    return resolved_cells
-
-
-def _shift_or_expand_raw_cell(
-    cell: dict[str, Any],
-    *,
-    row_events: list[BoundaryEvent],
-    column_events: list[BoundaryEvent],
-) -> dict[str, Any]:
-    cell_key = _cell_key_from_raw_cell(cell)
-    shifted_cell = dict(cell)
-    shifted_cell["row number"] = cell_key.row_index + _row_shift_before(cell_key.row_index, row_events)
-    shifted_cell["column number"] = cell_key.col_index + _col_shift_before(
-        cell_key.col_index,
-        column_events,
-    )
-    shifted_cell["row span"] = cell_key.rowspan + _row_expansion_inside_cell(
-        cell_key.row_index,
-        cell_key.rowspan,
-        row_events,
-    )
-    shifted_cell["column span"] = cell_key.colspan + _col_expansion_inside_cell(
-        cell_key.col_index,
-        cell_key.colspan,
-        column_events,
-    )
-    return shifted_cell
-
-
-def _split_raw_cell(
-    cell: dict[str, Any],
-    *,
-    split_orientation: str,
-    split_axis_pt: float,
-    row_events: list[BoundaryEvent],
-    column_events: list[BoundaryEvent],
-) -> list[dict[str, Any]]:
-    shifted_cell = _shift_or_expand_raw_cell(cell, row_events=row_events, column_events=column_events)
-    kids_before, kids_after = _split_raw_cell_kids(
-        cell.get("kids", []),
-        orientation=split_orientation,
-        axis_pt=split_axis_pt,
-    )
-    first_piece = deepcopy(shifted_cell)
-    second_piece = deepcopy(shifted_cell)
-    cell_bbox = coerce_bbox(cell.get("bounding box"))
-
-    if split_orientation == "horizontal":
-        if cell_bbox is not None:
-            first_piece["bounding box"] = [
-                cell_bbox.left_pt,
-                split_axis_pt,
-                cell_bbox.right_pt,
-                cell_bbox.top_pt,
-            ]
-            second_piece["bounding box"] = [
-                cell_bbox.left_pt,
-                cell_bbox.bottom_pt,
-                cell_bbox.right_pt,
-                split_axis_pt,
-            ]
-            first_piece["display width pt"] = cell_bbox.right_pt - cell_bbox.left_pt
-            first_piece["display height pt"] = cell_bbox.top_pt - split_axis_pt
-            second_piece["display width pt"] = cell_bbox.right_pt - cell_bbox.left_pt
-            second_piece["display height pt"] = split_axis_pt - cell_bbox.bottom_pt
-        first_piece["row span"] = 1
-        second_piece["row number"] = (coerce_int(first_piece.get("row number")) or 1) + 1
-        second_piece["row span"] = 1
-        first_piece["kids"] = kids_after
-        second_piece["kids"] = kids_before
-    else:
-        if cell_bbox is not None:
-            first_piece["bounding box"] = [
-                cell_bbox.left_pt,
-                cell_bbox.bottom_pt,
-                split_axis_pt,
-                cell_bbox.top_pt,
-            ]
-            second_piece["bounding box"] = [
-                split_axis_pt,
-                cell_bbox.bottom_pt,
-                cell_bbox.right_pt,
-                cell_bbox.top_pt,
-            ]
-            first_piece["display width pt"] = split_axis_pt - cell_bbox.left_pt
-            first_piece["display height pt"] = cell_bbox.top_pt - cell_bbox.bottom_pt
-            second_piece["display width pt"] = cell_bbox.right_pt - split_axis_pt
-            second_piece["display height pt"] = cell_bbox.top_pt - cell_bbox.bottom_pt
-        first_piece["column span"] = 1
-        second_piece["column number"] = (coerce_int(first_piece.get("column number")) or 1) + 1
-        second_piece["column span"] = 1
-        first_piece["kids"] = kids_before
-        second_piece["kids"] = kids_after
-
-    return [first_piece, second_piece]
-
-
-def _split_raw_cell_kids(
-    kids: Any,
-    *,
-    orientation: str,
-    axis_pt: float,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    before: list[dict[str, Any]] = []
-    after: list[dict[str, Any]] = []
-    for kid in kids or []:
-        if not isinstance(kid, dict):
-            continue
-        bbox = _effective_bbox_from_descendants(kid)
-        if bbox is None:
-            before.append(kid)
-            continue
-        center = (
-            (bbox.bottom_pt + bbox.top_pt) / 2.0
-            if orientation == "horizontal"
-            else (bbox.left_pt + bbox.right_pt) / 2.0
-        )
-        if center < axis_pt:
-            before.append(kid)
-        else:
-            after.append(kid)
-    return before, after
-
-
 def _effective_bbox_from_descendants(node: Any) -> PdfBoundingBox | None:
     bbox = coerce_bbox(node.get("bounding box")) if isinstance(node, dict) else None
     merged_bbox = bbox
@@ -791,39 +620,12 @@ def _effective_bbox_from_descendants(node: Any) -> PdfBoundingBox | None:
     return merged_bbox
 
 
-def _row_shift_before(row_index: int, row_events: list[BoundaryEvent]) -> int:
-    return sum(1 for event in row_events if event.source_index < row_index)
-
-
-def _col_shift_before(col_index: int, column_events: list[BoundaryEvent]) -> int:
-    return sum(1 for event in column_events if event.source_index < col_index)
-
-
-def _row_expansion_inside_cell(
-    row_index: int,
-    rowspan: int,
-    row_events: list[BoundaryEvent],
-) -> int:
-    row_end = row_index + max(rowspan, 1) - 1
-    return sum(1 for event in row_events if row_index <= event.source_index <= row_end)
-
-
-def _col_expansion_inside_cell(
-    col_index: int,
-    colspan: int,
-    column_events: list[BoundaryEvent],
-) -> int:
-    col_end = col_index + max(colspan, 1) - 1
-    return sum(1 for event in column_events if col_index <= event.source_index <= col_end)
-
-
 def _table_node_to_ir(
     node: dict[str, Any],
     *,
     unit_id: str,
     assets: dict[str, ImageAsset],
     table_grids: dict[TableNodeKey, TableGrid] | None = None,
-    table_split_plans: dict[SplitPlanTableNodeKey, TableSplitPlan] | None = None,
 ) -> TableIR:
     """Convert one raw ODL table node into TableIR."""
     raw_cells = _iter_raw_table_cells(node)
@@ -834,7 +636,6 @@ def _table_node_to_ir(
             unit_id=unit_id,
             assets=assets,
             table_grids=table_grids,
-            table_split_plans=table_split_plans,
             raw_cells=raw_cells,
         )
     if _raw_cells_have_unsupported_reconstruct_content(raw_cells):
@@ -843,7 +644,6 @@ def _table_node_to_ir(
             unit_id=unit_id,
             assets=assets,
             table_grids=table_grids,
-            table_split_plans=table_split_plans,
             raw_cells=raw_cells,
         )
 
@@ -854,7 +654,6 @@ def _table_node_to_ir(
             unit_id=unit_id,
             assets=assets,
             table_grids=table_grids,
-            table_split_plans=table_split_plans,
             raw_cells=raw_cells,
         )
 
@@ -900,7 +699,6 @@ def _table_node_to_ir(
                 _page_number_from_node(source_cell) if source_cell is not None else None
             ) or _page_number_from_node(node),
             table_grids=table_grids,
-            table_split_plans=table_split_plans,
         )
     return table
 
@@ -911,19 +709,12 @@ def _table_node_to_ir_from_raw_topology(
     unit_id: str,
     assets: dict[str, ImageAsset],
     table_grids: dict[TableNodeKey, TableGrid] | None = None,
-    table_split_plans: dict[SplitPlanTableNodeKey, TableSplitPlan] | None = None,
     raw_cells: list[dict[str, Any]] | None = None,
 ) -> TableIR:
     table_meta = build_pdf_node_meta(node)
-    resolved_raw_cells = raw_cells if raw_cells is not None else _iter_raw_table_cells(node)
-    plan = _lookup_split_plan(node, table_split_plans)
-    resolved_cells = (
-        _resolved_raw_cells_from_split_plan(resolved_raw_cells, plan)
-        if plan is not None
-        else resolved_raw_cells
-    )
-    row_count = (coerce_int(node.get("number of rows")) or 0) + (len(plan.row_events) if plan else 0)
-    col_count = (coerce_int(node.get("number of columns")) or 0) + (len(plan.column_events) if plan else 0)
+    resolved_cells = raw_cells if raw_cells is not None else _iter_raw_table_cells(node)
+    row_count = coerce_int(node.get("number of rows")) or 0
+    col_count = coerce_int(node.get("number of columns")) or 0
     table_style = _table_style_from_node(node)
     if table_style is not None:
         table_style.row_count = row_count
@@ -937,18 +728,7 @@ def _table_node_to_ir_from_raw_topology(
         table_style=table_style,
         meta=table_meta,
     )
-    ordered_cells = (
-        sorted(
-            resolved_cells,
-            key=lambda item: (
-                coerce_int(item.get("row number")) or 1,
-                coerce_int(item.get("column number")) or 1,
-            ),
-        )
-        if plan is not None
-        else resolved_cells
-    )
-    for cell in ordered_cells:
+    for cell in resolved_cells:
         row_index = coerce_int(cell.get("row number")) or 1
         col_index = coerce_int(cell.get("column number")) or 1
         cell_meta = build_pdf_node_meta(cell)
@@ -970,7 +750,6 @@ def _table_node_to_ir_from_raw_topology(
             assets=assets,
             default_page_number=_page_number_from_node(cell),
             table_grids=table_grids,
-            table_split_plans=table_split_plans,
         )
     return table
 
@@ -990,7 +769,6 @@ def _append_table_cell(
     assets: dict[str, ImageAsset],
     default_page_number: int | None,
     table_grids: dict[TableNodeKey, TableGrid] | None = None,
-    table_split_plans: dict[SplitPlanTableNodeKey, TableSplitPlan] | None = None,
 ) -> None:
     cell_unit_id = f"{unit_id}.tr{row_index}.tc{col_index}"
     if cell_style is not None:
@@ -1011,52 +789,9 @@ def _append_table_cell(
                 default_page_number=default_page_number,
                 assets=assets,
                 table_grids=table_grids,
-                table_split_plans=table_split_plans,
             ),
         )
     )
-
-
-def _table_key_signature(
-    key: Any,
-) -> tuple[int | None, int | None, float | None, float | None, float | None, float | None] | None:
-    if key is None:
-        return None
-    try:
-        return (
-            getattr(key, "page_number"),
-            getattr(key, "reading_order_index"),
-            getattr(key, "left_pt"),
-            getattr(key, "bottom_pt"),
-            getattr(key, "right_pt"),
-            getattr(key, "top_pt"),
-        )
-    except AttributeError:
-        return None
-
-
-def _lookup_split_plan(
-    node: dict[str, Any],
-    table_split_plans: dict[Any, TableSplitPlan] | None,
-) -> TableSplitPlan | None:
-    if not table_split_plans:
-        return None
-
-    split_key = split_plan_table_node_key(node)
-    plan = table_split_plans.get(split_key)
-    if plan is not None:
-        return plan
-
-    reconstruct_key = table_node_key(node)
-    plan = table_split_plans.get(reconstruct_key)
-    if plan is not None:
-        return plan
-
-    expected_signature = _table_key_signature(split_key)
-    for candidate_key, candidate_plan in table_split_plans.items():
-        if _table_key_signature(candidate_key) == expected_signature:
-            return candidate_plan
-    return None
 
 
 def _iter_raw_cell_fragments(raw_cell: dict[str, Any]):
@@ -1325,7 +1060,6 @@ def _paragraphs_from_list_node(
     unit_prefix: str,
     assets: dict[str, ImageAsset],
     table_grids: dict[TableNodeKey, TableGrid] | None = None,
-    table_split_plans: dict[SplitPlanTableNodeKey, TableSplitPlan] | None = None,
 ) -> list[ParagraphIR]:
     """Flatten list items into normal paragraph units.
 
@@ -1355,7 +1089,6 @@ def _paragraphs_from_list_node(
                         unit_prefix=child_unit_id,
                         assets=assets,
                         table_grids=table_grids,
-                        table_split_plans=table_split_plans,
                     )
                 )
             elif child_type == "table":
@@ -1374,7 +1107,6 @@ def _paragraphs_from_list_node(
                                 unit_id=f"{child_unit_id}.tbl1",
                                 assets=assets,
                                 table_grids=table_grids,
-                                table_split_plans=table_split_plans,
                             )
                         ],
                     )
@@ -1447,7 +1179,6 @@ def build_doc_ir_from_odl_result(
     doc_id: str | None = None,
     doc_cls: type[DocIR] | None = None,
     table_grids: dict[TableNodeKey, TableGrid] | None = None,
-    table_split_plans: dict[SplitPlanTableNodeKey, TableSplitPlan] | None = None,
     **doc_kwargs: Any,
 ) -> DocIR:
     """Build canonical DocIR from one ODL raw JSON document.
@@ -1481,7 +1212,6 @@ def build_doc_ir_from_odl_result(
                             unit_id=f"{unit_id}.tbl1",
                             assets=assets,
                             table_grids=table_grids,
-                            table_split_plans=table_split_plans,
                         )
                     ],
                 )
@@ -1497,7 +1227,6 @@ def build_doc_ir_from_odl_result(
                 unit_prefix=unit_id,
                 assets=assets,
                 table_grids=table_grids,
-                table_split_plans=table_split_plans,
             )
             if list_paragraphs:
                 order += len(list_paragraphs)
@@ -1511,7 +1240,6 @@ def build_doc_ir_from_odl_result(
                 unit_prefix=unit_id,
                 assets=assets,
                 table_grids=table_grids,
-                table_split_plans=table_split_plans,
             )
             if container_paragraphs:
                 order += len(container_paragraphs)
@@ -1539,7 +1267,6 @@ def build_doc_ir_from_odl_result(
                                     unit_id=f"{child_unit_id}.tbl1",
                                     assets=assets,
                                     table_grids=table_grids,
-                                    table_split_plans=table_split_plans,
                                 )
                             ],
                         )
@@ -1551,7 +1278,6 @@ def build_doc_ir_from_odl_result(
                         unit_prefix=child_unit_id,
                         assets=assets,
                         table_grids=table_grids,
-                        table_split_plans=table_split_plans,
                     )
                     if list_paragraphs:
                         order += len(list_paragraphs)

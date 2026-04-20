@@ -770,6 +770,36 @@ class TableReconstructAdapterTests(unittest.TestCase):
             (40.0, 10.0, 80.0, 90.0),
         )
 
+    def test_adapter_maps_span_only_fragments_using_descendant_bboxes(self) -> None:
+        node = _raw_table_node_with_single_cell_sparse_fragments()
+        node["rows"][0]["cells"][0]["kids"] = [
+            _span_only_paragraph("Left", left=14.0, bottom=18.0, right=36.0, top=42.0),
+            _span_only_paragraph("Right", left=84.0, bottom=18.0, right=106.0, top=42.0),
+        ]
+        grid = TableGrid(
+            table_key=table_node_key(node),
+            h_y=[10.0, 90.0],
+            v_x=[10.0, 40.0, 80.0, 110.0],
+            merge_groups=[
+                MergeGroup(0, 0, 0, 0),
+                MergeGroup(0, 1, 0, 1),
+                MergeGroup(0, 2, 0, 2),
+            ],
+        )
+
+        table = odl_adapter._table_node_to_ir(
+            node,
+            unit_id="tbl1",
+            assets={},
+            table_grids={table_node_key(node): grid},
+        )
+
+        self.assertEqual((table.row_count, table.col_count), (1, 3))
+        self.assertEqual(
+            [(cell.row_index, cell.col_index, cell.text) for cell in table.cells],
+            [(1, 1, "Left"), (1, 2, ""), (1, 3, "Right")],
+        )
+
     def test_adapter_falls_back_to_raw_topology_when_group_assignment_is_empty(self) -> None:
         node = _raw_table_node_with_single_cell()
         grid = TableGrid(

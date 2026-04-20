@@ -25,8 +25,7 @@ from document_processor.pdf.odl import (
     convert_pdf_local,
     resolve_odl_jar_path,
 )
-from document_processor.pdf.odl.table_reconstruct import TableNodeKey
-from document_processor.pdf.odl.table_split_plan import BoundaryEvent, TableSplitPlan
+from document_processor.pdf.odl.table_reconstruct import MergeGroup, TableGrid, TableNodeKey
 from document_processor.pdf.pipeline import parse_pdf_to_doc_ir
 from document_processor.pdf.parsing import PageClass, PageDecision, PageProfile, PdfProfile
 from document_processor.pdf.preview.context import build_pdf_preview_context
@@ -793,6 +792,10 @@ class PdfPipelineTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "infer_table_splits"):
             PdfParseConfig.model_validate({"infer_table_splits": False})
 
+    def test_pdf_odl_package_no_longer_exposes_split_plan_shims(self) -> None:
+        self.assertFalse(hasattr(pdf_odl, "build_table_split_plans"))
+        self.assertFalse(hasattr(pdf_odl, "build_table_split_plan_for_table_node"))
+
     def test_build_table_grids_returns_empty_when_pdfium_cannot_open_pdf(self) -> None:
         raw_document = {
             "number of pages": 1,
@@ -855,7 +858,9 @@ class PdfPipelineTests(unittest.TestCase):
                     {},
                 )
 
-    def test_build_doc_ir_from_odl_result_accepts_split_plans_keyed_by_package_level_table_node_key(self) -> None:
+    def test_build_doc_ir_from_odl_result_accepts_table_grids_keyed_by_package_level_table_node_key(
+        self,
+    ) -> None:
         table_node = {
             "type": "table",
             "page number": 1,
@@ -872,7 +877,14 @@ class PdfPipelineTests(unittest.TestCase):
                             "column number": 1,
                             "page number": 1,
                             "bounding box": [10, 20, 30, 40],
-                            "kids": [{"type": "paragraph", "content": "A1", "page number": 1}],
+                            "kids": [
+                                {
+                                    "type": "paragraph",
+                                    "content": "A1",
+                                    "page number": 1,
+                                    "bounding box": [10, 20, 20, 40],
+                                }
+                            ],
                         }
                     ]
                 }
@@ -884,24 +896,23 @@ class PdfPipelineTests(unittest.TestCase):
             "kids": [table_node],
         }
 
-        self.assertTrue(callable(pdf_odl.build_table_split_plans))
-        self.assertTrue(callable(pdf_odl.build_table_split_plan_for_table_node))
-
         key = pdf_odl.table_node_key(table_node)
-        split_plan = TableSplitPlan(
+        table_grid = TableGrid(
             table_key=key,
-            column_events=[BoundaryEvent(source_index=1, axis_pt=20.0, supporting_cells=frozenset())],
+            h_y=[20.0, 40.0],
+            v_x=[10.0, 20.0, 30.0],
+            merge_groups=[MergeGroup(0, 0, 0, 0), MergeGroup(0, 1, 0, 1)],
         )
 
         doc = build_doc_ir_from_odl_result(
             raw_document,
             source_path="sample.pdf",
-            table_split_plans={key: split_plan},
+            table_grids={key: table_grid},
         )
 
         self.assertEqual(doc.paragraphs[0].tables[0].col_count, 2)
 
-    def test_build_table_split_plans_round_trips_with_package_level_table_node_key(self) -> None:
+    def test_build_table_grids_round_trips_with_package_level_table_node_key(self) -> None:
         table_node = {
             "type": "table",
             "page number": 1,
@@ -923,9 +934,11 @@ class PdfPipelineTests(unittest.TestCase):
             def close(self) -> None:
                 return None
 
-        legacy_plan = TableSplitPlan(
-            table_key=pdf_odl.table_split_plan.table_node_key(table_node),
-            column_events=[BoundaryEvent(source_index=1, axis_pt=20.0, supporting_cells=frozenset())],
+        table_grid = TableGrid(
+            table_key=pdf_odl.table_node_key(table_node),
+            h_y=[20.0, 40.0],
+            v_x=[10.0, 20.0, 30.0],
+            merge_groups=[MergeGroup(0, 0, 0, 0), MergeGroup(0, 1, 0, 1)],
         )
 
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -936,19 +949,19 @@ class PdfPipelineTests(unittest.TestCase):
                 sys.modules,
                 {"pypdfium2": SimpleNamespace(PdfDocument=lambda path: FakePdfDocument())},
             ), patch(
-                "document_processor.pdf.odl.table_split_plan.extract_pdfium_table_rule_primitives",
-                return_value=[object()],
+                "document_processor.pdf.odl.table_reconstruct.extract_pdfium_table_rule_primitives",
+                return_value=[],
             ), patch(
-                "document_processor.pdf.odl.table_split_plan.build_table_split_plan_for_table_node",
-                return_value=legacy_plan,
+                "document_processor.pdf.odl.table_reconstruct.reconstruct_table_grid",
+                return_value=table_grid,
             ):
-                plans = pdf_odl.build_table_split_plans(
+                grids = pdf_odl.build_table_grids(
                     raw_document,
                     pdf_path=pdf_path,
                     page_numbers=[1],
                 )
 
-        self.assertIs(plans.get(pdf_odl.table_node_key(table_node)), legacy_plan)
+        self.assertIs(grids.get(pdf_odl.table_node_key(table_node)), table_grid)
 
     def test_resolve_odl_jar_path_uses_vendored_jar(self) -> None:
         jar_path = resolve_odl_jar_path()
