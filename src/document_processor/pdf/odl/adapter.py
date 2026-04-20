@@ -228,6 +228,7 @@ def _paragraphs_from_container_node(
     *,
     unit_prefix: str,
     assets: dict[str, ImageAsset],
+    table_grids: dict[TableNodeKey, TableGrid] | None = None,
     table_split_plans: dict[SplitPlanTableNodeKey, TableSplitPlan] | None = None,
 ) -> list[ParagraphIR]:
     """Flatten header/footer-like wrapper nodes into paragraph units.
@@ -256,6 +257,7 @@ def _paragraphs_from_container_node(
                             child,
                             unit_id=f"{child_unit_id}.tbl1",
                             assets=assets,
+                            table_grids=table_grids,
                             table_split_plans=table_split_plans,
                         )
                     ],
@@ -276,6 +278,7 @@ def _paragraphs_from_container_node(
                     child,
                     unit_prefix=child_unit_id,
                     assets=assets,
+                    table_grids=table_grids,
                     table_split_plans=table_split_plans,
                 )
             )
@@ -533,6 +536,7 @@ def _cell_paragraphs(
     cell_unit_id: str,
     default_page_number: int | None,
     assets: dict[str, ImageAsset],
+    table_grids: dict[TableNodeKey, TableGrid] | None = None,
     table_split_plans: dict[SplitPlanTableNodeKey, TableSplitPlan] | None = None,
 ) -> list[ParagraphIR]:
     """Build the paragraph stream for a table cell.
@@ -561,6 +565,7 @@ def _cell_paragraphs(
                             child,
                             unit_id=f"{unit_id}.tbl1",
                             assets=assets,
+                            table_grids=table_grids,
                             table_split_plans=table_split_plans,
                         )
                     ],
@@ -828,6 +833,7 @@ def _table_node_to_ir(
             node,
             unit_id=unit_id,
             assets=assets,
+            table_grids=table_grids,
             table_split_plans=table_split_plans,
             raw_cells=raw_cells,
         )
@@ -836,6 +842,7 @@ def _table_node_to_ir(
             node,
             unit_id=unit_id,
             assets=assets,
+            table_grids=table_grids,
             table_split_plans=table_split_plans,
             raw_cells=raw_cells,
         )
@@ -846,6 +853,7 @@ def _table_node_to_ir(
             node,
             unit_id=unit_id,
             assets=assets,
+            table_grids=table_grids,
             table_split_plans=table_split_plans,
             raw_cells=raw_cells,
         )
@@ -891,6 +899,7 @@ def _table_node_to_ir(
             default_page_number=(
                 _page_number_from_node(source_cell) if source_cell is not None else None
             ) or _page_number_from_node(node),
+            table_grids=table_grids,
             table_split_plans=table_split_plans,
         )
     return table
@@ -901,12 +910,13 @@ def _table_node_to_ir_from_raw_topology(
     *,
     unit_id: str,
     assets: dict[str, ImageAsset],
+    table_grids: dict[TableNodeKey, TableGrid] | None = None,
     table_split_plans: dict[SplitPlanTableNodeKey, TableSplitPlan] | None = None,
     raw_cells: list[dict[str, Any]] | None = None,
 ) -> TableIR:
     table_meta = build_pdf_node_meta(node)
     resolved_raw_cells = raw_cells if raw_cells is not None else _iter_raw_table_cells(node)
-    plan = table_split_plans.get(split_plan_table_node_key(node)) if table_split_plans else None
+    plan = _lookup_split_plan(node, table_split_plans)
     resolved_cells = (
         _resolved_raw_cells_from_split_plan(resolved_raw_cells, plan)
         if plan is not None
@@ -959,6 +969,7 @@ def _table_node_to_ir_from_raw_topology(
             unit_id=unit_id,
             assets=assets,
             default_page_number=_page_number_from_node(cell),
+            table_grids=table_grids,
             table_split_plans=table_split_plans,
         )
     return table
@@ -978,6 +989,7 @@ def _append_table_cell(
     unit_id: str,
     assets: dict[str, ImageAsset],
     default_page_number: int | None,
+    table_grids: dict[TableNodeKey, TableGrid] | None = None,
     table_split_plans: dict[SplitPlanTableNodeKey, TableSplitPlan] | None = None,
 ) -> None:
     cell_unit_id = f"{unit_id}.tr{row_index}.tc{col_index}"
@@ -998,10 +1010,53 @@ def _append_table_cell(
                 cell_unit_id=cell_unit_id,
                 default_page_number=default_page_number,
                 assets=assets,
+                table_grids=table_grids,
                 table_split_plans=table_split_plans,
             ),
         )
     )
+
+
+def _table_key_signature(
+    key: Any,
+) -> tuple[int | None, int | None, float | None, float | None, float | None, float | None] | None:
+    if key is None:
+        return None
+    try:
+        return (
+            getattr(key, "page_number"),
+            getattr(key, "reading_order_index"),
+            getattr(key, "left_pt"),
+            getattr(key, "bottom_pt"),
+            getattr(key, "right_pt"),
+            getattr(key, "top_pt"),
+        )
+    except AttributeError:
+        return None
+
+
+def _lookup_split_plan(
+    node: dict[str, Any],
+    table_split_plans: dict[Any, TableSplitPlan] | None,
+) -> TableSplitPlan | None:
+    if not table_split_plans:
+        return None
+
+    split_key = split_plan_table_node_key(node)
+    plan = table_split_plans.get(split_key)
+    if plan is not None:
+        return plan
+
+    reconstruct_key = table_node_key(node)
+    plan = table_split_plans.get(reconstruct_key)
+    if plan is not None:
+        return plan
+
+    expected_signature = _table_key_signature(split_key)
+    for candidate_key, candidate_plan in table_split_plans.items():
+        if _table_key_signature(candidate_key) == expected_signature:
+            return candidate_plan
+    return None
 
 
 def _iter_raw_cell_fragments(raw_cell: dict[str, Any]):
@@ -1269,6 +1324,7 @@ def _paragraphs_from_list_node(
     *,
     unit_prefix: str,
     assets: dict[str, ImageAsset],
+    table_grids: dict[TableNodeKey, TableGrid] | None = None,
     table_split_plans: dict[SplitPlanTableNodeKey, TableSplitPlan] | None = None,
 ) -> list[ParagraphIR]:
     """Flatten list items into normal paragraph units.
@@ -1298,6 +1354,7 @@ def _paragraphs_from_list_node(
                         child,
                         unit_prefix=child_unit_id,
                         assets=assets,
+                        table_grids=table_grids,
                         table_split_plans=table_split_plans,
                     )
                 )
@@ -1316,6 +1373,7 @@ def _paragraphs_from_list_node(
                                 child,
                                 unit_id=f"{child_unit_id}.tbl1",
                                 assets=assets,
+                                table_grids=table_grids,
                                 table_split_plans=table_split_plans,
                             )
                         ],
@@ -1388,6 +1446,7 @@ def build_doc_ir_from_odl_result(
     source_path: str | Path | None = None,
     doc_id: str | None = None,
     doc_cls: type[DocIR] | None = None,
+    table_grids: dict[TableNodeKey, TableGrid] | None = None,
     table_split_plans: dict[SplitPlanTableNodeKey, TableSplitPlan] | None = None,
     **doc_kwargs: Any,
 ) -> DocIR:
@@ -1421,6 +1480,7 @@ def build_doc_ir_from_odl_result(
                             node,
                             unit_id=f"{unit_id}.tbl1",
                             assets=assets,
+                            table_grids=table_grids,
                             table_split_plans=table_split_plans,
                         )
                     ],
@@ -1436,6 +1496,7 @@ def build_doc_ir_from_odl_result(
                 node,
                 unit_prefix=unit_id,
                 assets=assets,
+                table_grids=table_grids,
                 table_split_plans=table_split_plans,
             )
             if list_paragraphs:
@@ -1449,6 +1510,7 @@ def build_doc_ir_from_odl_result(
                 node,
                 unit_prefix=unit_id,
                 assets=assets,
+                table_grids=table_grids,
                 table_split_plans=table_split_plans,
             )
             if container_paragraphs:
@@ -1476,6 +1538,7 @@ def build_doc_ir_from_odl_result(
                                     child,
                                     unit_id=f"{child_unit_id}.tbl1",
                                     assets=assets,
+                                    table_grids=table_grids,
                                     table_split_plans=table_split_plans,
                                 )
                             ],
@@ -1487,6 +1550,7 @@ def build_doc_ir_from_odl_result(
                         child,
                         unit_prefix=child_unit_id,
                         assets=assets,
+                        table_grids=table_grids,
                         table_split_plans=table_split_plans,
                     )
                     if list_paragraphs:

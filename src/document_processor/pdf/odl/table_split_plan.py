@@ -9,6 +9,7 @@ from typing import Any, Iterable
 from ..meta import PdfBoundingBox, coerce_bbox, coerce_int
 from ..preview.analyze import extract_pdfium_table_rule_primitives
 from ..preview.models import PdfPreviewVisualPrimitive
+from .table_reconstruct import TableNodeKey, table_node_key
 
 _OUTER_BORDER_TOLERANCE_PT = 4.0
 _MIN_RULE_SPAN_RATIO = 0.45
@@ -21,16 +22,6 @@ class CellKey:
     col_index: int
     rowspan: int
     colspan: int
-
-
-@dataclass(frozen=True)
-class TableNodeKey:
-    page_number: int
-    reading_order_index: int | None
-    left_pt: float
-    bottom_pt: float
-    right_pt: float
-    top_pt: float
 
 
 @dataclass(frozen=True)
@@ -60,23 +51,6 @@ class TableSplitPlan:
     row_events: list[BoundaryEvent] = field(default_factory=list)
     column_events: list[BoundaryEvent] = field(default_factory=list)
     cell_splits: dict[CellKey, CellSplitPlan] = field(default_factory=dict)
-
-
-def table_node_key(node: dict[str, Any]) -> TableNodeKey:
-    bbox = coerce_bbox(node.get("bounding box")) or PdfBoundingBox(
-        left_pt=0.0,
-        bottom_pt=0.0,
-        right_pt=0.0,
-        top_pt=0.0,
-    )
-    return TableNodeKey(
-        page_number=coerce_int(node.get("page number")) or 0,
-        reading_order_index=coerce_int(node.get("reading order index")),
-        left_pt=bbox.left_pt,
-        bottom_pt=bbox.bottom_pt,
-        right_pt=bbox.right_pt,
-        top_pt=bbox.top_pt,
-    )
 
 
 def build_table_split_plan_for_table_node(

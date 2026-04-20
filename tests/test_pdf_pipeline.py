@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 import sys
 import tempfile
 import unittest
@@ -17,13 +18,15 @@ if str(SRC_ROOT) not in sys.path:
 from document_processor import DocIR
 from document_processor.pdf import export_pdf_local_outputs
 from document_processor.pdf.config import PdfParseConfig
+import document_processor.pdf.odl.adapter as pdf_odl_adapter
+import document_processor.pdf.odl as pdf_odl
 from document_processor.pdf.odl import (
     build_doc_ir_from_odl_result,
-    build_table_split_plans,
     convert_pdf_local,
     resolve_odl_jar_path,
 )
-from document_processor.pdf.odl.table_split_plan import TableNodeKey
+from document_processor.pdf.odl.table_reconstruct import TableNodeKey
+from document_processor.pdf.odl.table_split_plan import BoundaryEvent, TableSplitPlan
 from document_processor.pdf.pipeline import parse_pdf_to_doc_ir
 from document_processor.pdf.parsing import PageClass, PageDecision, PageProfile, PdfProfile
 from document_processor.pdf.preview.context import build_pdf_preview_context
@@ -260,6 +263,110 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertEqual(doc.paragraphs[4].bbox.left_pt, 300.0)
         self.assertEqual(doc.paragraphs[4].images[0].bbox.left_pt, 300.0)
         self.assertEqual(doc.assets["odl-img-p5"].meta.page_number, 2)
+
+    def test_build_doc_ir_from_odl_result_forwards_table_grids_into_table_node_adapter(self) -> None:
+        raw_document = {
+            "file name": "sample.pdf",
+            "number of pages": 1,
+            "kids": [
+                {
+                    "type": "table",
+                    "page number": 1,
+                    "reading order index": 1,
+                    "bounding box": [10, 20, 110, 120],
+                    "number of rows": 1,
+                    "number of columns": 1,
+                    "rows": [
+                        {
+                            "cells": [
+                                {
+                                    "type": "table cell",
+                                    "row number": 1,
+                                    "column number": 1,
+                                    "page number": 1,
+                                    "kids": [
+                                        {
+                                            "type": "table",
+                                            "page number": 1,
+                                            "reading order index": 2,
+                                            "bounding box": [20, 30, 60, 70],
+                                            "rows": [],
+                                        }
+                                    ],
+                                }
+                            ]
+                        }
+                    ],
+                },
+                {
+                    "type": "header",
+                    "page number": 1,
+                    "kids": [
+                        {
+                            "type": "table",
+                            "page number": 1,
+                            "reading order index": 3,
+                            "bounding box": [120, 20, 160, 60],
+                            "rows": [],
+                        }
+                    ],
+                },
+                {
+                    "type": "list",
+                    "list items": [
+                        {
+                            "type": "list item",
+                            "page number": 1,
+                            "content": "item",
+                            "kids": [
+                                {
+                                    "type": "table",
+                                    "page number": 1,
+                                    "reading order index": 4,
+                                    "bounding box": [170, 20, 210, 60],
+                                    "rows": [],
+                                }
+                            ],
+                        }
+                    ],
+                },
+                {
+                    "type": "text block",
+                    "kids": [
+                        {
+                            "type": "table",
+                            "page number": 1,
+                            "reading order index": 5,
+                            "bounding box": [220, 20, 260, 60],
+                            "rows": [],
+                        }
+                    ],
+                },
+            ],
+        }
+        table_grids = {
+            TableNodeKey(
+                page_number=1,
+                reading_order_index=1,
+                left_pt=10.0,
+                bottom_pt=20.0,
+                right_pt=110.0,
+                top_pt=120.0,
+            ): object()
+        }
+
+        with patch(
+            "document_processor.pdf.odl.adapter._table_node_to_ir",
+            wraps=pdf_odl_adapter._table_node_to_ir,
+        ) as table_node_to_ir:
+            build_doc_ir_from_odl_result(
+                raw_document,
+                source_path="sample.pdf",
+                table_grids=table_grids,
+            )
+
+        self.assertEqual(table_node_to_ir.call_count, 5)
+        self.assertTrue(all(call.kwargs["table_grids"] is table_grids for call in table_node_to_ir.call_args_list))
 
     def test_build_doc_ir_from_odl_result_preserves_text_whitespace_and_header_footer_children(self) -> None:
         raw_document = {
@@ -607,7 +714,7 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertEqual(doc.meta.scan_like_pages, [1])
         self.assertIs(doc.get_pdf_preview_context(), build_preview_context.return_value)
 
-    def test_parse_pdf_to_doc_ir_passes_table_split_plans_into_adapter(self) -> None:
+    def test_parse_pdf_to_doc_ir_passes_table_grids_into_adapter(self) -> None:
         profile = PdfProfile(
             page_count=1,
             avg_chars_per_page=100.0,
@@ -633,7 +740,7 @@ class PdfPipelineTests(unittest.TestCase):
             "number of pages": 1,
             "kids": [],
         }
-        table_split_plans = {
+        table_grids = {
             TableNodeKey(
                 page_number=1,
                 reading_order_index=3,
@@ -655,8 +762,9 @@ class PdfPipelineTests(unittest.TestCase):
                 "document_processor.pdf.pipeline.build_pdf_preview_context",
                 return_value=PdfPreviewContext(),
             ), patch(
-                "document_processor.pdf.pipeline.build_table_split_plans",
-                return_value=table_split_plans,
+                "document_processor.pdf.pipeline.build_table_grids",
+                return_value=table_grids,
+                create=True,
             ), patch(
                 "document_processor.pdf.pipeline.build_doc_ir_from_odl_result",
                 return_value=DocIR(source_doc_type="pdf", source_path=str(pdf_path)),
@@ -668,7 +776,7 @@ class PdfPipelineTests(unittest.TestCase):
             source_path=str(pdf_path),
             doc_id=None,
             doc_cls=DocIR,
-            table_split_plans=table_split_plans,
+            table_grids=table_grids,
         )
 
     def test_pdf_parse_config_no_longer_exposes_infer_table_splits(self) -> None:
@@ -685,7 +793,7 @@ class PdfPipelineTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "infer_table_splits"):
             PdfParseConfig.model_validate({"infer_table_splits": False})
 
-    def test_build_table_split_plans_returns_empty_when_pdfium_cannot_open_pdf(self) -> None:
+    def test_build_table_grids_returns_empty_when_pdfium_cannot_open_pdf(self) -> None:
         raw_document = {
             "number of pages": 1,
             "kids": [
@@ -704,9 +812,143 @@ class PdfPipelineTests(unittest.TestCase):
             pdf_path.write_bytes(b"%PDF-1.7\n%fake")
 
             self.assertEqual(
-                build_table_split_plans(raw_document, pdf_path=pdf_path, page_numbers=[1]),
+                pdf_odl.build_table_grids(raw_document, pdf_path=pdf_path, page_numbers=[1]),
                 {},
             )
+
+    def test_build_table_grids_returns_empty_when_primitive_extraction_raises(self) -> None:
+        raw_document = {
+            "number of pages": 1,
+            "kids": [
+                {
+                    "type": "table",
+                    "page number": 1,
+                    "reading order index": 1,
+                    "bounding box": [10, 20, 30, 40],
+                    "rows": [],
+                }
+            ],
+        }
+
+        class FakePdfDocument:
+            page_count = 1
+
+            def __getitem__(self, index):
+                return object()
+
+            def close(self) -> None:
+                return None
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            pdf_path = Path(tmp_dir) / "sample.pdf"
+            pdf_path.write_bytes(b"%PDF-1.7\n%fake")
+
+            with patch.dict(
+                sys.modules,
+                {"pypdfium2": SimpleNamespace(PdfDocument=lambda path: FakePdfDocument())},
+            ), patch(
+                "document_processor.pdf.odl.table_reconstruct.extract_pdfium_table_rule_primitives",
+                side_effect=RuntimeError("boom"),
+            ):
+                self.assertEqual(
+                    pdf_odl.build_table_grids(raw_document, pdf_path=pdf_path, page_numbers=[1]),
+                    {},
+                )
+
+    def test_build_doc_ir_from_odl_result_accepts_split_plans_keyed_by_package_level_table_node_key(self) -> None:
+        table_node = {
+            "type": "table",
+            "page number": 1,
+            "reading order index": 1,
+            "bounding box": [10, 20, 30, 40],
+            "number of rows": 1,
+            "number of columns": 1,
+            "rows": [
+                {
+                    "cells": [
+                        {
+                            "type": "table cell",
+                            "row number": 1,
+                            "column number": 1,
+                            "page number": 1,
+                            "bounding box": [10, 20, 30, 40],
+                            "kids": [{"type": "paragraph", "content": "A1", "page number": 1}],
+                        }
+                    ]
+                }
+            ],
+        }
+        raw_document = {
+            "file name": "sample.pdf",
+            "number of pages": 1,
+            "kids": [table_node],
+        }
+
+        self.assertTrue(callable(pdf_odl.build_table_split_plans))
+        self.assertTrue(callable(pdf_odl.build_table_split_plan_for_table_node))
+
+        key = pdf_odl.table_node_key(table_node)
+        split_plan = TableSplitPlan(
+            table_key=key,
+            column_events=[BoundaryEvent(source_index=1, axis_pt=20.0, supporting_cells=frozenset())],
+        )
+
+        doc = build_doc_ir_from_odl_result(
+            raw_document,
+            source_path="sample.pdf",
+            table_split_plans={key: split_plan},
+        )
+
+        self.assertEqual(doc.paragraphs[0].tables[0].col_count, 2)
+
+    def test_build_table_split_plans_round_trips_with_package_level_table_node_key(self) -> None:
+        table_node = {
+            "type": "table",
+            "page number": 1,
+            "reading order index": 1,
+            "bounding box": [10, 20, 30, 40],
+            "rows": [],
+        }
+        raw_document = {
+            "number of pages": 1,
+            "kids": [table_node],
+        }
+
+        class FakePdfDocument:
+            page_count = 1
+
+            def __getitem__(self, index):
+                return object()
+
+            def close(self) -> None:
+                return None
+
+        legacy_plan = TableSplitPlan(
+            table_key=pdf_odl.table_split_plan.table_node_key(table_node),
+            column_events=[BoundaryEvent(source_index=1, axis_pt=20.0, supporting_cells=frozenset())],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            pdf_path = Path(tmp_dir) / "sample.pdf"
+            pdf_path.write_bytes(b"%PDF-1.7\n%fake")
+
+            with patch.dict(
+                sys.modules,
+                {"pypdfium2": SimpleNamespace(PdfDocument=lambda path: FakePdfDocument())},
+            ), patch(
+                "document_processor.pdf.odl.table_split_plan.extract_pdfium_table_rule_primitives",
+                return_value=[object()],
+            ), patch(
+                "document_processor.pdf.odl.table_split_plan.build_table_split_plan_for_table_node",
+                return_value=legacy_plan,
+            ):
+                plans = pdf_odl.build_table_split_plans(
+                    raw_document,
+                    pdf_path=pdf_path,
+                    page_numbers=[1],
+                )
+
+        self.assertIs(plans.get(pdf_odl.table_node_key(table_node)), legacy_plan)
 
     def test_resolve_odl_jar_path_uses_vendored_jar(self) -> None:
         jar_path = resolve_odl_jar_path()

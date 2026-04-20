@@ -20,9 +20,11 @@ order while using the visually-faithful grid as ground truth.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Iterable
 
 from ..meta import PdfBoundingBox, coerce_bbox, coerce_int
+from ..preview.analyze import extract_pdfium_table_rule_primitives
 from ..preview.models import PdfPreviewVisualPrimitive
 
 
@@ -205,6 +207,88 @@ def assign_fragments_to_groups(
             mapping.setdefault(group, []).append(fragment)
 
     return mapping
+
+
+def _collect_table_nodes_by_page(raw_document: dict[str, Any]) -> dict[int, list[dict[str, Any]]]:
+    grouped: dict[int, list[dict[str, Any]]] = {}
+
+    def visit(node: Any) -> None:
+        if isinstance(node, dict):
+            if node.get("type") == "table":
+                page_number = coerce_int(node.get("page number"))
+                if page_number is not None:
+                    grouped.setdefault(page_number, []).append(node)
+            for value in node.values():
+                visit(value)
+            return
+        if isinstance(node, list):
+            for item in node:
+                visit(item)
+
+    visit(raw_document)
+    return grouped
+
+
+def _document_page_count(document: Any) -> int:
+    page_count = getattr(document, "page_count", None)
+    if isinstance(page_count, int) and page_count > 0:
+        return page_count
+    try:
+        return len(document)
+    except TypeError:
+        return 0
+
+
+def build_table_grids(
+    raw_document: dict[str, Any],
+    *,
+    pdf_path: str | Path,
+    page_numbers: Iterable[int] | None = None,
+) -> dict[TableNodeKey, TableGrid]:
+    resolved_pdf_path = Path(pdf_path).expanduser()
+    if not resolved_pdf_path.exists():
+        return {}
+
+    tables_by_page = _collect_table_nodes_by_page(raw_document)
+    if page_numbers is not None:
+        requested_pages = {int(page_number) for page_number in page_numbers}
+        tables_by_page = {
+            page_number: tables
+            for page_number, tables in tables_by_page.items()
+            if page_number in requested_pages
+        }
+    if not tables_by_page:
+        return {}
+
+    try:
+        import pypdfium2 as pdfium
+    except Exception:
+        return {}
+
+    try:
+        document = pdfium.PdfDocument(str(resolved_pdf_path))
+    except Exception:
+        return {}
+
+    try:
+        page_count = _document_page_count(document)
+        table_grids: dict[TableNodeKey, TableGrid] = {}
+        for page_number, tables in tables_by_page.items():
+            if page_number <= 0 or page_number > page_count:
+                continue
+            primitives = extract_pdfium_table_rule_primitives(
+                document[page_number - 1],
+                page_number=page_number,
+            )
+            for table_node in tables:
+                table_grid = reconstruct_table_grid(table_node, primitives=primitives)
+                if table_grid is not None:
+                    table_grids[table_grid.table_key] = table_grid
+        return table_grids
+    except Exception:
+        return {}
+    finally:
+        document.close()
 
 
 # ---------- line collection ----------
@@ -443,6 +527,7 @@ def reconstruct_table_grid(
 
 __all__ = [
     "assign_fragments_to_groups",
+    "build_table_grids",
     "MergeGroup",
     "TableGrid",
     "TableNodeKey",
