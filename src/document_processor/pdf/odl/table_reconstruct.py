@@ -28,6 +28,7 @@ from ..preview.models import PdfPreviewVisualPrimitive
 
 _COORD_MERGE_TOLERANCE_PT = 2.0
 _BORDER_AXIS_TOLERANCE_PT = 2.0
+_BORDER_SNAP_TOLERANCE_PT = 3.0
 _BORDER_COVERAGE_RATIO = 0.30
 
 
@@ -123,9 +124,9 @@ def _bbox_inside(inner: PdfBoundingBox, outer: PdfBoundingBox, pad: float = 1.0)
 
 
 def _snap_axis_to_table_border(axis: float, lower: float, upper: float) -> float:
-    if abs(axis - lower) <= _BORDER_AXIS_TOLERANCE_PT:
+    if abs(axis - lower) <= _BORDER_SNAP_TOLERANCE_PT:
         return lower
-    if abs(axis - upper) <= _BORDER_AXIS_TOLERANCE_PT:
+    if abs(axis - upper) <= _BORDER_SNAP_TOLERANCE_PT:
         return upper
     return axis
 

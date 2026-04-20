@@ -71,6 +71,27 @@ class TableReconstructTests(unittest.TestCase):
         bbox = grid.group_bbox(grid.merge_groups[0])
         self.assertEqual((bbox.left_pt, bbox.bottom_pt, bbox.right_pt, bbox.top_pt), (10.0, 10.0, 110.0, 90.0))
 
+    def test_reconstruct_table_grid_suppresses_vertical_rule_at_x_12_5_near_left_border(self) -> None:
+        node = _table_node()
+        primitives = [
+            _primitive(
+                object_type="segmented_vertical_rule",
+                roles=["vertical_line_segment", "segmented_vertical_rule"],
+                left=12.0,
+                bottom=12.0,
+                right=13.0,
+                top=88.0,
+            )
+        ]
+
+        grid = reconstruct_table_grid(node, primitives)
+
+        self.assertIsNotNone(grid)
+        assert grid is not None
+        self.assertEqual((grid.row_count, grid.col_count), (1, 1))
+        bbox = grid.group_bbox(grid.merge_groups[0])
+        self.assertEqual((bbox.left_pt, bbox.bottom_pt, bbox.right_pt, bbox.top_pt), (10.0, 10.0, 110.0, 90.0))
+
     def test_reconstruct_table_grid_returns_none_when_page_number_is_missing(self) -> None:
         node = {
             "type": "table",
