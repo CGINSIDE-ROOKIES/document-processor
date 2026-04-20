@@ -50,6 +50,48 @@ class TableReconstructTests(unittest.TestCase):
         self.assertIn((10.0, 10.0, 90.0), v_lines)
         self.assertIn((110.0, 10.0, 90.0), v_lines)
 
+    def test_reconstruct_table_grid_snaps_vertical_rule_near_left_border_to_outer_border(self) -> None:
+        node = _table_node()
+        primitives = [
+            _primitive(
+                object_type="segmented_vertical_rule",
+                roles=["vertical_line_segment", "segmented_vertical_rule"],
+                left=10.4,
+                bottom=12.0,
+                right=11.4,
+                top=88.0,
+            )
+        ]
+
+        grid = reconstruct_table_grid(node, primitives)
+
+        self.assertIsNotNone(grid)
+        assert grid is not None
+        self.assertEqual((grid.row_count, grid.col_count), (1, 1))
+        bbox = grid.group_bbox(grid.merge_groups[0])
+        self.assertEqual((bbox.left_pt, bbox.bottom_pt, bbox.right_pt, bbox.top_pt), (10.0, 10.0, 110.0, 90.0))
+
+    def test_reconstruct_table_grid_returns_none_when_page_number_is_missing(self) -> None:
+        node = {
+            "type": "table",
+            "reading order index": 9,
+            "bounding box": [10.0, 10.0, 110.0, 90.0],
+        }
+        primitives = [
+            _primitive(
+                object_type="segmented_horizontal_rule",
+                roles=["horizontal_line_segment"],
+                left=12.0,
+                bottom=39.5,
+                right=108.0,
+                top=40.5,
+            )
+        ]
+
+        grid = reconstruct_table_grid(node, primitives)
+
+        self.assertIsNone(grid)
+
     def test_reconstruct_table_grid_splits_rows_from_horizontal_segmented_rules(self) -> None:
         node = _table_node()
         primitives = [

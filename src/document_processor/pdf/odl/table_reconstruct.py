@@ -122,6 +122,14 @@ def _bbox_inside(inner: PdfBoundingBox, outer: PdfBoundingBox, pad: float = 1.0)
     )
 
 
+def _snap_axis_to_table_border(axis: float, lower: float, upper: float) -> float:
+    if abs(axis - lower) <= _BORDER_AXIS_TOLERANCE_PT:
+        return lower
+    if abs(axis - upper) <= _BORDER_AXIS_TOLERANCE_PT:
+        return upper
+    return axis
+
+
 def collect_lines(
     primitives: list[PdfPreviewVisualPrimitive],
     table_bbox: PdfBoundingBox,
@@ -143,9 +151,11 @@ def collect_lines(
         is_v = _is_vertical_primitive(prim)
         if is_h:
             y_axis = (bbox.top_pt + bbox.bottom_pt) / 2.0
+            y_axis = _snap_axis_to_table_border(y_axis, table_bbox.bottom_pt, table_bbox.top_pt)
             h_lines.append((y_axis, bbox.left_pt, bbox.right_pt))
         if is_v:
             x_axis = (bbox.left_pt + bbox.right_pt) / 2.0
+            x_axis = _snap_axis_to_table_border(x_axis, table_bbox.left_pt, table_bbox.right_pt)
             v_lines.append((x_axis, bbox.bottom_pt, bbox.top_pt))
 
     # Outer borders of the table itself.
@@ -276,8 +286,9 @@ def reconstruct_table_grid(
         return None
 
     page_number = coerce_int(node.get("page number"))
-    if page_number is not None:
-        primitives = [p for p in primitives if p.page_number == page_number]
+    if page_number is None:
+        return None
+    primitives = [p for p in primitives if p.page_number == page_number]
 
     h_lines, v_lines = collect_lines(primitives, table_bbox)
     h_y = _merge_close_coords((y for y, _, _ in h_lines), _COORD_MERGE_TOLERANCE_PT)
