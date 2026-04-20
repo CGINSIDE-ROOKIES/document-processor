@@ -24,7 +24,20 @@ from ..meta import (
     pixels_to_points,
     sanitize_css_color,
 )
-from .table_split_plan import BoundaryEvent, CellKey, TableNodeKey, TableSplitPlan, table_node_key
+from .table_reconstruct import (
+    MergeGroup,
+    TableGrid,
+    TableNodeKey,
+    assign_fragments_to_groups,
+    table_node_key,
+)
+from .table_split_plan import (
+    BoundaryEvent,
+    CellKey,
+    TableNodeKey as SplitPlanTableNodeKey,
+    TableSplitPlan,
+    table_node_key as split_plan_table_node_key,
+)
 
 _STRIP_CONNECTOR_CHARS = frozenset({"➡", "→", "➜", "➝", "←", "↑", "↓", "↔", "↕", ""})
 _STRIP_ROW_TOLERANCE_PT = 18.0
@@ -215,7 +228,7 @@ def _paragraphs_from_container_node(
     *,
     unit_prefix: str,
     assets: dict[str, ImageAsset],
-    table_split_plans: dict[TableNodeKey, TableSplitPlan] | None = None,
+    table_split_plans: dict[SplitPlanTableNodeKey, TableSplitPlan] | None = None,
 ) -> list[ParagraphIR]:
     """Flatten header/footer-like wrapper nodes into paragraph units.
 
@@ -520,7 +533,7 @@ def _cell_paragraphs(
     cell_unit_id: str,
     default_page_number: int | None,
     assets: dict[str, ImageAsset],
-    table_split_plans: dict[TableNodeKey, TableSplitPlan] | None = None,
+    table_split_plans: dict[SplitPlanTableNodeKey, TableSplitPlan] | None = None,
 ) -> list[ParagraphIR]:
     """Build the paragraph stream for a table cell.
 
@@ -804,18 +817,101 @@ def _table_node_to_ir(
     *,
     unit_id: str,
     assets: dict[str, ImageAsset],
-    table_split_plans: dict[TableNodeKey, TableSplitPlan] | None = None,
+    table_grids: dict[TableNodeKey, TableGrid] | None = None,
+    table_split_plans: dict[SplitPlanTableNodeKey, TableSplitPlan] | None = None,
 ) -> TableIR:
-    """Convert one raw ODL table node into TableIR.
-
-    Table rows are not preserved as first-class IR nodes. Instead, cells are
-    stored flat with row/column indices, which matches the existing DocIR table
-    contract and keeps the model shared across formats.
-    """
-    table_meta = build_pdf_node_meta(node)
+    """Convert one raw ODL table node into TableIR."""
     raw_cells = _iter_raw_table_cells(node)
-    plan = table_split_plans.get(table_node_key(node)) if table_split_plans else None
-    resolved_cells = _resolved_raw_cells_from_split_plan(raw_cells, plan) if plan is not None else raw_cells
+    grid = table_grids.get(table_node_key(node)) if table_grids else None
+    if grid is None:
+        return _table_node_to_ir_from_raw_topology(
+            node,
+            unit_id=unit_id,
+            assets=assets,
+            table_split_plans=table_split_plans,
+            raw_cells=raw_cells,
+        )
+    if _raw_cells_have_unsupported_reconstruct_content(raw_cells):
+        return _table_node_to_ir_from_raw_topology(
+            node,
+            unit_id=unit_id,
+            assets=assets,
+            table_split_plans=table_split_plans,
+            raw_cells=raw_cells,
+        )
+
+    fragments_by_group = assign_fragments_to_groups(raw_cells=raw_cells, grid=grid)
+    if not fragments_by_group and _raw_cells_have_table_fragments(raw_cells):
+        return _table_node_to_ir_from_raw_topology(
+            node,
+            unit_id=unit_id,
+            assets=assets,
+            table_split_plans=table_split_plans,
+            raw_cells=raw_cells,
+        )
+
+    table_meta = build_pdf_node_meta(node)
+    table_style = _table_style_from_node(node)
+    if table_style is not None:
+        table_style.row_count = grid.row_count
+        table_style.col_count = grid.col_count
+
+    table = TableIR(
+        unit_id=unit_id,
+        row_count=grid.row_count,
+        col_count=grid.col_count,
+        bbox=table_meta.bounding_box if table_meta is not None else None,
+        table_style=table_style,
+        meta=table_meta,
+    )
+    first_raw_cell_by_group = _first_raw_cell_by_group(raw_cells, grid)
+    for group in sorted(grid.merge_groups, key=lambda item: (item.min_row, item.min_col)):
+        row_index = group.min_row + 1
+        col_index = group.min_col + 1
+        group_bbox = grid.group_bbox(group)
+        source_cell = first_raw_cell_by_group.get(group)
+        cell_meta = build_pdf_node_meta(source_cell) if source_cell is not None else None
+        if cell_meta is None:
+            cell_meta = PdfNodeMeta(page_number=_page_number_from_node(node), bounding_box=group_bbox)
+        else:
+            cell_meta = cell_meta.model_copy(deep=True)
+            cell_meta.bounding_box = group_bbox
+        _append_table_cell(
+            table,
+            row_index=row_index,
+            col_index=col_index,
+            rowspan=group.max_row - group.min_row + 1,
+            colspan=group.max_col - group.min_col + 1,
+            cell_bbox=group_bbox,
+            cell_meta=cell_meta,
+            cell_style=_reconstructed_cell_style(source_cell, rowspan=group.rowspan, colspan=group.colspan),
+            children=fragments_by_group.get(group, []),
+            unit_id=unit_id,
+            assets=assets,
+            default_page_number=(
+                _page_number_from_node(source_cell) if source_cell is not None else None
+            ) or _page_number_from_node(node),
+            table_split_plans=table_split_plans,
+        )
+    return table
+
+
+def _table_node_to_ir_from_raw_topology(
+    node: dict[str, Any],
+    *,
+    unit_id: str,
+    assets: dict[str, ImageAsset],
+    table_split_plans: dict[SplitPlanTableNodeKey, TableSplitPlan] | None = None,
+    raw_cells: list[dict[str, Any]] | None = None,
+) -> TableIR:
+    table_meta = build_pdf_node_meta(node)
+    resolved_raw_cells = raw_cells if raw_cells is not None else _iter_raw_table_cells(node)
+    plan = table_split_plans.get(split_plan_table_node_key(node)) if table_split_plans else None
+    resolved_cells = (
+        _resolved_raw_cells_from_split_plan(resolved_raw_cells, plan)
+        if plan is not None
+        else resolved_raw_cells
+    )
     row_count = (coerce_int(node.get("number of rows")) or 0) + (len(plan.row_events) if plan else 0)
     col_count = (coerce_int(node.get("number of columns")) or 0) + (len(plan.column_events) if plan else 0)
     table_style = _table_style_from_node(node)
@@ -845,27 +941,146 @@ def _table_node_to_ir(
     for cell in ordered_cells:
         row_index = coerce_int(cell.get("row number")) or 1
         col_index = coerce_int(cell.get("column number")) or 1
-        cell_unit_id = f"{unit_id}.tr{row_index}.tc{col_index}"
         cell_meta = build_pdf_node_meta(cell)
-        table.cells.append(
-            TableCellIR(
-                unit_id=cell_unit_id,
-                row_index=row_index,
-                col_index=col_index,
-                text=extract_text_from_odl_children(cell.get("kids", [])),
-                bbox=cell_meta.bounding_box if cell_meta is not None else None,
-                cell_style=_cell_style_from_node(cell),
-                meta=cell_meta,
-                paragraphs=_cell_paragraphs(
-                    cell.get("kids", []),
-                    cell_unit_id=cell_unit_id,
-                    default_page_number=_page_number_from_node(cell),
-                    assets=assets,
-                    table_split_plans=table_split_plans,
-                ),
-            )
+        cell_style = _cell_style_from_node(cell)
+        if cell_style is not None:
+            cell_style.rowspan = max(coerce_int(cell.get("row span")) or 1, 1)
+            cell_style.colspan = max(coerce_int(cell.get("column span")) or 1, 1)
+        _append_table_cell(
+            table,
+            row_index=row_index,
+            col_index=col_index,
+            rowspan=max(coerce_int(cell.get("row span")) or 1, 1),
+            colspan=max(coerce_int(cell.get("column span")) or 1, 1),
+            cell_bbox=cell_meta.bounding_box if cell_meta is not None else None,
+            cell_meta=cell_meta,
+            cell_style=cell_style,
+            children=cell.get("kids", []),
+            unit_id=unit_id,
+            assets=assets,
+            default_page_number=_page_number_from_node(cell),
+            table_split_plans=table_split_plans,
         )
     return table
+
+
+def _append_table_cell(
+    table: TableIR,
+    *,
+    row_index: int,
+    col_index: int,
+    rowspan: int,
+    colspan: int,
+    cell_bbox: PdfBoundingBox | None,
+    cell_meta: PdfNodeMeta | None,
+    cell_style: CellStyleInfo | None,
+    children: list[dict[str, Any]],
+    unit_id: str,
+    assets: dict[str, ImageAsset],
+    default_page_number: int | None,
+    table_split_plans: dict[SplitPlanTableNodeKey, TableSplitPlan] | None = None,
+) -> None:
+    cell_unit_id = f"{unit_id}.tr{row_index}.tc{col_index}"
+    if cell_style is not None:
+        cell_style.rowspan = rowspan
+        cell_style.colspan = colspan
+    table.cells.append(
+        TableCellIR(
+            unit_id=cell_unit_id,
+            row_index=row_index,
+            col_index=col_index,
+            text=extract_text_from_odl_children(children),
+            bbox=cell_bbox,
+            cell_style=cell_style,
+            meta=cell_meta,
+            paragraphs=_cell_paragraphs(
+                children,
+                cell_unit_id=cell_unit_id,
+                default_page_number=default_page_number,
+                assets=assets,
+                table_split_plans=table_split_plans,
+            ),
+        )
+    )
+
+
+def _iter_raw_cell_fragments(raw_cell: dict[str, Any]):
+    def visit(node: Any):
+        if not isinstance(node, dict):
+            return
+        if node.get("type") == "paragraph":
+            yield node
+        kids = node.get("kids")
+        if isinstance(kids, list):
+            for kid in kids:
+                yield from visit(kid)
+
+    yield from visit(raw_cell)
+
+
+def _raw_cells_have_table_fragments(raw_cells: list[dict[str, Any]]) -> bool:
+    return any(True for raw_cell in raw_cells for _ in _iter_raw_cell_fragments(raw_cell))
+
+
+def _raw_cells_have_unsupported_reconstruct_content(raw_cells: list[dict[str, Any]]) -> bool:
+    for raw_cell in raw_cells:
+        for child in raw_cell.get("kids", []) or []:
+            if not isinstance(child, dict):
+                continue
+            if child.get("type") != "paragraph":
+                return True
+    return False
+
+
+def _first_raw_cell_by_group(
+    raw_cells: list[dict[str, Any]],
+    grid: TableGrid,
+) -> dict[MergeGroup, dict[str, Any]]:
+    first_raw_cell: dict[MergeGroup, dict[str, Any]] = {}
+    for raw_cell in raw_cells:
+        fragment_mapping = assign_fragments_to_groups(raw_cells=[raw_cell], grid=grid)
+        if fragment_mapping:
+            for group in fragment_mapping:
+                first_raw_cell.setdefault(group, raw_cell)
+        raw_cell_bbox = coerce_bbox(raw_cell.get("bounding box"))
+        if raw_cell_bbox is None:
+            continue
+        for group in _groups_with_centers_inside_bbox(raw_cell_bbox, grid):
+            first_raw_cell.setdefault(group, raw_cell)
+    return first_raw_cell
+
+
+def _reconstructed_cell_style(
+    raw_cell: dict[str, Any] | None,
+    *,
+    rowspan: int,
+    colspan: int,
+) -> CellStyleInfo | None:
+    if raw_cell is None:
+        return None
+    cell_style = _cell_style_from_node(raw_cell)
+    if cell_style is None:
+        return None
+    cell_style.rowspan = rowspan
+    cell_style.colspan = colspan
+    return cell_style
+
+
+def _groups_with_centers_inside_bbox(
+    bbox: PdfBoundingBox,
+    grid: TableGrid,
+) -> list[MergeGroup]:
+    matches: list[MergeGroup] = []
+    for group in grid.merge_groups:
+        group_bbox = grid.group_bbox(group)
+        center_x = (group_bbox.left_pt + group_bbox.right_pt) / 2.0
+        center_y = (group_bbox.bottom_pt + group_bbox.top_pt) / 2.0
+        if (
+            bbox.left_pt <= center_x <= bbox.right_pt
+            and bbox.bottom_pt <= center_y <= bbox.top_pt
+        ):
+            matches.append(group)
+    return matches
 
 
 def _paragraph_is_table_box(paragraph: ParagraphIR) -> bool:
@@ -1054,7 +1269,7 @@ def _paragraphs_from_list_node(
     *,
     unit_prefix: str,
     assets: dict[str, ImageAsset],
-    table_split_plans: dict[TableNodeKey, TableSplitPlan] | None = None,
+    table_split_plans: dict[SplitPlanTableNodeKey, TableSplitPlan] | None = None,
 ) -> list[ParagraphIR]:
     """Flatten list items into normal paragraph units.
 
@@ -1173,7 +1388,7 @@ def build_doc_ir_from_odl_result(
     source_path: str | Path | None = None,
     doc_id: str | None = None,
     doc_cls: type[DocIR] | None = None,
-    table_split_plans: dict[TableNodeKey, TableSplitPlan] | None = None,
+    table_split_plans: dict[SplitPlanTableNodeKey, TableSplitPlan] | None = None,
     **doc_kwargs: Any,
 ) -> DocIR:
     """Build canonical DocIR from one ODL raw JSON document.
