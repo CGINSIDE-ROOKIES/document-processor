@@ -112,16 +112,26 @@ def _union_bboxes(boxes: Iterable[PdfBoundingBox]) -> PdfBoundingBox | None:
 
 def _descendant_bboxes(node: dict[str, Any]) -> list[PdfBoundingBox]:
     bboxes: list[PdfBoundingBox] = []
-    for key in ("spans", "runs"):
+
+    def visit(current: Any) -> None:
+        if not isinstance(current, dict):
+            return
+        bbox = coerce_bbox(current.get("bounding box")) or coerce_bbox(current.get("bbox"))
+        if bbox is not None:
+            bboxes.append(bbox)
+        for key in ("kids", "spans", "runs"):
+            items = current.get(key)
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                visit(item)
+
+    for key in ("kids", "spans", "runs"):
         items = node.get(key)
         if not isinstance(items, list):
             continue
         for item in items:
-            if not isinstance(item, dict):
-                continue
-            bbox = coerce_bbox(item.get("bounding box")) or coerce_bbox(item.get("bbox"))
-            if bbox is not None:
-                bboxes.append(bbox)
+            visit(item)
     return bboxes
 
 

@@ -73,6 +73,55 @@ def _span_only_paragraph(text: str, *, left: float, bottom: float, right: float,
     }
 
 
+def _nested_span_only_paragraph(text: str, *, left: float, bottom: float, right: float, top: float):
+    return {
+        "type": "paragraph",
+        "content": text,
+        "page number": 1,
+        "kids": [
+            {
+                "type": "group",
+                "kids": [
+                    {
+                        "type": "text chunk",
+                        "content": text,
+                        "page number": 1,
+                        "bounding box": [left, bottom, right, top],
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def _paragraph_with_conflicting_span_bbox(
+    text: str,
+    *,
+    paragraph_left: float,
+    paragraph_bottom: float,
+    paragraph_right: float,
+    paragraph_top: float,
+    span_left: float,
+    span_bottom: float,
+    span_right: float,
+    span_top: float,
+):
+    return {
+        "type": "paragraph",
+        "content": text,
+        "page number": 1,
+        "bounding box": [paragraph_left, paragraph_bottom, paragraph_right, paragraph_top],
+        "spans": [
+            {
+                "type": "text chunk",
+                "content": text,
+                "page number": 1,
+                "bounding box": [span_left, span_bottom, span_right, span_top],
+            }
+        ],
+    }
+
+
 class TableReconstructTests(unittest.TestCase):
     def test_collect_lines_adds_outer_border_lines(self) -> None:
         table_bbox = PdfBoundingBox(left_pt=10.0, bottom_pt=10.0, right_pt=110.0, top_pt=90.0)
@@ -255,20 +304,59 @@ class TableReconstructTests(unittest.TestCase):
 
 
 class TableReconstructMappingTests(unittest.TestCase):
+    def test_assign_fragments_to_groups_recurses_nested_kids_for_span_bbox(self) -> None:
+        grid = TableGrid(
+            table_key=table_node_key(_table_node()),
+            h_y=[10.0, 90.0],
+            v_x=[10.0, 60.0, 110.0],
+            merge_groups=[MergeGroup(0, 0, 0, 0), MergeGroup(0, 1, 0, 1)],
+        )
+        fragments = assign_fragments_to_groups(
+            raw_cells=[
+                {
+                    "bounding box": [10.0, 10.0, 55.0, 90.0],
+                    "kids": [_nested_span_only_paragraph("Nested", left=66.0, bottom=18.0, right=104.0, top=42.0)],
+                }
+            ],
+            grid=grid,
+        )
+
+        self.assertEqual([p["content"] for p in fragments[grid.merge_groups[1]]], ["Nested"])
+
     def test_assign_fragments_to_groups_uses_paragraph_bbox(self) -> None:
         grid = TableGrid(
             table_key=table_node_key(_table_node()),
             h_y=[10.0, 50.0, 90.0],
-            v_x=[10.0, 60.0, 110.0],
+            v_x=[10.0, 110.0],
             merge_groups=[MergeGroup(0, 0, 0, 0), MergeGroup(1, 0, 1, 0)],
         )
         fragments = assign_fragments_to_groups(
             raw_cells=[
                 {
-                    "bounding box": [10.0, 10.0, 60.0, 90.0],
+                    "bounding box": [10.0, 10.0, 110.0, 90.0],
                     "kids": [
-                        _paragraph("Bottom", left=14.0, bottom=18.0, right=58.0, top=42.0),
-                        _paragraph("Top", left=14.0, bottom=58.0, right=58.0, top=82.0),
+                        _paragraph_with_conflicting_span_bbox(
+                            "Bottom",
+                            paragraph_left=14.0,
+                            paragraph_bottom=18.0,
+                            paragraph_right=108.0,
+                            paragraph_top=42.0,
+                            span_left=14.0,
+                            span_bottom=58.0,
+                            span_right=108.0,
+                            span_top=82.0,
+                        ),
+                        _paragraph_with_conflicting_span_bbox(
+                            "Top",
+                            paragraph_left=14.0,
+                            paragraph_bottom=58.0,
+                            paragraph_right=108.0,
+                            paragraph_top=82.0,
+                            span_left=14.0,
+                            span_bottom=18.0,
+                            span_right=108.0,
+                            span_top=42.0,
+                        ),
                     ],
                 }
             ],
