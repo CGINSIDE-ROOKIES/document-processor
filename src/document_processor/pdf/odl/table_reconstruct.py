@@ -29,6 +29,7 @@ from ..preview.models import PdfPreviewVisualPrimitive
 _COORD_MERGE_TOLERANCE_PT = 2.0
 _BORDER_AXIS_TOLERANCE_PT = 2.0
 _BORDER_SNAP_TOLERANCE_PT = 3.0
+_MIN_EDGE_BAND_PT = 4.0
 _BORDER_COVERAGE_RATIO = 0.30
 
 
@@ -129,6 +130,24 @@ def _snap_axis_to_table_border(axis: float, lower: float, upper: float) -> float
     if abs(axis - upper) <= _BORDER_SNAP_TOLERANCE_PT:
         return upper
     return axis
+
+
+def _suppress_narrow_edge_band(boundaries: list[float]) -> list[float]:
+    if len(boundaries) < 3:
+        return boundaries
+
+    compact = list(boundaries)
+    while len(compact) >= 3:
+        lower_band = compact[1] - compact[0]
+        upper_band = compact[-1] - compact[-2]
+        if lower_band <= _MIN_EDGE_BAND_PT:
+            del compact[1]
+            continue
+        if upper_band <= _MIN_EDGE_BAND_PT:
+            del compact[-2]
+            continue
+        break
+    return compact
 
 
 def collect_lines(
@@ -294,6 +313,8 @@ def reconstruct_table_grid(
     h_lines, v_lines = collect_lines(primitives, table_bbox)
     h_y = _merge_close_coords((y for y, _, _ in h_lines), _COORD_MERGE_TOLERANCE_PT)
     v_x = _merge_close_coords((x for x, _, _ in v_lines), _COORD_MERGE_TOLERANCE_PT)
+    h_y = _suppress_narrow_edge_band(h_y)
+    v_x = _suppress_narrow_edge_band(v_x)
 
     if len(h_y) < 2 or len(v_x) < 2:
         return None
