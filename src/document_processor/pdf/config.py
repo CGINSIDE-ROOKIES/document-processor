@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from typing import Any
+
+from pydantic import BaseModel, Field, model_validator
 
 
 class PdfTriageConfig(BaseModel):
@@ -38,6 +40,16 @@ class PdfParseConfig(BaseModel):
     odl: OdlPdfConfig = Field(default_factory=OdlPdfConfig)
     infer_table_borders: bool = False
     table_border_dpi: int = 144
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_legacy_infer_table_splits(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "infer_table_splits" in value:
+            raise ValueError(
+                "`infer_table_splits` has been removed from PdfParseConfig; "
+                "table split plans now run automatically during ODL parsing."
+            )
+        return value
 
 
 __all__ = [

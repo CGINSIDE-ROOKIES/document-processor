@@ -734,7 +734,7 @@ def _split_raw_cell_kids(
     for kid in kids or []:
         if not isinstance(kid, dict):
             continue
-        bbox = coerce_bbox(kid.get("bounding box"))
+        bbox = _effective_bbox_from_descendants(kid)
         if bbox is None:
             before.append(kid)
             continue
@@ -748,6 +748,29 @@ def _split_raw_cell_kids(
         else:
             after.append(kid)
     return before, after
+
+
+def _effective_bbox_from_descendants(node: Any) -> PdfBoundingBox | None:
+    bbox = coerce_bbox(node.get("bounding box")) if isinstance(node, dict) else None
+    merged_bbox = bbox
+
+    def visit(value: Any) -> None:
+        nonlocal merged_bbox
+        if isinstance(value, dict):
+            child_bbox = coerce_bbox(value.get("bounding box"))
+            if child_bbox is not None:
+                merged_bbox = _merge_bounding_boxes(merged_bbox, child_bbox)
+            for child in value.values():
+                visit(child)
+            return
+        if isinstance(value, list):
+            for item in value:
+                visit(item)
+
+    if isinstance(node, dict):
+        for child in node.values():
+            visit(child)
+    return merged_bbox
 
 
 def _row_shift_before(row_index: int, row_events: list[BoundaryEvent]) -> int:

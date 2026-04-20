@@ -29,6 +29,22 @@ def _text_box(text: str, *, left: float, bottom: float, right: float, top: float
     }
 
 
+def _span_only_paragraph(text: str, *, left: float, bottom: float, right: float, top: float) -> dict[str, object]:
+    return {
+        "type": "paragraph",
+        "content": text,
+        "page number": 1,
+        "spans": [
+            {
+                "type": "text chunk",
+                "content": text,
+                "page number": 1,
+                "bounding box": [left, bottom, right, top],
+            }
+        ],
+    }
+
+
 def _table_node() -> dict[str, object]:
     return {
         "type": "table",
@@ -265,3 +281,65 @@ class AdapterSplitPlanTests(unittest.TestCase):
         )
 
         self.assertIsNone(plan)
+
+    def test_build_table_split_plan_for_table_node_drops_conflicting_row_band_boundaries(self) -> None:
+        node = _table_node()
+        node["rows"] = [
+            {
+                "cells": [
+                    {
+                        "type": "table cell",
+                        "row number": 1,
+                        "column number": 1,
+                        "row span": 1,
+                        "column span": 1,
+                        "bounding box": [10.0, 50.0, 60.0, 90.0],
+                        "kids": [
+                            _text_box("TopLeft", left=14.0, bottom=80.0, right=58.0, top=86.0),
+                            _text_box("BottomLeft", left=14.0, bottom=66.0, right=58.0, top=72.0),
+                        ],
+                    },
+                    {
+                        "type": "table cell",
+                        "row number": 1,
+                        "column number": 2,
+                        "row span": 1,
+                        "column span": 1,
+                        "bounding box": [60.0, 50.0, 110.0, 90.0],
+                        "kids": [
+                            _text_box("TopRight", left=66.0, bottom=68.0, right=104.0, top=74.0),
+                            _text_box("BottomRight", left=66.0, bottom=52.0, right=104.0, top=58.0),
+                        ],
+                    },
+                ]
+            }
+        ]
+
+        plan = build_table_split_plan_for_table_node(
+            node,
+            primitives=[_horizontal_rule(75.0), _horizontal_rule(60.0)],
+        )
+
+        self.assertIsNone(plan)
+
+    def test_build_doc_ir_from_odl_result_splits_span_only_children_using_descendant_bboxes(self) -> None:
+        table_node = _table_node()
+        table_node["rows"][1]["cells"][0]["kids"] = [
+            _span_only_paragraph("Left", left=14.0, bottom=14.0, right=30.0, top=42.0),
+            _span_only_paragraph("Right", left=40.0, bottom=14.0, right=56.0, top=42.0),
+        ]
+        raw_document = _raw_document_with_table(table_node)
+        plan = build_table_split_plan_for_table_node(table_node, primitives=[_vertical_rule(35.0)])
+
+        self.assertIsNotNone(plan)
+        assert plan is not None
+
+        document = build_doc_ir_from_odl_result(
+            raw_document,
+            source_path="sample.pdf",
+            table_split_plans={table_node_key(table_node): plan},
+        )
+
+        table = document.paragraphs[0].tables[0]
+        self.assertEqual(_table_cell_text(table, 2, 1), "Left")
+        self.assertEqual(_table_cell_text(table, 2, 2), "Right")

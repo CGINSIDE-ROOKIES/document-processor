@@ -121,6 +121,8 @@ def build_table_split_plan_for_table_node(
             proposals.pop(cell_key, None)
             ambiguous_cells.add(cell_key)
 
+    proposals = _drop_conflicting_source_band_proposals(proposals)
+
     row_events: list[BoundaryEvent] = []
     column_events: list[BoundaryEvent] = []
     cell_splits: dict[CellKey, CellSplitPlan] = {}
@@ -347,6 +349,37 @@ def _dedupe_boundary_events(events: list[BoundaryEvent]) -> list[BoundaryEvent]:
             continue
         merged.append(event)
     return merged
+
+
+def _drop_conflicting_source_band_proposals(
+    proposals: dict[CellKey, tuple[str, BoundaryEvent]],
+) -> dict[CellKey, tuple[str, BoundaryEvent]]:
+    if not proposals:
+        return {}
+
+    axes_by_band: dict[tuple[str, int], list[float]] = {}
+    for orientation, event in proposals.values():
+        axes_by_band.setdefault((orientation, event.source_index), []).append(event.axis_pt)
+
+    conflicting_bands: set[tuple[str, int]] = set()
+    for band, axis_values in axes_by_band.items():
+        resolved_axes: list[float] = []
+        for axis_pt in sorted(axis_values):
+            if any(abs(existing - axis_pt) <= _BOUNDARY_DEDUPE_TOLERANCE_PT for existing in resolved_axes):
+                continue
+            resolved_axes.append(axis_pt)
+            if len(resolved_axes) > 1:
+                conflicting_bands.add(band)
+                break
+
+    if not conflicting_bands:
+        return proposals
+
+    return {
+        cell_key: proposal
+        for cell_key, proposal in proposals.items()
+        if (proposal[0], proposal[1].source_index) not in conflicting_bands
+    }
 
 
 def _collect_table_nodes_by_page(raw_document: dict[str, Any]) -> dict[int, list[dict[str, Any]]]:

@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from pydantic import ValidationError
+
 THIS_DIR = Path(__file__).resolve().parent
 SRC_ROOT = THIS_DIR.parent / "src"
 if str(SRC_ROOT) not in sys.path:
@@ -674,6 +676,14 @@ class PdfPipelineTests(unittest.TestCase):
 
         self.assertNotIn("infer_table_splits", PdfParseConfig.model_fields)
         self.assertFalse(hasattr(config, "infer_table_splits"))
+
+    def test_parse_pdf_to_doc_ir_rejects_legacy_infer_table_splits_config_key(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "infer_table_splits"):
+            parse_pdf_to_doc_ir("sample.pdf", config={"infer_table_splits": False})
+
+    def test_pdf_parse_config_rejects_legacy_infer_table_splits_key(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "infer_table_splits"):
+            PdfParseConfig.model_validate({"infer_table_splits": False})
 
     def test_build_table_split_plans_returns_empty_when_pdfium_cannot_open_pdf(self) -> None:
         raw_document = {
