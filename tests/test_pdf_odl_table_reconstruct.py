@@ -92,6 +92,27 @@ class TableReconstructTests(unittest.TestCase):
         bbox = grid.group_bbox(grid.merge_groups[0])
         self.assertEqual((bbox.left_pt, bbox.bottom_pt, bbox.right_pt, bbox.top_pt), (10.0, 10.0, 110.0, 90.0))
 
+    def test_reconstruct_table_grid_preserves_vertical_rule_at_x_14_0_near_left_border(self) -> None:
+        node = _table_node()
+        primitives = [
+            _primitive(
+                object_type="segmented_vertical_rule",
+                roles=["vertical_line_segment", "segmented_vertical_rule"],
+                left=13.5,
+                bottom=12.0,
+                right=14.5,
+                top=88.0,
+            )
+        ]
+
+        grid = reconstruct_table_grid(node, primitives)
+
+        self.assertIsNotNone(grid)
+        assert grid is not None
+        self.assertEqual((grid.row_count, grid.col_count), (1, 2))
+        bbox_left = grid.group_bbox(grid.merge_groups[0])
+        self.assertEqual((bbox_left.left_pt, bbox_left.bottom_pt, bbox_left.right_pt, bbox_left.top_pt), (10.0, 10.0, 14.0, 90.0))
+
     def test_reconstruct_table_grid_suppresses_vertical_rule_at_x_12_5_near_left_border(self) -> None:
         node = _table_node()
         primitives = [
@@ -112,6 +133,27 @@ class TableReconstructTests(unittest.TestCase):
         self.assertEqual((grid.row_count, grid.col_count), (1, 1))
         bbox = grid.group_bbox(grid.merge_groups[0])
         self.assertEqual((bbox.left_pt, bbox.bottom_pt, bbox.right_pt, bbox.top_pt), (10.0, 10.0, 110.0, 90.0))
+
+    def test_reconstruct_table_grid_preserves_horizontal_rule_at_y_14_0_near_bottom_border(self) -> None:
+        node = _table_node()
+        primitives = [
+            _primitive(
+                object_type="segmented_horizontal_rule",
+                roles=["horizontal_line_segment", "segmented_horizontal_rule"],
+                left=12.0,
+                bottom=13.5,
+                right=108.0,
+                top=14.5,
+            )
+        ]
+
+        grid = reconstruct_table_grid(node, primitives)
+
+        self.assertIsNotNone(grid)
+        assert grid is not None
+        self.assertEqual((grid.row_count, grid.col_count), (2, 1))
+        bbox_bottom = grid.group_bbox(grid.merge_groups[0])
+        self.assertEqual((bbox_bottom.left_pt, bbox_bottom.bottom_pt, bbox_bottom.right_pt, bbox_bottom.top_pt), (10.0, 10.0, 110.0, 14.0))
 
     def test_reconstruct_table_grid_returns_none_when_page_number_is_missing(self) -> None:
         node = {

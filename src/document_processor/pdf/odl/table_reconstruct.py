@@ -140,10 +140,10 @@ def _suppress_narrow_edge_band(boundaries: list[float]) -> list[float]:
     while len(compact) >= 3:
         lower_band = compact[1] - compact[0]
         upper_band = compact[-1] - compact[-2]
-        if lower_band <= _MIN_EDGE_BAND_PT:
+        if lower_band < _MIN_EDGE_BAND_PT:
             del compact[1]
             continue
-        if upper_band <= _MIN_EDGE_BAND_PT:
+        if upper_band < _MIN_EDGE_BAND_PT:
             del compact[-2]
             continue
         break
