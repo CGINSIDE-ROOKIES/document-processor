@@ -172,7 +172,10 @@ def build_table_split_plans(
     except Exception:
         return {}
 
-    document = pdfium.PdfDocument(str(resolved_pdf_path))
+    try:
+        document = pdfium.PdfDocument(str(resolved_pdf_path))
+    except Exception:
+        return {}
     try:
         page_count = _document_page_count(document)
         plans: dict[TableNodeKey, TableSplitPlan] = {}

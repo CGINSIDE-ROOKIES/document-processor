@@ -15,7 +15,13 @@ if str(SRC_ROOT) not in sys.path:
 from document_processor import DocIR
 from document_processor.pdf import export_pdf_local_outputs
 from document_processor.pdf.config import PdfParseConfig
-from document_processor.pdf.odl import build_doc_ir_from_odl_result, convert_pdf_local, resolve_odl_jar_path
+from document_processor.pdf.odl import (
+    build_doc_ir_from_odl_result,
+    build_table_split_plans,
+    convert_pdf_local,
+    resolve_odl_jar_path,
+)
+from document_processor.pdf.odl.table_split_plan import TableNodeKey
 from document_processor.pdf.pipeline import parse_pdf_to_doc_ir
 from document_processor.pdf.parsing import PageClass, PageDecision, PageProfile, PdfProfile
 from document_processor.pdf.preview.context import build_pdf_preview_context
@@ -625,7 +631,16 @@ class PdfPipelineTests(unittest.TestCase):
             "number of pages": 1,
             "kids": [],
         }
-        table_split_plans = {("table", 1): object()}
+        table_split_plans = {
+            TableNodeKey(
+                page_number=1,
+                reading_order_index=3,
+                left_pt=10.0,
+                bottom_pt=20.0,
+                right_pt=30.0,
+                top_pt=40.0,
+            ): object()
+        }
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             pdf_path = Path(tmp_dir) / "sample.pdf"
@@ -659,6 +674,29 @@ class PdfPipelineTests(unittest.TestCase):
 
         self.assertNotIn("infer_table_splits", PdfParseConfig.model_fields)
         self.assertFalse(hasattr(config, "infer_table_splits"))
+
+    def test_build_table_split_plans_returns_empty_when_pdfium_cannot_open_pdf(self) -> None:
+        raw_document = {
+            "number of pages": 1,
+            "kids": [
+                {
+                    "type": "table",
+                    "page number": 1,
+                    "reading order index": 1,
+                    "bounding box": [10, 20, 30, 40],
+                    "rows": [],
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            pdf_path = Path(tmp_dir) / "sample.pdf"
+            pdf_path.write_bytes(b"%PDF-1.7\n%fake")
+
+            self.assertEqual(
+                build_table_split_plans(raw_document, pdf_path=pdf_path, page_numbers=[1]),
+                {},
+            )
 
     def test_resolve_odl_jar_path_uses_vendored_jar(self) -> None:
         jar_path = resolve_odl_jar_path()
