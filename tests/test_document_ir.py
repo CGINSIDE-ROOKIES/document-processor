@@ -16,6 +16,7 @@ if str(SRC_ROOT) not in sys.path:
 from document_processor import (
     CellStyleInfo,
     DocIR,
+    HwpxDocument,
     ImageIR,
     PageInfo,
     ParaStyleInfo,
@@ -157,8 +158,6 @@ class DocumentIRTests(unittest.TestCase):
         self.assertEqual(from_file_object.paragraphs[0].text, "Hello HWPX")
 
     def test_export_hwpx_structured_mapping_accepts_hwpx_document(self) -> None:
-        from document_processor.hwpx import HwpxDocument
-
         hwpx_bytes_io = BytesIO()
         with zipfile.ZipFile(hwpx_bytes_io, "w") as zf:
             zf.writestr(

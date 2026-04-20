@@ -1,4 +1,4 @@
-"""Minimal in-repo HWPX compatibility layer."""
+"""Minimal HWPX container reader."""
 
 from __future__ import annotations
 
@@ -60,7 +60,7 @@ class _HwpxElementWrapper:
 
 
 class HwpxDocument:
-    """Read-only HWPX container with the existing ``HwpxDocument`` name."""
+    """Read-only HWPX container."""
 
     def __init__(
         self,

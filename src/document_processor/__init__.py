@@ -52,6 +52,7 @@ from .edit_engine import (
     apply_edits_to_source,
     validate_edit_commands,
 )
+from .hwpx import HwpxDocument
 from .models import DocIR, ImageAsset, ImageIR, PageInfo, ParagraphContentNode, ParagraphIR, RunIR, TableCellIR, TableIR
 from .style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo, StyleMap, TableStyleInfo
 
@@ -78,6 +79,7 @@ __all__ = [
     "EditValidationResult",
     "EditableTarget",
     "GetDocumentContextRequest",
+    "HwpxDocument",
     "ImageAsset",
     "ImageIR",
     "ListEditableTargetsRequest",
