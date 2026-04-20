@@ -120,8 +120,34 @@ class ImageSupportTests(unittest.TestCase):
         self.assertIn("Before", html)
         self.assertIn("After", html)
 
+    def test_hwpx_image_display_size_prefers_object_size_over_intrinsic_size(self) -> None:
+        hwpx_bytes = self._build_hwpx_with_inline_image(
+            image_markup="""
+        <hp:sz width="11657" height="3081" widthRelTo="ABSOLUTE" heightRelTo="ABSOLUTE"/>
+        <hp:imgDim dimwidth="62580" dimheight="20880"/>
+        <hc:img binaryItemIDRef="image1"/>
+""",
+        )
+
+        parsed = DocIR.from_file(hwpx_bytes, doc_type="hwpx")
+        image = parsed.paragraphs[0].images[0]
+
+        self.assertAlmostEqual(image.display_width_pt or 0.0, 116.57, places=3)
+        self.assertAlmostEqual(image.display_height_pt or 0.0, 30.81, places=3)
+
+        html = parsed.to_html(title="Images")
+        self.assertIn("width:116.6pt", html)
+        self.assertIn("height:30.8pt", html)
+        self.assertNotIn("width:625.8pt", html)
+        self.assertNotIn("height:208.8pt", html)
+
     @staticmethod
-    def _build_hwpx_with_inline_image() -> bytes:
+    def _build_hwpx_with_inline_image(
+        image_markup: str = """
+        <hp:imgDim dimwidth="7200" dimheight="3600"/>
+        <hc:img binaryItemIDRef="image1"/>
+""",
+    ) -> bytes:
         hwpx_bytes_io = BytesIO()
         with zipfile.ZipFile(hwpx_bytes_io, "w") as zf:
             zf.writestr(
@@ -132,7 +158,7 @@ class ImageSupportTests(unittest.TestCase):
             )
             zf.writestr(
                 "Contents/section0.xml",
-                """<?xml version="1.0" encoding="UTF-8"?>
+                f"""<?xml version="1.0" encoding="UTF-8"?>
 <hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section"
         xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
         xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core">
@@ -140,8 +166,7 @@ class ImageSupportTests(unittest.TestCase):
     <hp:run><hp:t>Before</hp:t></hp:run>
     <hp:run>
       <hp:pic>
-        <hp:imgDim dimwidth="7200" dimheight="3600"/>
-        <hc:img binaryItemIDRef="image1"/>
+{image_markup}
       </hp:pic>
     </hp:run>
     <hp:run><hp:t>After</hp:t></hp:run>

@@ -9,7 +9,7 @@ SRC_ROOT = THIS_DIR.parent / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from document_processor import DocIR
+from document_processor import Annotation, DocIR, render_annotated_html
 from document_processor.models import ImageAsset, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
 from document_processor.style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
 
@@ -113,6 +113,103 @@ class HtmlExporterTests(unittest.TestCase):
         self.assertIn("height:36.0pt", html)
         self.assertIn("margin-left:0", html)
         self.assertIn("margin-right:auto", html)
+
+    def test_export_html_emits_fixed_columns_for_spanned_cell_widths(self) -> None:
+        doc = DocIR(
+            paragraphs=[
+                ParagraphIR(
+                    unit_id="s1.p1",
+                    content=[
+                        TableIR(
+                            unit_id="s1.p1.r1.tbl1",
+                            col_count=3,
+                            table_style=TableStyleInfo(width_pt=120.0, col_count=3),
+                            cells=[
+                                TableCellIR(
+                                    unit_id="s1.p1.r1.tbl1.tr1.tc1",
+                                    row_index=1,
+                                    col_index=1,
+                                    cell_style=CellStyleInfo(width_pt=30.0, vertical_align="center"),
+                                    paragraphs=[
+                                        ParagraphIR(
+                                            unit_id="s1.p1.r1.tbl1.tr1.tc1.p1",
+                                            content=[RunIR(unit_id="a", text="Label")],
+                                        )
+                                    ],
+                                ),
+                                TableCellIR(
+                                    unit_id="s1.p1.r1.tbl1.tr1.tc2",
+                                    row_index=1,
+                                    col_index=2,
+                                    cell_style=CellStyleInfo(width_pt=90.0, colspan=2),
+                                    paragraphs=[
+                                        ParagraphIR(
+                                            unit_id="s1.p1.r1.tbl1.tr1.tc2.p1",
+                                            content=[RunIR(unit_id="b", text="Value")],
+                                        )
+                                    ],
+                                ),
+                            ],
+                        )
+                    ],
+                )
+            ]
+        )
+
+        html = doc.to_html()
+        annotated_html = render_annotated_html(doc, [])
+
+        for rendered in (html, annotated_html):
+            self.assertIn("table-layout:fixed", rendered)
+            self.assertIn("<colgroup>", rendered)
+            self.assertIn('<col style="width:30.0pt" />', rendered)
+            self.assertEqual(rendered.count('<col style="width:45.0pt" />'), 2)
+            self.assertIn("box-sizing:border-box", rendered)
+            self.assertIn("padding:0", rendered)
+            self.assertIn("td p", rendered)
+            self.assertIn("line-height: 1.0", rendered)
+            self.assertIn("vertical-align:middle", rendered)
+            self.assertNotIn("vertical-align:center", rendered)
+
+    def test_export_html_renders_explicit_cell_padding(self) -> None:
+        doc = DocIR(
+            paragraphs=[
+                ParagraphIR(
+                    unit_id="s1.p1",
+                    content=[
+                        TableIR(
+                            unit_id="s1.p1.r1.tbl1",
+                            cells=[
+                                TableCellIR(
+                                    unit_id="s1.p1.r1.tbl1.tr1.tc1",
+                                    row_index=1,
+                                    col_index=1,
+                                    cell_style=CellStyleInfo(
+                                        padding_top_pt=1.4,
+                                        padding_right_pt=5.1,
+                                        padding_bottom_pt=1.4,
+                                        padding_left_pt=5.1,
+                                    ),
+                                    paragraphs=[
+                                        ParagraphIR(
+                                            unit_id="s1.p1.r1.tbl1.tr1.tc1.p1",
+                                            content=[RunIR(unit_id="a", text="Padded")],
+                                        )
+                                    ],
+                                )
+                            ],
+                        )
+                    ],
+                )
+            ]
+        )
+
+        html = doc.to_html()
+        annotated_html = render_annotated_html(doc, [])
+
+        for rendered in (html, annotated_html):
+            self.assertIn("padding:1.4pt 5.1pt 1.4pt 5.1pt", rendered)
+            self.assertNotIn("padding:4px 6px", rendered)
 
     def test_export_html_renders_cell_diagonal_borders(self) -> None:
         doc = DocIR(
@@ -281,7 +378,7 @@ class HtmlExporterTests(unittest.TestCase):
         self.assertIn("text-indent:0.0pt", html)
         self.assertNotIn("text-indent:-159.3pt", html)
 
-    def test_export_html_preserves_negative_first_line_indent_for_top_level_paragraphs(self) -> None:
+    def test_export_html_clamps_negative_first_line_indent_for_top_level_paragraphs(self) -> None:
         doc = DocIR(
             paragraphs=[
                 ParagraphIR(
@@ -294,7 +391,100 @@ class HtmlExporterTests(unittest.TestCase):
 
         html = doc.to_html()
 
-        self.assertIn("text-indent:-27.6pt", html)
+        self.assertIn("text-indent:0.0pt", html)
+        self.assertNotIn("text-indent:-27.6pt", html)
+
+    def test_export_html_preserves_hanging_indent_inside_left_indent(self) -> None:
+        doc = DocIR(
+            paragraphs=[
+                ParagraphIR(
+                    unit_id="s1.p1",
+                    para_style=ParaStyleInfo(left_indent_pt=24.0, first_line_indent_pt=-6.0),
+                    content=[RunIR(unit_id="s1.p1.r1", text="Bullet-like text")],
+                )
+            ]
+        )
+
+        html = doc.to_html()
+
+        self.assertIn("padding-left:24.0pt", html)
+        self.assertIn("text-indent:-6.0pt", html)
+
+    def test_export_html_limits_hanging_indent_to_left_edge(self) -> None:
+        doc = DocIR(
+            paragraphs=[
+                ParagraphIR(
+                    unit_id="s1.p1",
+                    para_style=ParaStyleInfo(left_indent_pt=12.0, right_indent_pt=-4.0, first_line_indent_pt=-30.0),
+                    content=[RunIR(unit_id="s1.p1.r1", text="Contained text")],
+                )
+            ]
+        )
+
+        html = doc.to_html()
+
+        self.assertIn("padding-left:12.0pt", html)
+        self.assertIn("padding-right:0.0pt", html)
+        self.assertIn("text-indent:-12.0pt", html)
+        self.assertNotIn("text-indent:-30.0pt", html)
+
+    def test_render_annotated_html_uses_same_indent_clamp(self) -> None:
+        doc = DocIR(
+            paragraphs=[
+                ParagraphIR(
+                    unit_id="s1.p1",
+                    para_style=ParaStyleInfo(first_line_indent_pt=-27.6),
+                    content=[RunIR(unit_id="s1.p1.r1", text="Review text")],
+                )
+            ]
+        )
+
+        html = render_annotated_html(
+            doc,
+            [Annotation(target_unit_id="s1.p1", label="Review")],
+        )
+
+        self.assertIn("text-indent:0.0pt", html)
+        self.assertNotIn("text-indent:-27.6pt", html)
+
+    def test_export_html_debug_layout_adds_measurement_overlays(self) -> None:
+        doc = DocIR(
+            pages=[PageInfo(page_number=1, width_pt=595.3, height_pt=841.9, margin_left_pt=72.0)],
+            paragraphs=[
+                ParagraphIR(
+                    unit_id="s1.p1",
+                    page_number=1,
+                    content=[
+                        TableIR(
+                            unit_id="s1.p1.r1.tbl1",
+                            table_style=TableStyleInfo(width_pt=240.0),
+                            cells=[
+                                TableCellIR(
+                                    unit_id="s1.p1.r1.tbl1.tr1.tc1",
+                                    row_index=1,
+                                    col_index=1,
+                                    cell_style=CellStyleInfo(width_pt=120.0, height_pt=36.0),
+                                    paragraphs=[
+                                        ParagraphIR(
+                                            unit_id="s1.p1.r1.tbl1.tr1.tc1.p1",
+                                            content=[RunIR(unit_id="x", text="A1")],
+                                        )
+                                    ],
+                                )
+                            ],
+                        )
+                    ],
+                )
+            ],
+        )
+
+        html = doc.to_html(debug_layout=True)
+
+        self.assertIn('class="document-debug-layout"', html)
+        self.assertIn("data-debug-label=\"page 1: 595.3pt x 841.9pt", html)
+        self.assertIn("data-debug-label=\"table s1.p1.r1.tbl1: 240.0pt x auto", html)
+        self.assertIn("data-debug-label=\"cell s1.p1.r1.tbl1.tr1.tc1: 120.0pt x 36.0pt", html)
+        self.assertIn("getBoundingClientRect", html)
 
     def test_export_html_renders_nested_tables(self) -> None:
         doc = DocIR(

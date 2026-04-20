@@ -116,6 +116,38 @@ def _docx_measure_to_pt(raw_value: str | None, measurement_type: str | None) -> 
     return None
 
 
+def _docx_cell_margin_to_padding(margin_el) -> dict[str, float]:
+    from docx.oxml.ns import qn
+
+    padding: dict[str, float] = {}
+    if margin_el is None:
+        return padding
+
+    for side in ("top", "right", "bottom", "left"):
+        side_el = margin_el.find(qn(f"w:{side}"))
+        if side_el is None:
+            continue
+        value_pt = _docx_measure_to_pt(
+            side_el.get(qn("w:w")),
+            side_el.get(qn("w:type")),
+        )
+        if value_pt is not None:
+            padding[side] = value_pt
+
+    return padding
+
+
+def _apply_cell_padding(info: CellStyleInfo, padding: dict[str, float]) -> None:
+    if "top" in padding:
+        info.padding_top_pt = padding["top"]
+    if "right" in padding:
+        info.padding_right_pt = padding["right"]
+    if "bottom" in padding:
+        info.padding_bottom_pt = padding["bottom"]
+    if "left" in padding:
+        info.padding_left_pt = padding["left"]
+
+
 def _hwp_numeric_to_pt(raw_value: str | None) -> float | None:
     if raw_value is None:
         return None
@@ -144,6 +176,16 @@ def _hwp_margin_value_to_pt(el: ET.Element | None) -> float | None:
     if unit == "PT":
         return number
     return number
+
+
+def _apply_hwpx_cell_margin(info: CellStyleInfo, margin_el: ET.Element | None) -> None:
+    if margin_el is None:
+        return
+
+    info.padding_top_pt = _hwp_numeric_to_pt(margin_el.get("top"))
+    info.padding_right_pt = _hwp_numeric_to_pt(margin_el.get("right"))
+    info.padding_bottom_pt = _hwp_numeric_to_pt(margin_el.get("bottom"))
+    info.padding_left_pt = _hwp_numeric_to_pt(margin_el.get("left"))
 
 
 def _hwpx_border_css(border_el: ET.Element | None) -> str | None:
@@ -452,6 +494,8 @@ def _hwpx_cell_style(
         info.width_pt = _hwp_numeric_to_pt(cell_size.get("width"))
         info.height_pt = _hwp_numeric_to_pt(cell_size.get("height"))
 
+    _apply_hwpx_cell_margin(info, cell_el.find(f"{_HP}cellMargin"))
+
     return info
 
 
@@ -644,6 +688,62 @@ def _docx_table_style_border_defaults(
     return merged
 
 
+def _docx_table_style_cell_padding_defaults(
+    style_id: str | None,
+    *,
+    style_elements: dict[str, object],
+    cache: dict[str, dict[str, float]],
+) -> dict[str, float]:
+    from docx.oxml.ns import qn
+
+    if not style_id:
+        return {}
+    cached = cache.get(style_id)
+    if cached is not None:
+        return dict(cached)
+
+    style_el = style_elements.get(style_id)
+    if style_el is None:
+        cache[style_id] = {}
+        return {}
+
+    based_on_el = style_el.find(qn("w:basedOn"))
+    base_style_id = based_on_el.get(qn("w:val")) if based_on_el is not None else None
+    merged = _docx_table_style_cell_padding_defaults(
+        base_style_id,
+        style_elements=style_elements,
+        cache=cache,
+    )
+
+    tbl_pr = style_el.find(qn("w:tblPr"))
+    cell_margin = tbl_pr.find(qn("w:tblCellMar")) if tbl_pr is not None else None
+    merged.update(_docx_cell_margin_to_padding(cell_margin))
+
+    cache[style_id] = dict(merged)
+    return merged
+
+
+def _docx_table_cell_padding_defaults(
+    table,
+    table_style_id: str | None,
+    *,
+    style_elements: dict[str, object],
+    cache: dict[str, dict[str, float]],
+) -> dict[str, float]:
+    from docx.oxml.ns import qn
+
+    defaults = _docx_table_style_cell_padding_defaults(
+        table_style_id,
+        style_elements=style_elements,
+        cache=cache,
+    )
+
+    tbl_pr = table._tbl.find(qn("w:tblPr"))
+    cell_margin = tbl_pr.find(qn("w:tblCellMar")) if tbl_pr is not None else None
+    defaults.update(_docx_cell_margin_to_padding(cell_margin))
+    return defaults
+
+
 def _docx_default_cell_border(
     side: str,
     *,
@@ -719,6 +819,7 @@ def _docx_cell_style(
     col_count: int,
     row_height_pt: float | None = None,
     table_border_defaults: dict[str, str | None] | None = None,
+    table_cell_padding_defaults: dict[str, float] | None = None,
 ) -> CellStyleInfo:
     from docx.oxml.ns import qn
 
@@ -753,6 +854,13 @@ def _docx_cell_style(
         )
     if row_height_pt is not None:
         info.height_pt = row_height_pt
+
+    table_cell_padding_defaults = table_cell_padding_defaults or {}
+    if table_cell_padding_defaults:
+        _apply_cell_padding(info, table_cell_padding_defaults)
+    cell_margin = tc_pr.find(qn("w:tcMar"))
+    if cell_margin is not None:
+        _apply_cell_padding(info, _docx_cell_margin_to_padding(cell_margin))
 
     shd = tc_pr.find(qn("w:shd"))
     if shd is not None:
@@ -825,6 +933,7 @@ def extract_styles_docx(
     style_map = StyleMap()
     style_elements: dict[str, object] = {}
     border_defaults_cache: dict[str, dict[str, str | None]] = {}
+    cell_padding_defaults_cache: dict[str, dict[str, float]] = {}
 
     for style_el in doc.styles.element.findall(qn("w:style")):
         if style_el.get(qn("w:type")) != "table":
@@ -843,6 +952,12 @@ def extract_styles_docx(
             table_style_id,
             style_elements=style_elements,
             cache=border_defaults_cache,
+        )
+        table_cell_padding_defaults = _docx_table_cell_padding_defaults(
+            table,
+            table_style_id,
+            style_elements=style_elements,
+            cache=cell_padding_defaults_cache,
         )
         table_width_pt, table_height_pt = _docx_table_size(table)
 
@@ -890,6 +1005,7 @@ def extract_styles_docx(
                     col_count=len(table.columns),
                     row_height_pt=row_height_pt,
                     table_border_defaults=table_border_defaults,
+                    table_cell_padding_defaults=table_cell_padding_defaults,
                 )
 
                 cp_idx = 0

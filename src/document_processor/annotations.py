@@ -11,6 +11,12 @@ from .models import DocIR, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, T
 from .style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo
 
 
+def _non_negative_pt(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return max(value, 0.0)
+
+
 class AnnotationValidationError(ValueError):
     def __init__(self, message: str, *, code: str | None = None) -> None:
         super().__init__(message)
@@ -182,8 +188,9 @@ def _run_css(style: RunStyleInfo) -> str:
     parts: list[str] = []
     if style.color:
         parts.append(f"color:{style.color}")
-    if style.size_pt:
-        parts.append(f"font-size:{style.size_pt:.1f}pt")
+    size_pt = _non_negative_pt(style.size_pt)
+    if size_pt:
+        parts.append(f"font-size:{size_pt:.1f}pt")
     if style.highlight:
         parts.append(f"background-color:{style.highlight}")
 
@@ -278,10 +285,12 @@ def _render_image(doc_ir: DocIR, image: ImageIR) -> str:
         return ""
 
     style_parts = ["max-width:100%", "vertical-align:middle"]
-    if image.display_width_pt is not None:
-        style_parts.append(f"width:{image.display_width_pt:.1f}pt")
-    if image.display_height_pt is not None:
-        style_parts.append(f"height:{image.display_height_pt:.1f}pt")
+    display_width_pt = _non_negative_pt(image.display_width_pt)
+    display_height_pt = _non_negative_pt(image.display_height_pt)
+    if display_width_pt is not None:
+        style_parts.append(f"width:{display_width_pt:.1f}pt")
+    if display_height_pt is not None:
+        style_parts.append(f"height:{display_height_pt:.1f}pt")
     elif image.display_width_pt is None:
         style_parts.append("height:auto")
 
@@ -293,20 +302,33 @@ def _render_image(doc_ir: DocIR, image: ImageIR) -> str:
     return f"<img {' '.join(attrs)} />"
 
 
-def _paragraph_css(style: ParaStyleInfo | None, *, clamp_negative_first_line_indent: bool = False) -> str:
+def _paragraph_indent_values(style: ParaStyleInfo | None) -> tuple[float | None, float | None, float | None]:
+    if style is None:
+        return None, None, None
+
+    left_indent = _non_negative_pt(style.left_indent_pt)
+    right_indent = _non_negative_pt(style.right_indent_pt)
+    if style.first_line_indent_pt is None:
+        return left_indent, right_indent, None
+
+    left_for_indent = left_indent or 0.0
+    effective_first_line_start = max(left_for_indent + style.first_line_indent_pt, 0.0)
+    first_line_indent = effective_first_line_start - left_for_indent
+    return left_indent, right_indent, first_line_indent
+
+
+def _paragraph_css(style: ParaStyleInfo | None) -> str:
     parts: list[str] = ["margin:0"]
     if style is not None:
         if style.align:
             parts.append(f"text-align:{style.align}")
-        if style.left_indent_pt is not None:
-            parts.append(f"padding-left:{style.left_indent_pt:.1f}pt")
-        if style.right_indent_pt is not None:
-            parts.append(f"padding-right:{style.right_indent_pt:.1f}pt")
-        if style.first_line_indent_pt is not None:
-            text_indent = style.first_line_indent_pt
-            if clamp_negative_first_line_indent and text_indent < 0:
-                text_indent = 0.0
-            parts.append(f"text-indent:{text_indent:.1f}pt")
+        left_indent, right_indent, first_line_indent = _paragraph_indent_values(style)
+        if left_indent is not None:
+            parts.append(f"padding-left:{left_indent:.1f}pt")
+        if right_indent is not None:
+            parts.append(f"padding-right:{right_indent:.1f}pt")
+        if first_line_indent is not None:
+            parts.append(f"text-indent:{first_line_indent:.1f}pt")
     return ";".join(parts)
 
 
@@ -314,15 +336,13 @@ def _flush_paragraph(
     paragraph_unit_id: str,
     fragments: list[str],
     para_style: ParaStyleInfo | None,
-    *,
-    clamp_negative_first_line_indent: bool = False,
 ) -> str:
     content = "".join(fragments)
     if not content.strip():
         content = "&nbsp;"
     return (
         f'<p data-unit-id="{escape(paragraph_unit_id)}" '
-        f'style="{_paragraph_css(para_style, clamp_negative_first_line_indent=clamp_negative_first_line_indent)}">'
+        f'style="{_paragraph_css(para_style)}">'
         f"{content}</p>"
     )
 
@@ -390,19 +410,45 @@ def _cell_diagonal_background(style: CellStyleInfo) -> str | None:
     return f"data:image/svg+xml;base64,{svg_base64}"
 
 
+def _css_vertical_align(value: str) -> str:
+    return "middle" if value == "center" else value
+
+
+def _cell_padding_css(style: CellStyleInfo | None) -> str:
+    if style is None:
+        return "padding:0"
+
+    raw_values = (
+        style.padding_top_pt,
+        style.padding_right_pt,
+        style.padding_bottom_pt,
+        style.padding_left_pt,
+    )
+    if all(value is None for value in raw_values):
+        return "padding:0"
+
+    top = _non_negative_pt(style.padding_top_pt) or 0.0
+    right = _non_negative_pt(style.padding_right_pt) or 0.0
+    bottom = _non_negative_pt(style.padding_bottom_pt) or 0.0
+    left = _non_negative_pt(style.padding_left_pt) or 0.0
+    return f"padding:{top:.1f}pt {right:.1f}pt {bottom:.1f}pt {left:.1f}pt"
+
+
 def _cell_css(style: CellStyleInfo | None) -> str:
-    parts: list[str] = []
+    parts: list[str] = ["box-sizing:border-box"]
     if style is not None:
         if style.background:
             parts.append(f"background-color:{style.background}")
         if style.vertical_align:
-            parts.append(f"vertical-align:{style.vertical_align}")
+            parts.append(f"vertical-align:{_css_vertical_align(style.vertical_align)}")
         if style.horizontal_align:
             parts.append(f"text-align:{style.horizontal_align}")
-        if style.width_pt is not None:
-            parts.append(f"width:{style.width_pt:.1f}pt")
-        if style.height_pt is not None:
-            parts.append(f"height:{style.height_pt:.1f}pt")
+        width_pt = _non_negative_pt(style.width_pt)
+        height_pt = _non_negative_pt(style.height_pt)
+        if width_pt is not None:
+            parts.append(f"width:{width_pt:.1f}pt")
+        if height_pt is not None:
+            parts.append(f"height:{height_pt:.1f}pt")
         parts.append(f"border-top:{style.border_top or 'none'}")
         parts.append(f"border-bottom:{style.border_bottom or 'none'}")
         parts.append(f"border-left:{style.border_left or 'none'}")
@@ -421,17 +467,20 @@ def _cell_css(style: CellStyleInfo | None) -> str:
                 "border-right:none",
             ]
         )
-    parts.append("padding:4px 6px")
+    parts.append(_cell_padding_css(style))
     return ";".join(parts)
 
 
 def _table_css(table: TableIR, para_style: ParaStyleInfo | None) -> str:
     align = para_style.align if para_style is not None else None
-    parts = ["border-collapse:collapse", "margin-top:8px", "margin-bottom:12px"]
-    if table.table_style is not None and table.table_style.width_pt is not None:
-        parts.append(f"width:{table.table_style.width_pt:.1f}pt")
-    if table.table_style is not None and table.table_style.height_pt is not None:
-        parts.append(f"height:{table.table_style.height_pt:.1f}pt")
+    parts = ["border-collapse:collapse", "table-layout:fixed", "margin-top:8px", "margin-bottom:12px"]
+    if table.table_style is not None:
+        width_pt = _non_negative_pt(table.table_style.width_pt)
+        height_pt = _non_negative_pt(table.table_style.height_pt)
+        if width_pt is not None:
+            parts.append(f"width:{width_pt:.1f}pt")
+        if height_pt is not None:
+            parts.append(f"height:{height_pt:.1f}pt")
     if align == "center":
         parts.extend(["margin-left:auto", "margin-right:auto"])
     elif align == "right":
@@ -439,6 +488,78 @@ def _table_css(table: TableIR, para_style: ParaStyleInfo | None) -> str:
     else:
         parts.extend(["margin-left:0", "margin-right:auto"])
     return ";".join(parts)
+
+
+def _table_logical_col_count(table: TableIR) -> int:
+    col_count = table.col_count
+    if table.table_style is not None:
+        col_count = max(col_count, table.table_style.col_count)
+    for cell in table.cells:
+        colspan = max(cell.cell_style.colspan, 1) if cell.cell_style is not None else 1
+        col_count = max(col_count, cell.col_index + colspan - 1)
+    return col_count
+
+
+def _table_column_widths(table: TableIR) -> list[float | None]:
+    col_count = _table_logical_col_count(table)
+    if col_count <= 0:
+        return []
+
+    widths: list[float | None] = [None] * col_count
+    spanned_widths: list[tuple[int, int, float]] = []
+    for cell in table.cells:
+        if cell.cell_style is None:
+            continue
+        width_pt = _non_negative_pt(cell.cell_style.width_pt)
+        if width_pt is None:
+            continue
+        start = max(cell.col_index - 1, 0)
+        if start >= col_count:
+            continue
+        colspan = min(max(cell.cell_style.colspan, 1), col_count - start)
+        if colspan == 1:
+            current_width = widths[start]
+            widths[start] = width_pt if current_width is None else max(current_width, width_pt)
+        else:
+            spanned_widths.append((start, colspan, width_pt))
+
+    for start, colspan, total_width in spanned_widths:
+        indices = list(range(start, start + colspan))
+        known_width = sum(widths[index] or 0.0 for index in indices)
+        unknown_indices = [index for index in indices if widths[index] is None]
+        if not unknown_indices:
+            continue
+        remaining_width = max(total_width - known_width, 0.0)
+        share = remaining_width / len(unknown_indices) if remaining_width else total_width / colspan
+        for index in unknown_indices:
+            widths[index] = share
+
+    table_width = _non_negative_pt(table.table_style.width_pt) if table.table_style is not None else None
+    if table_width is not None:
+        unknown_indices = [index for index, width in enumerate(widths) if width is None]
+        known_width = sum(width or 0.0 for width in widths)
+        remaining_width = max(table_width - known_width, 0.0)
+        if unknown_indices and remaining_width:
+            share = remaining_width / len(unknown_indices)
+            for index in unknown_indices:
+                widths[index] = share
+
+    return widths
+
+
+def _render_colgroup(table: TableIR) -> list[str]:
+    widths = _table_column_widths(table)
+    if not any(width is not None for width in widths):
+        return []
+
+    lines = ["  <colgroup>"]
+    for width in widths:
+        if width is None:
+            lines.append("    <col />")
+        else:
+            lines.append(f'    <col style="width:{width:.1f}pt" />')
+    lines.append("  </colgroup>")
+    return lines
 
 
 def _run_annotations_for_segment(
@@ -481,8 +602,6 @@ def _render_paragraph_like(
     paragraph_annotations: list[ResolvedAnnotation],
     paragraph_annotations_by_id: dict[str, list[ResolvedAnnotation]],
     run_annotations_by_id: dict[str, list[ResolvedAnnotation]],
-    *,
-    clamp_negative_first_line_indent: bool = False,
 ) -> str:
     parts: list[str] = []
     inline_fragments: list[str] = []
@@ -513,7 +632,6 @@ def _render_paragraph_like(
                         paragraph.unit_id,
                         inline_fragments,
                         paragraph.para_style,
-                        clamp_negative_first_line_indent=clamp_negative_first_line_indent,
                     )
                 )
                 inline_fragments = []
@@ -533,7 +651,6 @@ def _render_paragraph_like(
                 paragraph.unit_id,
                 inline_fragments,
                 paragraph.para_style,
-                clamp_negative_first_line_indent=clamp_negative_first_line_indent,
             )
         )
     elif not parts:
@@ -542,7 +659,6 @@ def _render_paragraph_like(
                 paragraph.unit_id,
                 [],
                 paragraph.para_style,
-                clamp_negative_first_line_indent=clamp_negative_first_line_indent,
             )
         )
 
@@ -561,7 +677,6 @@ def _render_cell_paragraph(
         paragraph_annotations_by_id.get(paragraph.unit_id, []),
         paragraph_annotations_by_id,
         run_annotations_by_id,
-        clamp_negative_first_line_indent=True,
     )
 
 
@@ -610,6 +725,7 @@ def _render_table(
     max_col = max(cell.col_index for cell in table.cells)
 
     lines = [f'<table data-unit-id="{escape(table.unit_id)}" style="{_table_css(table, para_style)}">']
+    lines.extend(_render_colgroup(table))
     for row in range(1, max_row + 1):
         lines.append("  <tr>")
         for col in range(1, max_col + 1):
@@ -618,7 +734,7 @@ def _render_table(
 
             cell = cells_by_pos.get((row, col))
             if cell is None:
-                lines.append('    <td style="padding:4px 6px;border:none">&nbsp;</td>')
+                lines.append('    <td style="box-sizing:border-box;padding:0;border:none">&nbsp;</td>')
                 continue
 
             rowspan = max(cell.cell_style.rowspan, 1) if cell.cell_style is not None else 1
@@ -652,20 +768,22 @@ def _page_style(page: PageInfo) -> str:
         "box-shadow:0 1px 3px rgba(0,0,0,0.08)",
         "margin:0 auto 24px auto",
     ]
-    if page.width_pt is not None:
-        parts.append(f"width:{page.width_pt:.1f}pt")
+    width_pt = _non_negative_pt(page.width_pt)
+    height_pt = _non_negative_pt(page.height_pt)
+    if width_pt is not None:
+        parts.append(f"width:{width_pt:.1f}pt")
     else:
         parts.append("max-width:900px")
-    if page.height_pt is not None:
-        parts.append(f"min-height:{page.height_pt:.1f}pt")
+    if height_pt is not None:
+        parts.append(f"min-height:{height_pt:.1f}pt")
     return ";".join(parts)
 
 
 def _page_content_style(page: PageInfo) -> str:
-    margin_top = page.margin_top_pt if page.margin_top_pt is not None else 48.0
-    margin_right = page.margin_right_pt if page.margin_right_pt is not None else 42.0
-    margin_bottom = page.margin_bottom_pt if page.margin_bottom_pt is not None else 48.0
-    margin_left = page.margin_left_pt if page.margin_left_pt is not None else 42.0
+    margin_top = _non_negative_pt(page.margin_top_pt) if page.margin_top_pt is not None else 48.0
+    margin_right = _non_negative_pt(page.margin_right_pt) if page.margin_right_pt is not None else 42.0
+    margin_bottom = _non_negative_pt(page.margin_bottom_pt) if page.margin_bottom_pt is not None else 48.0
+    margin_left = _non_negative_pt(page.margin_left_pt) if page.margin_left_pt is not None else 42.0
     return (
         "box-sizing:border-box;"
         f"padding:{margin_top:.1f}pt {margin_right:.1f}pt {margin_bottom:.1f}pt {margin_left:.1f}pt"
@@ -774,6 +892,9 @@ def render_annotated_html(
   table {{
     border-collapse: collapse;
     margin: 8px 0 12px 0;
+  }}
+  td p {{
+    line-height: 1.0;
   }}
   img {{
     max-width: 100%;

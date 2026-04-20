@@ -291,11 +291,11 @@ class DocIR(BaseModel, Generic[T]):
             **doc_kwargs,
         )
 
-    def to_html(self, *, title: str | None = None) -> str:
+    def to_html(self, *, title: str | None = None, debug_layout: bool = False) -> str:
         """Render this document IR as styled HTML."""
         from .html_exporter import render_html_document
 
-        return render_html_document(self, title=title)
+        return render_html_document(self, title=title, debug_layout=debug_layout)
 
 
 ParagraphContentNode: TypeAlias = RunIR | ImageIR | TableIR

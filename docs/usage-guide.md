@@ -116,6 +116,18 @@ with open("preview.html", "w", encoding="utf-8") as handle:
     handle.write(html)
 ```
 
+For layout investigation, render an instrumented preview:
+
+```python
+debug_html = doc.to_html(title="Layout Debug", debug_layout=True)
+```
+
+The debug view outlines pages, tables, cells, and paragraphs, then annotates
+each element with declared point sizes and measured browser-rendered sizes.
+HTML rendering also clamps negative paragraph indents so text starts within the
+page or table-cell content edge. Table cell margins from the source document
+are exposed as `CellStyleInfo.padding_*_pt` and rendered as cell padding.
+
 ### Annotated review preview
 
 ```python
@@ -252,6 +264,7 @@ doc = DocIR.from_mapping(
     {
         "s1.p1.r1": "Hello ",
         "s1.p1.r2": "World",
+        "s1.p2.r1.tbl1.tr1.tc1.p1.r1": "Old cell text",
     },
     source_doc_type="docx",
 )
@@ -273,6 +286,37 @@ result = apply_text_edits(
 print(result.updated_doc_ir.paragraphs[0].text)
 print(result.output_path)
 print(result.output_bytes)
+```
+
+### Cell text edits
+
+Use `target_kind="cell"` to replace all editable text in a table cell. Multi-paragraph
+cells must keep the same number of newline-separated text lines; this avoids creating or
+deleting native document paragraphs during a cell edit.
+
+```python
+from document_processor import (
+    ApplyTextEditsRequest,
+    DocumentInput,
+    TextEdit,
+    apply_text_edits,
+)
+
+result = apply_text_edits(
+    ApplyTextEditsRequest(
+        document=DocumentInput(source_path="/path/to/contract.docx"),
+        edits=[
+            TextEdit(
+                target_kind="cell",
+                target_unit_id="s1.p4.r1.tbl1.tr1.tc2",
+                expected_text="Old cell text",
+                new_text="Updated cell text",
+            )
+        ],
+    )
+)
+
+print(result.modified_target_ids)
 ```
 
 ## 6. Inspect Context Before Editing
@@ -315,7 +359,7 @@ targets = list_editable_targets(
     ListEditableTargetsRequest(
         document=DocumentInput(source_path="/path/to/contract.docx"),
         unit_ids=["s1.p22"],
-        target_kinds=["run"],
+        target_kinds=["cell", "run"],
         include_child_runs=True,
     )
 )
@@ -392,6 +436,7 @@ Use the lower-level API when you already have a `DocIR` and want direct control.
 
 ```python
 from document_processor import (
+    CellTextEdit,
     DocIR,
     ParagraphTextEdit,
     apply_edits_to_doc_ir,
@@ -412,7 +457,12 @@ updated, result = apply_edits_to_doc_ir(
             paragraph_unit_id="s1.p1",
             old_text="Hello World",
             new_text="Hello Legal World",
-        )
+        ),
+        CellTextEdit(
+            cell_unit_id="s1.p2.r1.tbl1.tr1.tc1",
+            old_text="Old cell text",
+            new_text="Updated cell text",
+        ),
     ],
 )
 

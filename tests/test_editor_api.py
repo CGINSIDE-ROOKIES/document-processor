@@ -11,11 +11,13 @@ from document_processor import (
     DocumentInput,
     DocIR,
     GetDocumentContextRequest,
+    ListEditableTargetsRequest,
     RenderReviewHtmlRequest,
     TextAnnotation,
     TextEdit,
     apply_text_edits,
     get_document_context,
+    list_editable_targets,
     render_review_html,
 )
 
@@ -30,6 +32,19 @@ class EditorApiTests(unittest.TestCase):
         paragraph.add_run("Hello ")
         paragraph.add_run("World")
         docx.add_paragraph("Second paragraph")
+
+        buffer = BytesIO()
+        docx.save(buffer)
+        return buffer.getvalue()
+
+    @staticmethod
+    def _build_sample_table_docx_bytes() -> bytes:
+        from docx import Document
+
+        docx = Document()
+        table = docx.add_table(rows=1, cols=2)
+        table.cell(0, 0).text = "Left"
+        table.cell(0, 1).text = "Right"
 
         buffer = BytesIO()
         docx.save(buffer)
@@ -52,6 +67,47 @@ class EditorApiTests(unittest.TestCase):
   <hp:p>
     <hp:run><hp:t>Hello </hp:t></hp:run>
     <hp:run><hp:t>World</hp:t></hp:run>
+  </hp:p>
+</hs:sec>
+""",
+            )
+        return hwpx_bytes.getvalue()
+
+    @staticmethod
+    def _build_sample_table_hwpx_bytes() -> bytes:
+        hwpx_bytes = BytesIO()
+        with zipfile.ZipFile(hwpx_bytes, "w") as archive:
+            archive.writestr(
+                "Contents/header.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core" />
+""",
+            )
+            archive.writestr(
+                "Contents/section0.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p>
+    <hp:run>
+      <hp:tbl>
+        <hp:tr>
+          <hp:tc>
+            <hp:subList>
+              <hp:p><hp:run><hp:t>Left</hp:t></hp:run></hp:p>
+            </hp:subList>
+            <hp:cellAddr colAddr="0" rowAddr="0"/>
+            <hp:cellSpan colSpan="1" rowSpan="1"/>
+          </hp:tc>
+          <hp:tc>
+            <hp:subList>
+              <hp:p><hp:run><hp:t>Right</hp:t></hp:run></hp:p>
+            </hp:subList>
+            <hp:cellAddr colAddr="1" rowAddr="0"/>
+            <hp:cellSpan colSpan="1" rowSpan="1"/>
+          </hp:tc>
+        </hp:tr>
+      </hp:tbl>
+    </hp:run>
   </hp:p>
 </hs:sec>
 """,
@@ -149,6 +205,108 @@ class EditorApiTests(unittest.TestCase):
         self.assertIsNone(result.output_bytes)
         self.assertIsNotNone(result.updated_doc_ir)
         self.assertEqual(result.updated_doc_ir.paragraphs[0].text, "Hello Contract World")
+
+    def test_list_editable_targets_includes_cell_targets(self) -> None:
+        doc = DocIR.from_mapping(
+            {
+                "s1.p1.r1.tbl1.tr1.tc1.p1.r1": "Left",
+                "s1.p1.r1.tbl1.tr1.tc2.p1.r1": "Right",
+            },
+            source_doc_type="docx",
+        )
+
+        result = list_editable_targets(
+            ListEditableTargetsRequest(
+                document=DocumentInput(doc_ir=doc),
+                target_kinds=["cell"],
+            )
+        )
+
+        self.assertEqual(
+            [(target.target_kind, target.target_unit_id, target.current_text) for target in result.targets],
+            [
+                ("cell", "s1.p1.r1.tbl1.tr1.tc1", "Left"),
+                ("cell", "s1.p1.r1.tbl1.tr1.tc2", "Right"),
+            ],
+        )
+
+    def test_apply_text_edits_can_replace_doc_ir_cell_text(self) -> None:
+        doc = DocIR.from_mapping(
+            {
+                "s1.p1.r1.tbl1.tr1.tc1.p1.r1": "Left",
+                "s1.p1.r1.tbl1.tr1.tc2.p1.r1": "Right",
+            },
+            source_doc_type="docx",
+        )
+
+        result = apply_text_edits(
+            ApplyTextEditsRequest(
+                document=DocumentInput(doc_ir=doc),
+                edits=[
+                    TextEdit(
+                        target_kind="cell",
+                        target_unit_id="s1.p1.r1.tbl1.tr1.tc1",
+                        expected_text="Left",
+                        new_text="Changed",
+                    )
+                ],
+            )
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.modified_target_ids, ["s1.p1.r1.tbl1.tr1.tc1"])
+        self.assertEqual(result.modified_run_ids, ["s1.p1.r1.tbl1.tr1.tc1.p1.r1"])
+        table = result.updated_doc_ir.paragraphs[0].tables[0]
+        self.assertEqual(table.cells[0].text, "Changed")
+        self.assertEqual(result.updated_doc_ir.paragraphs[0].text, "Changed\nRight")
+
+    def test_apply_text_edits_replaces_docx_cell_text(self) -> None:
+        result = apply_text_edits(
+            ApplyTextEditsRequest(
+                document=DocumentInput(
+                    source_bytes=self._build_sample_table_docx_bytes(),
+                    source_name="table.docx",
+                ),
+                edits=[
+                    TextEdit(
+                        target_kind="cell",
+                        target_unit_id="s1.p1.r1.tbl1.tr1.tc1",
+                        expected_text="Left",
+                        new_text="Changed",
+                    )
+                ],
+                return_doc_ir=True,
+            )
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.output_filename, "table_edited.docx")
+        self.assertEqual(DocIR.from_file(result.output_bytes).paragraphs[0].tables[0].cells[0].text, "Changed")
+        self.assertEqual(result.updated_doc_ir.paragraphs[0].tables[0].cells[0].text, "Changed")
+
+    def test_apply_text_edits_replaces_hwpx_cell_text(self) -> None:
+        result = apply_text_edits(
+            ApplyTextEditsRequest(
+                document=DocumentInput(
+                    source_bytes=self._build_sample_table_hwpx_bytes(),
+                    source_name="table.hwpx",
+                ),
+                edits=[
+                    TextEdit(
+                        target_kind="cell",
+                        target_unit_id="s1.p1.r1.tbl1.tr1.tc1",
+                        expected_text="Left",
+                        new_text="Changed",
+                    )
+                ],
+                return_doc_ir=True,
+            )
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.output_filename, "table_edited.hwpx")
+        self.assertEqual(DocIR.from_file(result.output_bytes, doc_type="hwpx").paragraphs[0].tables[0].cells[0].text, "Changed")
+        self.assertEqual(result.updated_doc_ir.paragraphs[0].tables[0].cells[0].text, "Changed")
 
     def test_apply_text_edits_normalizes_hwpx_output_suffix_for_path_backed_writeback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

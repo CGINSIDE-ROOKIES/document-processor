@@ -13,6 +13,7 @@ from .api import (
     validate_text_edits,
 )
 from .api_types import (
+    AnnotationTargetKind,
     AnnotationValidationCode,
     AnnotationValidationIssue,
     AnnotationValidationResult,
@@ -41,6 +42,7 @@ from .builder import build_doc_ir_from_mapping
 from .diagram import create_model_diagram, draw_model_diagram
 from .edit_engine import (
     ApplyEditsResult,
+    CellTextEdit,
     EditValidationError,
     ParagraphTextEdit,
     RunTextEdit,
@@ -55,6 +57,7 @@ from .style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo, StyleMap, T
 
 __all__ = [
     "Annotation",
+    "AnnotationTargetKind",
     "AnnotationValidationCode",
     "AnnotationValidationError",
     "AnnotationValidationIssue",
@@ -63,6 +66,7 @@ __all__ = [
     "ApplyTextEditsRequest",
     "ApplyTextEditsResult",
     "CellStyleInfo",
+    "CellTextEdit",
     "DocIR",
     "DocumentContextResult",
     "DocumentInput",
