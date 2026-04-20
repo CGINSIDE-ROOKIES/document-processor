@@ -12,8 +12,11 @@ if str(SRC_ROOT) not in sys.path:
 from document_processor.pdf.meta import PdfBoundingBox
 from document_processor.pdf.odl.table_reconstruct import (
     MergeGroup,
+    TableGrid,
     collect_lines,
+    assign_fragments_to_groups,
     reconstruct_table_grid,
+    table_node_key,
 )
 from document_processor.pdf.preview.models import PdfPreviewVisualPrimitive
 
@@ -37,6 +40,36 @@ def _table_node() -> dict[str, object]:
         "page number": 1,
         "reading order index": 9,
         "bounding box": [10.0, 10.0, 110.0, 90.0],
+    }
+
+
+def _paragraph(
+    text: str,
+    *,
+    left: float | None,
+    bottom: float | None,
+    right: float | None,
+    top: float | None,
+):
+    node = {"type": "paragraph", "content": text, "page number": 1}
+    if None not in (left, bottom, right, top):
+        node["bounding box"] = [left, bottom, right, top]
+    return node
+
+
+def _span_only_paragraph(text: str, *, left: float, bottom: float, right: float, top: float):
+    return {
+        "type": "paragraph",
+        "content": text,
+        "page number": 1,
+        "spans": [
+            {
+                "type": "text chunk",
+                "content": text,
+                "page number": 1,
+                "bounding box": [left, bottom, right, top],
+            }
+        ],
     }
 
 
@@ -219,3 +252,70 @@ class TableReconstructTests(unittest.TestCase):
         grid = reconstruct_table_grid(node, primitives)
 
         self.assertIsNone(grid)
+
+
+class TableReconstructMappingTests(unittest.TestCase):
+    def test_assign_fragments_to_groups_uses_paragraph_bbox(self) -> None:
+        grid = TableGrid(
+            table_key=table_node_key(_table_node()),
+            h_y=[10.0, 50.0, 90.0],
+            v_x=[10.0, 60.0, 110.0],
+            merge_groups=[MergeGroup(0, 0, 0, 0), MergeGroup(1, 0, 1, 0)],
+        )
+        fragments = assign_fragments_to_groups(
+            raw_cells=[
+                {
+                    "bounding box": [10.0, 10.0, 60.0, 90.0],
+                    "kids": [
+                        _paragraph("Bottom", left=14.0, bottom=18.0, right=58.0, top=42.0),
+                        _paragraph("Top", left=14.0, bottom=58.0, right=58.0, top=82.0),
+                    ],
+                }
+            ],
+            grid=grid,
+        )
+
+        self.assertEqual([p["content"] for p in fragments[grid.merge_groups[0]]], ["Bottom"])
+        self.assertEqual([p["content"] for p in fragments[grid.merge_groups[1]]], ["Top"])
+
+    def test_assign_fragments_to_groups_uses_descendant_span_bbox_fallback(self) -> None:
+        grid = TableGrid(
+            table_key=table_node_key(_table_node()),
+            h_y=[10.0, 50.0, 90.0],
+            v_x=[10.0, 60.0],
+            merge_groups=[MergeGroup(0, 0, 0, 0), MergeGroup(1, 0, 1, 0)],
+        )
+        fragments = assign_fragments_to_groups(
+            raw_cells=[
+                {
+                    "bounding box": [10.0, 10.0, 60.0, 90.0],
+                    "kids": [
+                        _span_only_paragraph("Bottom", left=14.0, bottom=18.0, right=58.0, top=42.0),
+                        _span_only_paragraph("Top", left=14.0, bottom=58.0, right=58.0, top=82.0),
+                    ],
+                }
+            ],
+            grid=grid,
+        )
+
+        self.assertEqual([p["content"] for p in fragments[grid.merge_groups[0]]], ["Bottom"])
+        self.assertEqual([p["content"] for p in fragments[grid.merge_groups[1]]], ["Top"])
+
+    def test_assign_fragments_to_groups_returns_empty_mapping_when_center_is_ambiguous(self) -> None:
+        grid = TableGrid(
+            table_key=table_node_key(_table_node()),
+            h_y=[10.0, 90.0],
+            v_x=[10.0, 60.0, 110.0],
+            merge_groups=[MergeGroup(0, 0, 0, 0), MergeGroup(0, 1, 0, 1)],
+        )
+        fragments = assign_fragments_to_groups(
+            raw_cells=[
+                {
+                    "bounding box": [10.0, 10.0, 110.0, 90.0],
+                    "kids": [_paragraph("Ambiguous", left=50.0, bottom=20.0, right=70.0, top=30.0)],
+                }
+            ],
+            grid=grid,
+        )
+
+        self.assertEqual(fragments, {})

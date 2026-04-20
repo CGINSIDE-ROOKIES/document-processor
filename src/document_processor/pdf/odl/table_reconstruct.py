@@ -20,7 +20,7 @@ order while using the visually-faithful grid as ground truth.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Iterable
 
 from ..meta import PdfBoundingBox, coerce_bbox, coerce_int
 from ..preview.models import PdfPreviewVisualPrimitive
@@ -96,6 +96,100 @@ def table_node_key(node: dict[str, Any]) -> TableNodeKey:
         right_pt=bbox.right_pt,
         top_pt=bbox.top_pt,
     )
+
+
+def _union_bboxes(boxes: Iterable[PdfBoundingBox]) -> PdfBoundingBox | None:
+    collected = list(boxes)
+    if not collected:
+        return None
+    return PdfBoundingBox(
+        left_pt=min(box.left_pt for box in collected),
+        bottom_pt=min(box.bottom_pt for box in collected),
+        right_pt=max(box.right_pt for box in collected),
+        top_pt=max(box.top_pt for box in collected),
+    )
+
+
+def _descendant_bboxes(node: dict[str, Any]) -> list[PdfBoundingBox]:
+    bboxes: list[PdfBoundingBox] = []
+    for key in ("spans", "runs"):
+        items = node.get(key)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            bbox = coerce_bbox(item.get("bounding box")) or coerce_bbox(item.get("bbox"))
+            if bbox is not None:
+                bboxes.append(bbox)
+    return bboxes
+
+
+def _effective_bbox_from_descendants(
+    node: dict[str, Any],
+    fallback_bbox: PdfBoundingBox | None = None,
+) -> PdfBoundingBox | None:
+    bbox = coerce_bbox(node.get("bounding box")) or coerce_bbox(node.get("bbox"))
+    if bbox is not None:
+        return bbox
+
+    descendant_bbox = _union_bboxes(_descendant_bboxes(node))
+    if descendant_bbox is not None:
+        return descendant_bbox
+
+    return fallback_bbox
+
+
+def _iter_table_fragments(raw_cell: dict[str, Any]) -> Iterable[dict[str, Any]]:
+    def visit(node: Any) -> Iterable[dict[str, Any]]:
+        if not isinstance(node, dict):
+            return
+        if node.get("type") == "paragraph":
+            yield node
+        kids = node.get("kids")
+        if isinstance(kids, list):
+            for kid in kids:
+                yield from visit(kid)
+
+    return visit(raw_cell)
+
+
+def _find_group_for_bbox_center(bbox: PdfBoundingBox, grid: TableGrid) -> MergeGroup | None:
+    center_x = (bbox.left_pt + bbox.right_pt) / 2.0
+    center_y = (bbox.bottom_pt + bbox.top_pt) / 2.0
+
+    matches: list[MergeGroup] = []
+    for group in grid.merge_groups:
+        group_bbox = grid.group_bbox(group)
+        if (
+            group_bbox.left_pt <= center_x <= group_bbox.right_pt
+            and group_bbox.bottom_pt <= center_y <= group_bbox.top_pt
+        ):
+            matches.append(group)
+            if len(matches) > 1:
+                return None
+
+    return matches[0] if matches else None
+
+
+def assign_fragments_to_groups(
+    raw_cells: list[dict[str, Any]],
+    grid: TableGrid,
+) -> dict[MergeGroup, list[dict[str, Any]]]:
+    mapping: dict[MergeGroup, list[dict[str, Any]]] = {}
+
+    for raw_cell in raw_cells:
+        cell_bbox = coerce_bbox(raw_cell.get("bounding box"))
+        for fragment in _iter_table_fragments(raw_cell):
+            fragment_bbox = _effective_bbox_from_descendants(fragment, fallback_bbox=cell_bbox)
+            if fragment_bbox is None:
+                return {}
+            group = _find_group_for_bbox_center(fragment_bbox, grid)
+            if group is None:
+                return {}
+            mapping.setdefault(group, []).append(fragment)
+
+    return mapping
 
 
 # ---------- line collection ----------
@@ -333,6 +427,7 @@ def reconstruct_table_grid(
 
 
 __all__ = [
+    "assign_fragments_to_groups",
     "MergeGroup",
     "TableGrid",
     "TableNodeKey",
