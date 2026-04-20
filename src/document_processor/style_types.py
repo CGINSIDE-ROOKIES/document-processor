@@ -37,6 +37,10 @@ class CellStyleInfo(BaseModel):
     horizontal_align: str | None = None
     width_pt: float | None = None
     height_pt: float | None = None
+    padding_top_pt: float | None = None
+    padding_right_pt: float | None = None
+    padding_bottom_pt: float | None = None
+    padding_left_pt: float | None = None
     border_top: str | None = None
     border_bottom: str | None = None
     border_left: str | None = None

@@ -116,6 +116,18 @@ with open("preview.html", "w", encoding="utf-8") as handle:
     handle.write(html)
 ```
 
+For layout investigation, render an instrumented preview:
+
+```python
+debug_html = doc.to_html(title="Layout Debug", debug_layout=True)
+```
+
+The debug view outlines pages, tables, cells, and paragraphs, then annotates
+each element with declared point sizes and measured browser-rendered sizes.
+HTML rendering also clamps negative paragraph indents so text starts within the
+page or table-cell content edge. Table cell margins from the source document
+are exposed as `CellStyleInfo.padding_*_pt` and rendered as cell padding.
+
 ### Annotated review preview
 
 ```python

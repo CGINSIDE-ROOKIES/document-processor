@@ -10,12 +10,23 @@ from .models import DocIR, ImageIR, PageInfo, ParagraphContentNode, ParagraphIR,
 from .style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo
 
 
+def _non_negative_pt(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return max(value, 0.0)
+
+
+def _pt_label(value: float | None) -> str:
+    return "auto" if value is None else f"{value:.1f}pt"
+
+
 def _run_css(style: RunStyleInfo) -> str:
     parts: list[str] = []
     if style.color:
         parts.append(f"color:{style.color}")
-    if style.size_pt:
-        parts.append(f"font-size:{style.size_pt:.1f}pt")
+    size_pt = _non_negative_pt(style.size_pt)
+    if size_pt:
+        parts.append(f"font-size:{size_pt:.1f}pt")
     if style.highlight:
         parts.append(f"background-color:{style.highlight}")
 
@@ -70,10 +81,12 @@ def _render_image(doc_ir: DocIR, image: ImageIR) -> str:
         return ""
 
     style_parts = ["max-width:100%", "vertical-align:middle"]
-    if image.display_width_pt is not None:
-        style_parts.append(f"width:{image.display_width_pt:.1f}pt")
-    if image.display_height_pt is not None:
-        style_parts.append(f"height:{image.display_height_pt:.1f}pt")
+    display_width_pt = _non_negative_pt(image.display_width_pt)
+    display_height_pt = _non_negative_pt(image.display_height_pt)
+    if display_width_pt is not None:
+        style_parts.append(f"width:{display_width_pt:.1f}pt")
+    if display_height_pt is not None:
+        style_parts.append(f"height:{display_height_pt:.1f}pt")
     elif image.display_width_pt is None:
         style_parts.append("height:auto")
 
@@ -85,24 +98,33 @@ def _render_image(doc_ir: DocIR, image: ImageIR) -> str:
     return f"<img {' '.join(attrs)} />"
 
 
-def _paragraph_css(
-    style: ParaStyleInfo | None,
-    *,
-    clamp_negative_first_line_indent: bool = False,
-) -> str:
+def _paragraph_indent_values(style: ParaStyleInfo | None) -> tuple[float | None, float | None, float | None]:
+    if style is None:
+        return None, None, None
+
+    left_indent = _non_negative_pt(style.left_indent_pt)
+    right_indent = _non_negative_pt(style.right_indent_pt)
+    if style.first_line_indent_pt is None:
+        return left_indent, right_indent, None
+
+    left_for_indent = left_indent or 0.0
+    effective_first_line_start = max(left_for_indent + style.first_line_indent_pt, 0.0)
+    first_line_indent = effective_first_line_start - left_for_indent
+    return left_indent, right_indent, first_line_indent
+
+
+def _paragraph_css(style: ParaStyleInfo | None) -> str:
     parts: list[str] = ["margin:0"]
     if style is not None:
         if style.align:
             parts.append(f"text-align:{style.align}")
-        if style.left_indent_pt is not None:
-            parts.append(f"padding-left:{style.left_indent_pt:.1f}pt")
-        if style.right_indent_pt is not None:
-            parts.append(f"padding-right:{style.right_indent_pt:.1f}pt")
-        if style.first_line_indent_pt is not None:
-            text_indent = style.first_line_indent_pt
-            if clamp_negative_first_line_indent and text_indent < 0:
-                text_indent = 0.0
-            parts.append(f"text-indent:{text_indent:.1f}pt")
+        left_indent, right_indent, first_line_indent = _paragraph_indent_values(style)
+        if left_indent is not None:
+            parts.append(f"padding-left:{left_indent:.1f}pt")
+        if right_indent is not None:
+            parts.append(f"padding-right:{right_indent:.1f}pt")
+        if first_line_indent is not None:
+            parts.append(f"text-indent:{first_line_indent:.1f}pt")
     return ";".join(parts)
 
 
@@ -110,27 +132,66 @@ def _flush_paragraph(
     run_fragments: list[str],
     para_style: ParaStyleInfo | None,
     *,
-    clamp_negative_first_line_indent: bool = False,
+    unit_id: str | None = None,
+    debug_layout: bool = False,
 ) -> str:
     content = "".join(run_fragments)
     if not content.strip():
         content = "&nbsp;"
-    return f'<p style="{_paragraph_css(para_style, clamp_negative_first_line_indent=clamp_negative_first_line_indent)}">{content}</p>'
+    attrs = [f'style="{_paragraph_css(para_style)}"']
+    if debug_layout and unit_id:
+        attrs.append(f'data-unit-id="{escape(unit_id, quote=True)}"')
+        attrs.append(f'data-debug-label="{escape(_paragraph_debug_label(unit_id, para_style), quote=True)}"')
+    return f"<p {' '.join(attrs)}>{content}</p>"
+
+
+def _paragraph_debug_label(unit_id: str, style: ParaStyleInfo | None) -> str:
+    left_indent, right_indent, first_line_indent = _paragraph_indent_values(style)
+    return (
+        f"p {unit_id}: left {_pt_label(left_indent)}, "
+        f"first {_pt_label(first_line_indent)}, right {_pt_label(right_indent)}"
+    )
+
+
+def _css_vertical_align(value: str) -> str:
+    return "middle" if value == "center" else value
+
+
+def _cell_padding_css(style: CellStyleInfo | None) -> str:
+    if style is None:
+        return "padding:0"
+
+    raw_values = (
+        style.padding_top_pt,
+        style.padding_right_pt,
+        style.padding_bottom_pt,
+        style.padding_left_pt,
+    )
+    if all(value is None for value in raw_values):
+        return "padding:0"
+
+    top = _non_negative_pt(style.padding_top_pt) or 0.0
+    right = _non_negative_pt(style.padding_right_pt) or 0.0
+    bottom = _non_negative_pt(style.padding_bottom_pt) or 0.0
+    left = _non_negative_pt(style.padding_left_pt) or 0.0
+    return f"padding:{top:.1f}pt {right:.1f}pt {bottom:.1f}pt {left:.1f}pt"
 
 
 def _cell_css(style: CellStyleInfo | None) -> str:
-    parts: list[str] = []
+    parts: list[str] = ["box-sizing:border-box"]
     if style is not None:
         if style.background:
             parts.append(f"background-color:{style.background}")
         if style.vertical_align:
-            parts.append(f"vertical-align:{style.vertical_align}")
+            parts.append(f"vertical-align:{_css_vertical_align(style.vertical_align)}")
         if style.horizontal_align:
             parts.append(f"text-align:{style.horizontal_align}")
-        if style.width_pt is not None:
-            parts.append(f"width:{style.width_pt:.1f}pt")
-        if style.height_pt is not None:
-            parts.append(f"height:{style.height_pt:.1f}pt")
+        width_pt = _non_negative_pt(style.width_pt)
+        height_pt = _non_negative_pt(style.height_pt)
+        if width_pt is not None:
+            parts.append(f"width:{width_pt:.1f}pt")
+        if height_pt is not None:
+            parts.append(f"height:{height_pt:.1f}pt")
         parts.append(f"border-top:{style.border_top or 'none'}")
         parts.append(f"border-bottom:{style.border_bottom or 'none'}")
         parts.append(f"border-left:{style.border_left or 'none'}")
@@ -149,7 +210,7 @@ def _cell_css(style: CellStyleInfo | None) -> str:
                 "border-right:none",
             ]
         )
-    parts.append("padding:4px 6px")
+    parts.append(_cell_padding_css(style))
     return ";".join(parts)
 
 
@@ -233,11 +294,14 @@ def _cell_diagonal_background(style: CellStyleInfo) -> str | None:
 
 def _table_css(table: TableIR, para_style: ParaStyleInfo | None) -> str:
     align = para_style.align if para_style is not None else None
-    parts = ["border-collapse:collapse", "margin-top:8px", "margin-bottom:12px"]
-    if table.table_style is not None and table.table_style.width_pt is not None:
-        parts.append(f"width:{table.table_style.width_pt:.1f}pt")
-    if table.table_style is not None and table.table_style.height_pt is not None:
-        parts.append(f"height:{table.table_style.height_pt:.1f}pt")
+    parts = ["border-collapse:collapse", "table-layout:fixed", "margin-top:8px", "margin-bottom:12px"]
+    if table.table_style is not None:
+        width_pt = _non_negative_pt(table.table_style.width_pt)
+        height_pt = _non_negative_pt(table.table_style.height_pt)
+        if width_pt is not None:
+            parts.append(f"width:{width_pt:.1f}pt")
+        if height_pt is not None:
+            parts.append(f"height:{height_pt:.1f}pt")
     if align == "center":
         parts.extend(["margin-left:auto", "margin-right:auto"])
     elif align == "right":
@@ -247,12 +311,85 @@ def _table_css(table: TableIR, para_style: ParaStyleInfo | None) -> str:
     return ";".join(parts)
 
 
+def _table_logical_col_count(table: TableIR) -> int:
+    col_count = table.col_count
+    if table.table_style is not None:
+        col_count = max(col_count, table.table_style.col_count)
+    for cell in table.cells:
+        colspan = max(cell.cell_style.colspan, 1) if cell.cell_style is not None else 1
+        col_count = max(col_count, cell.col_index + colspan - 1)
+    return col_count
+
+
+def _table_column_widths(table: TableIR) -> list[float | None]:
+    col_count = _table_logical_col_count(table)
+    if col_count <= 0:
+        return []
+
+    widths: list[float | None] = [None] * col_count
+    spanned_widths: list[tuple[int, int, float]] = []
+    for cell in table.cells:
+        if cell.cell_style is None:
+            continue
+        width_pt = _non_negative_pt(cell.cell_style.width_pt)
+        if width_pt is None:
+            continue
+        start = max(cell.col_index - 1, 0)
+        if start >= col_count:
+            continue
+        colspan = min(max(cell.cell_style.colspan, 1), col_count - start)
+        if colspan == 1:
+            current_width = widths[start]
+            widths[start] = width_pt if current_width is None else max(current_width, width_pt)
+        else:
+            spanned_widths.append((start, colspan, width_pt))
+
+    for start, colspan, total_width in spanned_widths:
+        indices = list(range(start, start + colspan))
+        known_width = sum(widths[index] or 0.0 for index in indices)
+        unknown_indices = [index for index in indices if widths[index] is None]
+        if not unknown_indices:
+            continue
+        remaining_width = max(total_width - known_width, 0.0)
+        share = remaining_width / len(unknown_indices) if remaining_width else total_width / colspan
+        for index in unknown_indices:
+            widths[index] = share
+
+    table_width = _non_negative_pt(table.table_style.width_pt) if table.table_style is not None else None
+    if table_width is not None:
+        unknown_indices = [index for index, width in enumerate(widths) if width is None]
+        known_width = sum(width or 0.0 for width in widths)
+        remaining_width = max(table_width - known_width, 0.0)
+        if unknown_indices and remaining_width:
+            share = remaining_width / len(unknown_indices)
+            for index in unknown_indices:
+                widths[index] = share
+
+    return widths
+
+
+def _render_colgroup(table: TableIR) -> list[str]:
+    widths = _table_column_widths(table)
+    if not any(width is not None for width in widths):
+        return []
+
+    lines = ["  <colgroup>"]
+    for width in widths:
+        if width is None:
+            lines.append("    <col />")
+        else:
+            lines.append(f'    <col style="width:{width:.1f}pt" />')
+    lines.append("  </colgroup>")
+    return lines
+
+
 def _render_paragraph_like(
     doc_ir: DocIR,
+    paragraph: ParagraphIR,
     content: list[ParagraphContentNode],
     para_style: ParaStyleInfo | None,
     *,
-    clamp_negative_first_line_indent: bool = False,
+    debug_layout: bool = False,
 ) -> str:
     parts: list[str] = []
     inline_fragments: list[str] = []
@@ -272,18 +409,20 @@ def _render_paragraph_like(
                     _flush_paragraph(
                         inline_fragments,
                         para_style,
-                        clamp_negative_first_line_indent=clamp_negative_first_line_indent,
+                        unit_id=paragraph.unit_id,
+                        debug_layout=debug_layout,
                     )
                 )
                 inline_fragments = []
-            parts.append(_render_table(doc_ir, node, para_style))
+            parts.append(_render_table(doc_ir, node, para_style, debug_layout=debug_layout))
 
     if inline_fragments:
         parts.append(
             _flush_paragraph(
                 inline_fragments,
                 para_style,
-                clamp_negative_first_line_indent=clamp_negative_first_line_indent,
+                unit_id=paragraph.unit_id,
+                debug_layout=debug_layout,
             )
         )
     elif not parts:
@@ -291,24 +430,36 @@ def _render_paragraph_like(
             _flush_paragraph(
                 [],
                 para_style,
-                clamp_negative_first_line_indent=clamp_negative_first_line_indent,
+                unit_id=paragraph.unit_id,
+                debug_layout=debug_layout,
             )
         )
 
     return "\n".join(parts)
 
 
-def _render_cell_paragraph(doc_ir: DocIR, paragraph: ParagraphIR) -> str:
+def _render_cell_paragraph(doc_ir: DocIR, paragraph: ParagraphIR, *, debug_layout: bool = False) -> str:
     return _render_paragraph_like(
         doc_ir,
+        paragraph,
         paragraph.content,
         paragraph.para_style,
-        clamp_negative_first_line_indent=True,
+        debug_layout=debug_layout,
     )
 
 
-def _render_cell(doc_ir: DocIR, cell: TableCellIR) -> str:
+def _cell_debug_label(cell: TableCellIR) -> str:
+    style = cell.cell_style
+    width_pt = _non_negative_pt(style.width_pt) if style is not None else None
+    height_pt = _non_negative_pt(style.height_pt) if style is not None else None
+    return f"cell {cell.unit_id}: {_pt_label(width_pt)} x {_pt_label(height_pt)}"
+
+
+def _render_cell(doc_ir: DocIR, cell: TableCellIR, *, debug_layout: bool = False) -> str:
     attrs = [f'style="{_cell_css(cell.cell_style)}"']
+    if debug_layout:
+        attrs.append(f'data-unit-id="{escape(cell.unit_id, quote=True)}"')
+        attrs.append(f'data-debug-label="{escape(_cell_debug_label(cell), quote=True)}"')
     if cell.cell_style is not None:
         if cell.cell_style.colspan > 1:
             attrs.append(f'colspan="{cell.cell_style.colspan}"')
@@ -316,23 +467,44 @@ def _render_cell(doc_ir: DocIR, cell: TableCellIR) -> str:
             attrs.append(f'rowspan="{cell.cell_style.rowspan}"')
 
     if cell.paragraphs:
-        content = "".join(_render_cell_paragraph(doc_ir, paragraph) for paragraph in cell.paragraphs)
+        content = "".join(
+            _render_cell_paragraph(doc_ir, paragraph, debug_layout=debug_layout)
+            for paragraph in cell.paragraphs
+        )
     else:
         content = "&nbsp;"
 
     return f"<td {' '.join(attrs)}>{content}</td>"
 
 
-def _render_table(doc_ir: DocIR, table: TableIR, para_style: ParaStyleInfo | None = None) -> str:
+def _table_debug_label(table: TableIR) -> str:
+    style = table.table_style
+    width_pt = _non_negative_pt(style.width_pt) if style is not None else None
+    height_pt = _non_negative_pt(style.height_pt) if style is not None else None
+    return f"table {table.unit_id}: {_pt_label(width_pt)} x {_pt_label(height_pt)}"
+
+
+def _render_table(
+    doc_ir: DocIR,
+    table: TableIR,
+    para_style: ParaStyleInfo | None = None,
+    *,
+    debug_layout: bool = False,
+) -> str:
+    attrs = [f'style="{_table_css(table, para_style)}"']
+    if debug_layout:
+        attrs.append(f'data-unit-id="{escape(table.unit_id, quote=True)}"')
+        attrs.append(f'data-debug-label="{escape(_table_debug_label(table), quote=True)}"')
     if not table.cells:
-        return f'<table style="{_table_css(table, para_style)}"></table>'
+        return f"<table {' '.join(attrs)}></table>"
 
     covered: set[tuple[int, int]] = set()
     cells_by_pos = {(cell.row_index, cell.col_index): cell for cell in table.cells}
     max_row = max(cell.row_index for cell in table.cells)
     max_col = max(cell.col_index for cell in table.cells)
 
-    lines = [f'<table style="{_table_css(table, para_style)}">']
+    lines = [f"<table {' '.join(attrs)}>"]
+    lines.extend(_render_colgroup(table))
     for row in range(1, max_row + 1):
         lines.append("  <tr>")
         for col in range(1, max_col + 1):
@@ -341,7 +513,7 @@ def _render_table(doc_ir: DocIR, table: TableIR, para_style: ParaStyleInfo | Non
 
             cell = cells_by_pos.get((row, col))
             if cell is None:
-                lines.append('    <td style="padding:4px 6px;border:none">&nbsp;</td>')
+                lines.append('    <td style="box-sizing:border-box;padding:0;border:none">&nbsp;</td>')
                 continue
 
             if cell.cell_style is not None:
@@ -357,14 +529,20 @@ def _render_table(doc_ir: DocIR, table: TableIR, para_style: ParaStyleInfo | Non
                         continue
                     covered.add((covered_row, covered_col))
 
-            lines.append(f"    {_render_cell(doc_ir, cell)}")
+            lines.append(f"    {_render_cell(doc_ir, cell, debug_layout=debug_layout)}")
         lines.append("  </tr>")
     lines.append("</table>")
     return "\n".join(lines)
 
 
-def _render_paragraph(doc_ir: DocIR, paragraph: ParagraphIR) -> str:
-    return _render_paragraph_like(doc_ir, paragraph.content, paragraph.para_style)
+def _render_paragraph(doc_ir: DocIR, paragraph: ParagraphIR, *, debug_layout: bool = False) -> str:
+    return _render_paragraph_like(
+        doc_ir,
+        paragraph,
+        paragraph.content,
+        paragraph.para_style,
+        debug_layout=debug_layout,
+    )
 
 
 def _page_style(page: PageInfo) -> str:
@@ -375,27 +553,40 @@ def _page_style(page: PageInfo) -> str:
         "box-shadow:0 1px 3px rgba(0,0,0,0.08)",
         "margin:0 auto 24px auto",
     ]
-    if page.width_pt is not None:
-        parts.append(f"width:{page.width_pt:.1f}pt")
+    width_pt = _non_negative_pt(page.width_pt)
+    height_pt = _non_negative_pt(page.height_pt)
+    if width_pt is not None:
+        parts.append(f"width:{width_pt:.1f}pt")
     else:
         parts.append("max-width:900px")
-    if page.height_pt is not None:
-        parts.append(f"min-height:{page.height_pt:.1f}pt")
+    if height_pt is not None:
+        parts.append(f"min-height:{height_pt:.1f}pt")
     return ";".join(parts)
 
 
 def _page_content_style(page: PageInfo) -> str:
-    margin_top = page.margin_top_pt if page.margin_top_pt is not None else 48.0
-    margin_right = page.margin_right_pt if page.margin_right_pt is not None else 42.0
-    margin_bottom = page.margin_bottom_pt if page.margin_bottom_pt is not None else 48.0
-    margin_left = page.margin_left_pt if page.margin_left_pt is not None else 42.0
+    margin_top = _non_negative_pt(page.margin_top_pt) if page.margin_top_pt is not None else 48.0
+    margin_right = _non_negative_pt(page.margin_right_pt) if page.margin_right_pt is not None else 42.0
+    margin_bottom = _non_negative_pt(page.margin_bottom_pt) if page.margin_bottom_pt is not None else 48.0
+    margin_left = _non_negative_pt(page.margin_left_pt) if page.margin_left_pt is not None else 42.0
     return (
         "box-sizing:border-box;"
         f"padding:{margin_top:.1f}pt {margin_right:.1f}pt {margin_bottom:.1f}pt {margin_left:.1f}pt"
     )
 
 
-def _render_paged_body(doc_ir: DocIR) -> str:
+def _page_debug_label(page: PageInfo) -> str:
+    return (
+        f"page {page.page_number}: {_pt_label(_non_negative_pt(page.width_pt))} x "
+        f"{_pt_label(_non_negative_pt(page.height_pt))}; margins "
+        f"{_pt_label(_non_negative_pt(page.margin_top_pt))}/"
+        f"{_pt_label(_non_negative_pt(page.margin_right_pt))}/"
+        f"{_pt_label(_non_negative_pt(page.margin_bottom_pt))}/"
+        f"{_pt_label(_non_negative_pt(page.margin_left_pt))}"
+    )
+
+
+def _render_paged_body(doc_ir: DocIR, *, debug_layout: bool = False) -> str:
     paragraphs_by_page: dict[int, list[ParagraphIR]] = {}
     unpaged: list[ParagraphIR] = []
 
@@ -408,31 +599,103 @@ def _render_paged_body(doc_ir: DocIR) -> str:
     parts: list[str] = []
     for page in doc_ir.pages:
         page_paragraphs = paragraphs_by_page.get(page.page_number, [])
-        content_html = "\n\n".join(_render_paragraph(doc_ir, paragraph) for paragraph in page_paragraphs)
+        content_html = "\n\n".join(
+            _render_paragraph(doc_ir, paragraph, debug_layout=debug_layout)
+            for paragraph in page_paragraphs
+        )
+        page_attrs = [
+            'class="document-page"',
+            f'data-page-number="{page.page_number}"',
+            f'style="{_page_style(page)}"',
+        ]
+        content_attrs = [
+            'class="document-page__content"',
+            f'style="{_page_content_style(page)}"',
+        ]
+        if debug_layout:
+            page_attrs.append(f'data-debug-label="{escape(_page_debug_label(page), quote=True)}"')
+            content_attrs.append('data-debug-label="page content area"')
         parts.append(
-            f'<section class="document-page" data-page-number="{page.page_number}" style="{_page_style(page)}">'
-            f'<div class="document-page__content" style="{_page_content_style(page)}">{content_html or "&nbsp;"}</div>'
+            f"<section {' '.join(page_attrs)}>"
+            f"<div {' '.join(content_attrs)}>{content_html or '&nbsp;'}</div>"
             "</section>"
         )
 
     if unpaged:
         parts.append(
             '<section class="document-unpaged">'
-            + "\n\n".join(_render_paragraph(doc_ir, paragraph) for paragraph in unpaged)
+            + "\n\n".join(
+                _render_paragraph(doc_ir, paragraph, debug_layout=debug_layout)
+                for paragraph in unpaged
+            )
             + "</section>"
         )
 
     return "\n".join(parts)
 
 
-def render_html_document(doc_ir: DocIR, *, title: str | None = None) -> str:
+def _debug_layout_css() -> str:
+    return """
+  body.document-debug-layout [data-debug-label] {
+    outline: 1px dashed rgba(220, 20, 60, 0.75);
+    outline-offset: -1px;
+    position: relative;
+  }
+  body.document-debug-layout [data-debug-label]::before {
+    content: attr(data-debug-label);
+    display: block;
+    position: absolute;
+    z-index: 20;
+    top: 0;
+    left: 0;
+    transform: translateY(-100%);
+    min-width: max-content;
+    max-width: min(520px, 90vw);
+    box-sizing: border-box;
+    margin: 0;
+    padding: 1px 4px;
+    background: rgba(220, 20, 60, 0.88);
+    color: #fff;
+    font: 10px/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    text-indent: 0;
+    white-space: normal;
+  }
+  body.document-debug-layout table[data-debug-label] {
+    outline-color: rgba(0, 96, 180, 0.8);
+  }
+  body.document-debug-layout td[data-debug-label] {
+    outline-color: rgba(0, 128, 64, 0.8);
+  }
+"""
+
+
+def _debug_layout_script() -> str:
+    return """<script>
+(() => {
+  const PT_PER_PX = 72 / 96;
+  for (const el of document.querySelectorAll("[data-debug-label]")) {
+    const rect = el.getBoundingClientRect();
+    const rendered = `${(rect.width * PT_PER_PX).toFixed(1)}pt x ${(rect.height * PT_PER_PX).toFixed(1)}pt`;
+    el.dataset.debugLabel = `${el.dataset.debugLabel} | rendered ${rendered}`;
+  }
+})();
+</script>"""
+
+
+def render_html_document(doc_ir: DocIR, *, title: str | None = None, debug_layout: bool = False) -> str:
     """Render a document IR tree as a complete HTML document."""
     resolved_title = title or doc_ir.doc_id or "Document"
     body = (
-        _render_paged_body(doc_ir)
+        _render_paged_body(doc_ir, debug_layout=debug_layout)
         if doc_ir.pages
-        else "\n\n".join(_render_paragraph(doc_ir, paragraph) for paragraph in doc_ir.paragraphs)
+        else "\n\n".join(
+            _render_paragraph(doc_ir, paragraph, debug_layout=debug_layout)
+            for paragraph in doc_ir.paragraphs
+        )
     )
+    body_class = ' class="document-debug-layout"' if debug_layout else ""
+    debug_css = _debug_layout_css() if debug_layout else ""
+    debug_script = "\n" + _debug_layout_script() if debug_layout else ""
 
     return f"""<!DOCTYPE html>
 <html lang="ko">
@@ -457,6 +720,9 @@ def render_html_document(doc_ir: DocIR, *, title: str | None = None) -> str:
     border-collapse: collapse;
     margin: 8px 0 12px 0;
   }}
+  td p {{
+    line-height: 1.0;
+  }}
   img {{
     max-width: 100%;
     height: auto;
@@ -465,10 +731,12 @@ def render_html_document(doc_ir: DocIR, *, title: str | None = None) -> str:
     max-width: 900px;
     margin: 0 auto;
   }}
+{debug_css}
 </style>
 </head>
-<body>
+<body{body_class}>
 {body}
+{debug_script}
 </body>
 </html>
 """

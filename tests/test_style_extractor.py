@@ -467,6 +467,7 @@ class StyleExtractorTests(unittest.TestCase):
             <hp:cellAddr colAddr="0" rowAddr="0"/>
             <hp:cellSpan colSpan="1" rowSpan="1"/>
             <hp:cellSz width="7200" height="3600"/>
+            <hp:cellMargin left="510" right="520" top="140" bottom="150"/>
           </hp:tc>
         </hp:tr>
       </hp:tbl>
@@ -485,6 +486,44 @@ class StyleExtractorTests(unittest.TestCase):
         self.assertAlmostEqual(table_style.height_pt or 0.0, 48.0, places=3)
         self.assertAlmostEqual(cell_style.width_pt or 0.0, 72.0, places=3)
         self.assertAlmostEqual(cell_style.height_pt or 0.0, 36.0, places=3)
+        self.assertAlmostEqual(cell_style.padding_left_pt or 0.0, 5.1, places=3)
+        self.assertAlmostEqual(cell_style.padding_right_pt or 0.0, 5.2, places=3)
+        self.assertAlmostEqual(cell_style.padding_top_pt or 0.0, 1.4, places=3)
+        self.assertAlmostEqual(cell_style.padding_bottom_pt or 0.0, 1.5, places=3)
+
+    def test_extract_docx_cell_margins(self) -> None:
+        from docx import Document
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            docx_path = Path(tmp_dir) / "cell_margins.docx"
+            doc = Document()
+            cell = doc.add_table(rows=1, cols=1).cell(0, 0)
+            cell.text = "Padded"
+
+            tc_pr = cell._tc.get_or_add_tcPr()
+            tc_mar = OxmlElement("w:tcMar")
+            for side, value in (
+                ("top", "40"),
+                ("right", "120"),
+                ("bottom", "60"),
+                ("left", "100"),
+            ):
+                side_el = OxmlElement(f"w:{side}")
+                side_el.set(qn("w:w"), value)
+                side_el.set(qn("w:type"), "dxa")
+                tc_mar.append(side_el)
+            tc_pr.append(tc_mar)
+            doc.save(str(docx_path))
+
+            style_map = extract_styles_docx(docx_path)
+
+        cell_style = style_map.cells["s1.p1.r1.tbl1.tr1.tc1"]
+        self.assertAlmostEqual(cell_style.padding_top_pt or 0.0, 2.0, places=3)
+        self.assertAlmostEqual(cell_style.padding_right_pt or 0.0, 6.0, places=3)
+        self.assertAlmostEqual(cell_style.padding_bottom_pt or 0.0, 3.0, places=3)
+        self.assertAlmostEqual(cell_style.padding_left_pt or 0.0, 5.0, places=3)
 
 
 if __name__ == "__main__":

@@ -77,9 +77,20 @@ Build a `DocIR` from a run-level mapping such as:
 
 This is useful for tests, fixtures, or synthetic documents.
 
-#### `DocIR.to_html(*, title=None) -> str`
+#### `DocIR.to_html(*, title=None, debug_layout=False) -> str`
 
 Render the document as styled HTML using the built-in exporter.
+
+Set `debug_layout=True` to add visual outlines and data labels for pages,
+tables, cells, and paragraphs. The debug view also measures rendered element
+sizes in the browser so extracted point values can be compared with actual HTML
+layout.
+
+Paragraph indents are clamped during HTML rendering so negative or hanging
+indents cannot start text outside the page/table-cell content edge. Valid
+hanging indents are preserved when the positive left indent is large enough.
+Table cell padding is rendered from `CellStyleInfo` when extracted from source
+cell margins such as HWPX `hp:cellMargin` or DOCX `w:tcMar`.
 
 ### `ParagraphIR`
 
@@ -138,6 +149,33 @@ Computed helper:
 - `RunStyleInfo`
 - `TableStyleInfo`
 - `StyleMap`
+
+#### `CellStyleInfo`
+
+Cell-level formatting for `TableCellIR.cell_style`.
+
+Important fields:
+
+- `background`
+- `vertical_align`
+- `horizontal_align`
+- `width_pt`
+- `height_pt`
+- `padding_top_pt`
+- `padding_right_pt`
+- `padding_bottom_pt`
+- `padding_left_pt`
+- `border_top`
+- `border_bottom`
+- `border_left`
+- `border_right`
+- `diagonal_tl_br`
+- `diagonal_tr_bl`
+- `rowspan`
+- `colspan`
+
+HWPX `hp:cellMargin` and DOCX `w:tcMar`/`w:tblCellMar` are represented as
+cell padding fields in points. Paragraph indents remain in `ParaStyleInfo`.
 
 ## Source/Input Models
 

@@ -1,4 +1,5 @@
-test_docs/
+doc_samples/
+results/
 .codex
 
 # Byte-compiled / optimized / DLL files

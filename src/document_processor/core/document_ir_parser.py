@@ -603,6 +603,20 @@ def _find_hwpx_binary_path(binary_name_map: dict[str, str], binary_item_id: str 
     return binary_name_map.get(binary_item_id.lower())
 
 
+def _hwpx_picture_display_size(pic_el: ET.Element) -> tuple[float | None, float | None]:
+    size_el = pic_el.find(f"{_HP}sz")
+    if size_el is not None:
+        width_pt = _hwpunit_to_pt(size_el.get("width"))
+        height_pt = _hwpunit_to_pt(size_el.get("height"))
+        if width_pt is not None or height_pt is not None:
+            return width_pt, height_pt
+
+    dim_el = pic_el.find(f"{_HP}imgDim")
+    if dim_el is None:
+        return None, None
+    return _hwpunit_to_pt(dim_el.get("dimwidth")), _hwpunit_to_pt(dim_el.get("dimheight"))
+
+
 def _parse_hwpx_run_images(
     run_el: ET.Element,
     *,
@@ -646,9 +660,7 @@ def _parse_hwpx_run_images(
             mime_type=_mime_type_for_filename(filename),
             filename=filename,
         )
-        dim_el = child.find(f"{_HP}imgDim")
-        display_width_pt = _hwpunit_to_pt(dim_el.get("dimwidth")) if dim_el is not None else None
-        display_height_pt = _hwpunit_to_pt(dim_el.get("dimheight")) if dim_el is not None else None
+        display_width_pt, display_height_pt = _hwpx_picture_display_size(child)
 
         image_counter += 1
         images.append(

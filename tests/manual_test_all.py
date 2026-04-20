@@ -6,8 +6,8 @@ from document_processor import DocIR
 from pydantic import BaseModel
 
 
-doc_dir = Path("/home/maxjo/Work/LAS-system/apps/backend/doc_processor/tests/doc_samples/new_test")
-out_dir = Path("/home/maxjo/Work/LAS-system/apps/backend/doc_processor/tests/results")
+doc_dir = Path("doc_samples/new_test")
+out_dir = Path("results")
 
 files = [doc_dir / file for file in listdir(doc_dir)]
 

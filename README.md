@@ -165,7 +165,14 @@ from document_processor import DocIR
 
 doc = DocIR.from_file("/path/to/file.docx")
 html = doc.to_html(title="Preview")
+debug_html = doc.to_html(title="Layout Debug", debug_layout=True)
 ```
+
+The debug layout view outlines pages, tables, cells, and paragraphs, and labels
+declared point dimensions next to browser-rendered sizes. HTML rendering clamps
+negative paragraph indents so text stays inside the page or table-cell content
+edge. Source cell margins are available on `CellStyleInfo.padding_*_pt` and are
+rendered as table-cell padding.
 
 
 ## Visualizing the models
