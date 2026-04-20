@@ -110,15 +110,20 @@ def _union_bboxes(boxes: Iterable[PdfBoundingBox]) -> PdfBoundingBox | None:
     )
 
 
+def _is_leaf_text_bbox_node(node: dict[str, Any]) -> bool:
+    return node.get("type") in {"span", "text chunk", "run"}
+
+
 def _descendant_bboxes(node: dict[str, Any]) -> list[PdfBoundingBox]:
     bboxes: list[PdfBoundingBox] = []
 
     def visit(current: Any) -> None:
         if not isinstance(current, dict):
             return
-        bbox = coerce_bbox(current.get("bounding box")) or coerce_bbox(current.get("bbox"))
-        if bbox is not None:
-            bboxes.append(bbox)
+        if _is_leaf_text_bbox_node(current):
+            bbox = coerce_bbox(current.get("bounding box")) or coerce_bbox(current.get("bbox"))
+            if bbox is not None:
+                bboxes.append(bbox)
         for key in ("kids", "spans", "runs"):
             items = current.get(key)
             if not isinstance(items, list):

@@ -94,6 +94,93 @@ def _nested_span_only_paragraph(text: str, *, left: float, bottom: float, right:
     }
 
 
+def _wrapped_span_paragraph(
+    text: str,
+    *,
+    wrapper_left: float,
+    wrapper_bottom: float,
+    wrapper_right: float,
+    wrapper_top: float,
+    leaf_left: float,
+    leaf_bottom: float,
+    leaf_right: float,
+    leaf_top: float,
+):
+    return {
+        "type": "paragraph",
+        "content": text,
+        "page number": 1,
+        "kids": [
+            {
+                "type": "group",
+                "bounding box": [wrapper_left, wrapper_bottom, wrapper_right, wrapper_top],
+                "kids": [
+                    {
+                        "type": "text chunk",
+                        "content": text,
+                        "page number": 1,
+                        "bounding box": [leaf_left, leaf_bottom, leaf_right, leaf_top],
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def _wrapped_run_paragraph(
+    text: str,
+    *,
+    wrapper_left: float,
+    wrapper_bottom: float,
+    wrapper_right: float,
+    wrapper_top: float,
+    leaf_left: float,
+    leaf_bottom: float,
+    leaf_right: float,
+    leaf_top: float,
+):
+    return {
+        "type": "paragraph",
+        "content": text,
+        "page number": 1,
+        "kids": [
+            {
+                "type": "group",
+                "bounding box": [wrapper_left, wrapper_bottom, wrapper_right, wrapper_top],
+                "kids": [
+                    {
+                        "type": "run",
+                        "content": text,
+                        "page number": 1,
+                        "bounding box": [leaf_left, leaf_bottom, leaf_right, leaf_top],
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def _nested_run_only_paragraph(text: str, *, left: float, bottom: float, right: float, top: float):
+    return {
+        "type": "paragraph",
+        "content": text,
+        "page number": 1,
+        "kids": [
+            {
+                "type": "group",
+                "kids": [
+                    {
+                        "type": "run",
+                        "content": text,
+                        "page number": 1,
+                        "bounding box": [left, bottom, right, top],
+                    }
+                ],
+            }
+        ],
+    }
+
+
 def _paragraph_with_conflicting_span_bbox(
     text: str,
     *,
@@ -304,7 +391,7 @@ class TableReconstructTests(unittest.TestCase):
 
 
 class TableReconstructMappingTests(unittest.TestCase):
-    def test_assign_fragments_to_groups_recurses_nested_kids_for_span_bbox(self) -> None:
+    def test_assign_fragments_to_groups_ignores_wrapper_bbox_for_nested_span_bbox(self) -> None:
         grid = TableGrid(
             table_key=table_node_key(_table_node()),
             h_y=[10.0, 90.0],
@@ -315,7 +402,50 @@ class TableReconstructMappingTests(unittest.TestCase):
             raw_cells=[
                 {
                     "bounding box": [10.0, 10.0, 55.0, 90.0],
-                    "kids": [_nested_span_only_paragraph("Nested", left=66.0, bottom=18.0, right=104.0, top=42.0)],
+                    "kids": [
+                        _wrapped_span_paragraph(
+                            "Nested",
+                            wrapper_left=10.0,
+                            wrapper_bottom=10.0,
+                            wrapper_right=110.0,
+                            wrapper_top=90.0,
+                            leaf_left=66.0,
+                            leaf_bottom=18.0,
+                            leaf_right=104.0,
+                            leaf_top=42.0,
+                        )
+                    ],
+                }
+            ],
+            grid=grid,
+        )
+
+        self.assertEqual([p["content"] for p in fragments[grid.merge_groups[1]]], ["Nested"])
+
+    def test_assign_fragments_to_groups_uses_runs_bbox_fallback(self) -> None:
+        grid = TableGrid(
+            table_key=table_node_key(_table_node()),
+            h_y=[10.0, 90.0],
+            v_x=[10.0, 60.0, 110.0],
+            merge_groups=[MergeGroup(0, 0, 0, 0), MergeGroup(0, 1, 0, 1)],
+        )
+        fragments = assign_fragments_to_groups(
+            raw_cells=[
+                {
+                    "bounding box": [10.0, 10.0, 55.0, 90.0],
+                    "kids": [
+                        _wrapped_run_paragraph(
+                            "Nested",
+                            wrapper_left=10.0,
+                            wrapper_bottom=10.0,
+                            wrapper_right=110.0,
+                            wrapper_top=90.0,
+                            leaf_left=66.0,
+                            leaf_bottom=18.0,
+                            leaf_right=104.0,
+                            leaf_top=42.0,
+                        )
+                    ],
                 }
             ],
             grid=grid,
