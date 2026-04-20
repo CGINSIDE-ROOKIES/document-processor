@@ -14,6 +14,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from document_processor import DocIR
 from document_processor.pdf import export_pdf_local_outputs
+from document_processor.pdf.config import PdfParseConfig
 from document_processor.pdf.odl import build_doc_ir_from_odl_result, convert_pdf_local, resolve_odl_jar_path
 from document_processor.pdf.pipeline import parse_pdf_to_doc_ir
 from document_processor.pdf.parsing import PageClass, PageDecision, PageProfile, PdfProfile
@@ -598,7 +599,7 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertEqual(doc.meta.scan_like_pages, [1])
         self.assertIs(doc.get_pdf_preview_context(), build_preview_context.return_value)
 
-    def test_parse_pdf_to_doc_ir_applies_table_split_enrichment_when_enabled(self) -> None:
+    def test_parse_pdf_to_doc_ir_passes_table_split_plans_into_adapter(self) -> None:
         profile = PdfProfile(
             page_count=1,
             avg_chars_per_page=100.0,
@@ -624,6 +625,7 @@ class PdfPipelineTests(unittest.TestCase):
             "number of pages": 1,
             "kids": [],
         }
+        table_split_plans = {("table", 1): object()}
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             pdf_path = Path(tmp_dir) / "sample.pdf"
@@ -636,16 +638,27 @@ class PdfPipelineTests(unittest.TestCase):
                 "document_processor.pdf.pipeline.build_pdf_preview_context",
                 return_value=PdfPreviewContext(),
             ), patch(
+                "document_processor.pdf.pipeline.build_table_split_plans",
+                return_value=table_split_plans,
+            ), patch(
                 "document_processor.pdf.pipeline.build_doc_ir_from_odl_result",
                 return_value=DocIR(source_doc_type="pdf", source_path=str(pdf_path)),
-            ) as build_doc, patch(
-                "document_processor.pdf.pipeline.enrich_pdf_table_splits"
-            ) as enrich_splits:
-                parse_pdf_to_doc_ir(pdf_path, config={"infer_table_splits": True})
+            ) as build_doc:
+                parse_pdf_to_doc_ir(pdf_path)
 
-        enrich_splits.assert_called_once()
-        self.assertIs(enrich_splits.call_args.args[0], build_doc.return_value)
-        self.assertEqual(enrich_splits.call_args.kwargs, {"pdf_path": pdf_path})
+        build_doc.assert_called_once_with(
+            raw_document,
+            source_path=str(pdf_path),
+            doc_id=None,
+            doc_cls=DocIR,
+            table_split_plans=table_split_plans,
+        )
+
+    def test_pdf_parse_config_no_longer_exposes_infer_table_splits(self) -> None:
+        config = PdfParseConfig()
+
+        self.assertNotIn("infer_table_splits", PdfParseConfig.model_fields)
+        self.assertFalse(hasattr(config, "infer_table_splits"))
 
     def test_resolve_odl_jar_path_uses_vendored_jar(self) -> None:
         jar_path = resolve_odl_jar_path()
