@@ -10,7 +10,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from document_processor import Annotation, DocIR, render_annotated_html
-from document_processor.models import ImageAsset, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
+from document_processor.models import ColumnLayoutInfo, ImageAsset, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
 from document_processor.style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
 
 
@@ -341,6 +341,34 @@ class HtmlExporterTests(unittest.TestCase):
         self.assertIn("padding:72.0pt 72.0pt 72.0pt 72.0pt", html)
         self.assertIn("First page", html)
         self.assertIn("Second page", html)
+
+    def test_export_html_groups_paragraphs_by_column_layout(self) -> None:
+        two_columns = ColumnLayoutInfo(count=2, gap_pt=18.0)
+        doc = DocIR(
+            paragraphs=[
+                ParagraphIR(unit_id="s1.p1", content=[RunIR(unit_id="s1.p1.r1", text="Title")]),
+                ParagraphIR(
+                    unit_id="s1.p2",
+                    column_layout=two_columns,
+                    content=[RunIR(unit_id="s1.p2.r1", text="Column body one")],
+                ),
+                ParagraphIR(
+                    unit_id="s1.p3",
+                    column_layout=two_columns,
+                    content=[RunIR(unit_id="s1.p3.r1", text="Column body two")],
+                ),
+                ParagraphIR(unit_id="s1.p4", content=[RunIR(unit_id="s1.p4.r1", text="Footer")]),
+            ],
+        )
+
+        for html in (doc.to_html(), render_annotated_html(doc, [])):
+            self.assertIn('class="document-column-group"', html)
+            self.assertIn('data-column-count="2"', html)
+            self.assertIn("column-count:2", html)
+            self.assertIn("column-gap:18.0pt", html)
+            self.assertLess(html.index("Title"), html.index('class="document-column-group"'))
+            self.assertLess(html.index('class="document-column-group"'), html.index("Column body one"))
+            self.assertLess(html.index("Column body two"), html.index("Footer"))
 
     def test_export_html_clamps_negative_first_line_indent_inside_table_cells(self) -> None:
         doc = DocIR(

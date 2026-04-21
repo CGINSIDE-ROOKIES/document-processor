@@ -75,6 +75,16 @@ class PageInfo(BaseModel):
     margin_bottom_pt: float | None = None
 
 
+class ColumnLayoutInfo(BaseModel):
+    """Active text-column layout for a paragraph or section."""
+
+    count: int = 1
+    gap_pt: float | None = None
+    widths_pt: list[float] = Field(default_factory=list)
+    gaps_pt: list[float] = Field(default_factory=list)
+    equal_width: bool | None = None
+
+
 class ImageIR(BaseModel, Generic[T]):
     """Image placement node inside paragraph-like content."""
 
@@ -97,6 +107,7 @@ class ParagraphIR(BaseModel, Generic[T]):
     unit_id: str
     text: str = ""
     page_number: int | None = None
+    column_layout: ColumnLayoutInfo | None = None
     para_style: ParaStyleInfo | None = None
     content: list["ParagraphContentNode"] = Field(default_factory=list)
 
@@ -410,9 +421,11 @@ def _render_table_markdown(
 
 
 __all__ = [
+    "ColumnLayoutInfo",
     "DocIR",
     "ImageAsset",
     "ImageIR",
+    "PageInfo",
     "ParagraphContentNode",
     "ParagraphIR",
     "RunIR",

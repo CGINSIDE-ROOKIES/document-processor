@@ -6,7 +6,7 @@ import base64
 from html import escape
 import re
 
-from .models import DocIR, ImageIR, PageInfo, ParagraphContentNode, ParagraphIR, RunIR, TableCellIR, TableIR
+from .models import ColumnLayoutInfo, DocIR, ImageIR, PageInfo, ParagraphContentNode, ParagraphIR, RunIR, TableCellIR, TableIR
 from .style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo
 
 
@@ -18,6 +18,32 @@ def _non_negative_pt(value: float | None) -> float | None:
 
 def _pt_label(value: float | None) -> str:
     return "auto" if value is None else f"{value:.1f}pt"
+
+
+def _column_layout_key(layout: ColumnLayoutInfo | None) -> tuple[object, ...] | None:
+    if layout is None or layout.count <= 1:
+        return None
+    return (
+        layout.count,
+        round(layout.gap_pt, 3) if layout.gap_pt is not None else None,
+        tuple(round(width, 3) for width in layout.widths_pt),
+        tuple(round(gap, 3) for gap in layout.gaps_pt),
+        layout.equal_width,
+    )
+
+
+def _column_group_css(layout: ColumnLayoutInfo) -> str:
+    parts = [
+        f"column-count:{max(layout.count, 1)}",
+        f"-webkit-column-count:{max(layout.count, 1)}",
+        "column-fill:balance",
+        "break-inside:auto",
+    ]
+    gap_pt = _non_negative_pt(layout.gap_pt)
+    if gap_pt is not None:
+        parts.append(f"column-gap:{gap_pt:.1f}pt")
+        parts.append(f"-webkit-column-gap:{gap_pt:.1f}pt")
+    return ";".join(parts)
 
 
 def _run_css(style: RunStyleInfo) -> str:
@@ -545,6 +571,70 @@ def _render_paragraph(doc_ir: DocIR, paragraph: ParagraphIR, *, debug_layout: bo
     )
 
 
+def _column_group_debug_label(layout: ColumnLayoutInfo, paragraphs: list[ParagraphIR]) -> str:
+    unit_ids = ", ".join(paragraph.unit_id for paragraph in paragraphs)
+    return f"columns x{layout.count}: gap {_pt_label(_non_negative_pt(layout.gap_pt))}; {unit_ids}"
+
+
+def _render_column_group(
+    doc_ir: DocIR,
+    paragraphs: list[ParagraphIR],
+    *,
+    debug_layout: bool = False,
+) -> str:
+    if not paragraphs or paragraphs[0].column_layout is None:
+        return ""
+
+    layout = paragraphs[0].column_layout
+    attrs = [
+        'class="document-column-group"',
+        f'data-column-count="{max(layout.count, 1)}"',
+        f'style="{_column_group_css(layout)}"',
+    ]
+    if debug_layout:
+        attrs.append(f'data-debug-label="{escape(_column_group_debug_label(layout, paragraphs), quote=True)}"')
+
+    content_html = "\n\n".join(
+        _render_paragraph(doc_ir, paragraph, debug_layout=debug_layout)
+        for paragraph in paragraphs
+    )
+    return f"<div {' '.join(attrs)}>{content_html or '&nbsp;'}</div>"
+
+
+def _render_paragraph_sequence(
+    doc_ir: DocIR,
+    paragraphs: list[ParagraphIR],
+    *,
+    debug_layout: bool = False,
+) -> str:
+    parts: list[str] = []
+    column_group: list[ParagraphIR] = []
+    current_column_key: tuple[object, ...] | None = None
+
+    def flush_column_group() -> None:
+        nonlocal column_group, current_column_key
+        if column_group:
+            parts.append(_render_column_group(doc_ir, column_group, debug_layout=debug_layout))
+            column_group = []
+        current_column_key = None
+
+    for paragraph in paragraphs:
+        column_key = _column_layout_key(paragraph.column_layout)
+        if column_key is None:
+            flush_column_group()
+            parts.append(_render_paragraph(doc_ir, paragraph, debug_layout=debug_layout))
+            continue
+
+        if current_column_key is not None and column_key != current_column_key:
+            flush_column_group()
+
+        current_column_key = column_key
+        column_group.append(paragraph)
+
+    flush_column_group()
+    return "\n\n".join(parts)
+
+
 def _page_style(page: PageInfo) -> str:
     parts = [
         "box-sizing:border-box",
@@ -599,9 +689,10 @@ def _render_paged_body(doc_ir: DocIR, *, debug_layout: bool = False) -> str:
     parts: list[str] = []
     for page in doc_ir.pages:
         page_paragraphs = paragraphs_by_page.get(page.page_number, [])
-        content_html = "\n\n".join(
-            _render_paragraph(doc_ir, paragraph, debug_layout=debug_layout)
-            for paragraph in page_paragraphs
+        content_html = _render_paragraph_sequence(
+            doc_ir,
+            page_paragraphs,
+            debug_layout=debug_layout,
         )
         page_attrs = [
             'class="document-page"',
@@ -624,9 +715,10 @@ def _render_paged_body(doc_ir: DocIR, *, debug_layout: bool = False) -> str:
     if unpaged:
         parts.append(
             '<section class="document-unpaged">'
-            + "\n\n".join(
-                _render_paragraph(doc_ir, paragraph, debug_layout=debug_layout)
-                for paragraph in unpaged
+            + _render_paragraph_sequence(
+                doc_ir,
+                unpaged,
+                debug_layout=debug_layout,
             )
             + "</section>"
         )
@@ -688,9 +780,10 @@ def render_html_document(doc_ir: DocIR, *, title: str | None = None, debug_layou
     body = (
         _render_paged_body(doc_ir, debug_layout=debug_layout)
         if doc_ir.pages
-        else "\n\n".join(
-            _render_paragraph(doc_ir, paragraph, debug_layout=debug_layout)
-            for paragraph in doc_ir.paragraphs
+        else _render_paragraph_sequence(
+            doc_ir,
+            doc_ir.paragraphs,
+            debug_layout=debug_layout,
         )
     )
     body_class = ' class="document-debug-layout"' if debug_layout else ""
@@ -730,6 +823,9 @@ def render_html_document(doc_ir: DocIR, *, title: str | None = None, debug_layou
   .document-unpaged {{
     max-width: 900px;
     margin: 0 auto;
+  }}
+  .document-column-group {{
+    margin: 0 0 0.45em 0;
   }}
 {debug_css}
 </style>

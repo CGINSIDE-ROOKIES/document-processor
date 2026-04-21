@@ -7,7 +7,7 @@ import re
 
 from pydantic import BaseModel, Field, model_validator
 
-from .models import DocIR, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
+from .models import ColumnLayoutInfo, DocIR, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
 from .style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo
 
 
@@ -15,6 +15,32 @@ def _non_negative_pt(value: float | None) -> float | None:
     if value is None:
         return None
     return max(value, 0.0)
+
+
+def _column_layout_key(layout: ColumnLayoutInfo | None) -> tuple[object, ...] | None:
+    if layout is None or layout.count <= 1:
+        return None
+    return (
+        layout.count,
+        round(layout.gap_pt, 3) if layout.gap_pt is not None else None,
+        tuple(round(width, 3) for width in layout.widths_pt),
+        tuple(round(gap, 3) for gap in layout.gaps_pt),
+        layout.equal_width,
+    )
+
+
+def _column_group_css(layout: ColumnLayoutInfo) -> str:
+    parts = [
+        f"column-count:{max(layout.count, 1)}",
+        f"-webkit-column-count:{max(layout.count, 1)}",
+        "column-fill:balance",
+        "break-inside:auto",
+    ]
+    gap_pt = _non_negative_pt(layout.gap_pt)
+    if gap_pt is not None:
+        parts.append(f"column-gap:{gap_pt:.1f}pt")
+        parts.append(f"-webkit-column-gap:{gap_pt:.1f}pt")
+    return ";".join(parts)
 
 
 class AnnotationValidationError(ValueError):
@@ -805,6 +831,69 @@ def _render_paragraph(
     )
 
 
+def _render_column_group(
+    doc_ir: DocIR,
+    paragraphs: list[ParagraphIR],
+    paragraph_annotations_by_id: dict[str, list[ResolvedAnnotation]],
+    run_annotations_by_id: dict[str, list[ResolvedAnnotation]],
+) -> str:
+    if not paragraphs or paragraphs[0].column_layout is None:
+        return ""
+
+    layout = paragraphs[0].column_layout
+    content_html = "\n\n".join(
+        _render_paragraph(doc_ir, paragraph, paragraph_annotations_by_id, run_annotations_by_id)
+        for paragraph in paragraphs
+    )
+    attrs = [
+        'class="document-column-group"',
+        f'data-column-count="{max(layout.count, 1)}"',
+        f'style="{_column_group_css(layout)}"',
+    ]
+    return f"<div {' '.join(attrs)}>{content_html or '&nbsp;'}</div>"
+
+
+def _render_paragraph_sequence(
+    doc_ir: DocIR,
+    paragraphs: list[ParagraphIR],
+    paragraph_annotations_by_id: dict[str, list[ResolvedAnnotation]],
+    run_annotations_by_id: dict[str, list[ResolvedAnnotation]],
+) -> str:
+    parts: list[str] = []
+    column_group: list[ParagraphIR] = []
+    current_column_key: tuple[object, ...] | None = None
+
+    def flush_column_group() -> None:
+        nonlocal column_group, current_column_key
+        if column_group:
+            parts.append(
+                _render_column_group(
+                    doc_ir,
+                    column_group,
+                    paragraph_annotations_by_id,
+                    run_annotations_by_id,
+                )
+            )
+            column_group = []
+        current_column_key = None
+
+    for paragraph in paragraphs:
+        column_key = _column_layout_key(paragraph.column_layout)
+        if column_key is None:
+            flush_column_group()
+            parts.append(_render_paragraph(doc_ir, paragraph, paragraph_annotations_by_id, run_annotations_by_id))
+            continue
+
+        if current_column_key is not None and column_key != current_column_key:
+            flush_column_group()
+
+        current_column_key = column_key
+        column_group.append(paragraph)
+
+    flush_column_group()
+    return "\n\n".join(parts)
+
+
 def _render_paged_body(
     doc_ir: DocIR,
     paragraph_annotations_by_id: dict[str, list[ResolvedAnnotation]],
@@ -822,9 +911,11 @@ def _render_paged_body(
     parts: list[str] = []
     for page in doc_ir.pages:
         page_paragraphs = paragraphs_by_page.get(page.page_number, [])
-        content_html = "\n\n".join(
-            _render_paragraph(doc_ir, paragraph, paragraph_annotations_by_id, run_annotations_by_id)
-            for paragraph in page_paragraphs
+        content_html = _render_paragraph_sequence(
+            doc_ir,
+            page_paragraphs,
+            paragraph_annotations_by_id,
+            run_annotations_by_id,
         )
         parts.append(
             f'<section class="document-page" data-page-number="{page.page_number}" style="{_page_style(page)}">'
@@ -835,9 +926,11 @@ def _render_paged_body(
     if unpaged:
         parts.append(
             '<section class="document-unpaged">'
-            + "\n\n".join(
-                _render_paragraph(doc_ir, paragraph, paragraph_annotations_by_id, run_annotations_by_id)
-                for paragraph in unpaged
+            + _render_paragraph_sequence(
+                doc_ir,
+                unpaged,
+                paragraph_annotations_by_id,
+                run_annotations_by_id,
             )
             + "</section>"
         )
@@ -863,9 +956,11 @@ def render_annotated_html(
     body = (
         _render_paged_body(doc, paragraph_annotations_by_id, run_annotations_by_id)
         if doc.pages
-        else "\n\n".join(
-            _render_paragraph(doc, paragraph, paragraph_annotations_by_id, run_annotations_by_id)
-            for paragraph in doc.paragraphs
+        else _render_paragraph_sequence(
+            doc,
+            doc.paragraphs,
+            paragraph_annotations_by_id,
+            run_annotations_by_id,
         )
     )
     resolved_title = title or doc.doc_id or "Document Review"
@@ -906,6 +1001,9 @@ def render_annotated_html(
   .document-unpaged {{
     max-width: 900px;
     margin: 0 auto;
+  }}
+  .document-column-group {{
+    margin: 0 0 0.45em 0;
   }}
 </style>
 </head>

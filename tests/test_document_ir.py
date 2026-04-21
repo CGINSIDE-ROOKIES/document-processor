@@ -278,6 +278,78 @@ class DocumentIRTests(unittest.TestCase):
         self.assertEqual([paragraph.text for paragraph in parsed.paragraphs], ["Page 1", "Page 2"])
         self.assertEqual([paragraph.page_number for paragraph in parsed.paragraphs], [1, 2])
 
+    def test_from_file_docx_extracts_section_column_layouts(self) -> None:
+        from docx import Document
+        from docx.enum.section import WD_SECTION
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+
+        def set_section_columns(section, *, count: int, space_twips: int) -> None:
+            cols = section._sectPr.find(qn("w:cols"))
+            if cols is None:
+                cols = OxmlElement("w:cols")
+                section._sectPr.append(cols)
+            cols.set(qn("w:num"), str(count))
+            cols.set(qn("w:space"), str(space_twips))
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            docx_path = Path(tmp_dir) / "columns.docx"
+            doc = Document()
+            doc.add_paragraph("One column title")
+            three_col_section = doc.add_section(WD_SECTION.CONTINUOUS)
+            set_section_columns(three_col_section, count=3, space_twips=720)
+            doc.add_paragraph("Three column body")
+            doc.save(str(docx_path))
+
+            parsed = DocIR.from_file(docx_path, skip_empty=True)
+
+        self.assertEqual([paragraph.text for paragraph in parsed.paragraphs], ["One column title", "Three column body"])
+        self.assertEqual(parsed.paragraphs[0].column_layout.count, 1)
+        self.assertEqual(parsed.paragraphs[1].column_layout.count, 3)
+        self.assertAlmostEqual(parsed.paragraphs[1].column_layout.gap_pt or 0.0, 36.0, places=2)
+
+    def test_from_file_hwpx_extracts_paragraph_column_layouts(self) -> None:
+        hwpx_bytes_io = BytesIO()
+        with zipfile.ZipFile(hwpx_bytes_io, "w") as zf:
+            zf.writestr(
+                "Contents/header.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core" />
+""",
+            )
+            zf.writestr(
+                "Contents/section0.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p>
+    <hp:run>
+      <hp:ctrl><hp:colPr colCount="1" sameSz="1" sameGap="0" /></hp:ctrl>
+      <hp:t>One column title</hp:t>
+    </hp:run>
+  </hp:p>
+  <hp:p>
+    <hp:run>
+      <hp:ctrl><hp:colPr colCount="3" sameSz="1" sameGap="300" /></hp:ctrl>
+      <hp:t>Three column body start</hp:t>
+    </hp:run>
+  </hp:p>
+  <hp:p>
+    <hp:run><hp:t>Three column body continued</hp:t></hp:run>
+  </hp:p>
+</hs:sec>
+""",
+            )
+
+        parsed = DocIR.from_file(hwpx_bytes_io.getvalue(), doc_type="hwpx")
+
+        self.assertEqual([paragraph.text for paragraph in parsed.paragraphs], [
+            "One column title",
+            "Three column body start",
+            "Three column body continued",
+        ])
+        self.assertEqual([paragraph.column_layout.count for paragraph in parsed.paragraphs], [1, 3, 3])
+        self.assertAlmostEqual(parsed.paragraphs[1].column_layout.gap_pt or 0.0, 3.0, places=2)
+
     def test_from_file_hwp_file_object_materializes_temp_path(self) -> None:
         fake_hwp = b"fake-hwp"
 
