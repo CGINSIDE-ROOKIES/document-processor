@@ -546,6 +546,54 @@ class DocumentIRTests(unittest.TestCase):
             "Inner",
         )
 
+    def test_hwpx_tables_inside_one_run_preserve_child_order(self) -> None:
+        hwpx_bytes_io = BytesIO()
+        with zipfile.ZipFile(hwpx_bytes_io, "w") as zf:
+            zf.writestr(
+                "Contents/header.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core" />
+""",
+            )
+            zf.writestr(
+                "Contents/section0.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p>
+    <hp:run>
+      <hp:t>Before</hp:t>
+      <hp:tbl>
+        <hp:tr>
+          <hp:tc>
+            <hp:subList>
+              <hp:p><hp:run><hp:t>Cell</hp:t></hp:run></hp:p>
+            </hp:subList>
+            <hp:cellAddr colAddr="0" rowAddr="0"/>
+            <hp:cellSpan colSpan="1" rowSpan="1"/>
+          </hp:tc>
+        </hp:tr>
+      </hp:tbl>
+      <hp:t>After</hp:t>
+    </hp:run>
+  </hp:p>
+</hs:sec>
+""",
+            )
+
+        parsed = DocIR.from_file(hwpx_bytes_io.getvalue(), doc_type="hwpx")
+        paragraph_ir = parsed.paragraphs[0]
+
+        self.assertEqual(
+            [type(node).__name__ for node in paragraph_ir.content],
+            ["RunIR", "TableIR", "RunIR"],
+        )
+        self.assertEqual(
+            [(run.unit_id, run.text) for run in paragraph_ir.runs],
+            [("s1.p1.r1", "Before"), ("s1.p1.r3", "After")],
+        )
+        self.assertEqual(paragraph_ir.tables[0].unit_id, "s1.p1.r1.tbl1")
+        self.assertEqual(paragraph_ir.tables[0].cells[0].paragraphs[0].runs[0].text, "Cell")
+
     def test_hwpx_nested_tables_are_parsed(self) -> None:
         hwpx_bytes_io = BytesIO()
         with zipfile.ZipFile(hwpx_bytes_io, "w") as zf:

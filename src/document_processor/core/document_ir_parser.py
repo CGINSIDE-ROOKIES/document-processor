@@ -722,8 +722,8 @@ def _hwpx_picture_display_size(pic_el: ET.Element) -> tuple[float | None, float 
     return _hwpunit_to_pt(dim_el.get("dimwidth")), _hwpunit_to_pt(dim_el.get("dimheight"))
 
 
-def _parse_hwpx_run_images(
-    run_el: ET.Element,
+def _parse_hwpx_picture_image(
+    pic_el: ET.Element,
     *,
     paragraph_id: str,
     image_counter: int,
@@ -731,53 +731,46 @@ def _parse_hwpx_run_images(
     binary_name_map: dict[str, str],
     assets: dict[str, ImageAsset],
     asset_lookup: dict[tuple[str, str], str],
-) -> tuple[list[ImageIR], int]:
-    images: list[ImageIR] = []
+) -> tuple[ImageIR | None, int]:
+    img_el = next(
+        (
+            element
+            for element in pic_el.iter()
+            if isinstance(element.tag, str)
+            and element.tag.rsplit("}", 1)[-1] == _HC_IMG_TAG
+            and element.get("binaryItemIDRef")
+        ),
+        None,
+    )
+    if img_el is None:
+        return None, image_counter
 
-    for child in list(run_el):
-        tag = child.tag
-        if tag != f"{_HP}pic":
-            continue
+    binary_path = _find_hwpx_binary_path(binary_name_map, img_el.get("binaryItemIDRef"))
+    if binary_path is None:
+        return None, image_counter
 
-        img_el = next(
-            (
-                element
-                for element in child.iter()
-                if isinstance(element.tag, str)
-                and element.tag.rsplit("}", 1)[-1] == _HC_IMG_TAG
-                and element.get("binaryItemIDRef")
-            ),
-            None,
-        )
-        if img_el is None:
-            continue
+    data = archive.read(binary_path)
+    filename = Path(binary_path).name
+    image_id = _register_image_asset(
+        assets,
+        asset_lookup,
+        data=data,
+        mime_type=_mime_type_for_filename(filename),
+        filename=filename,
+    )
+    display_width_pt, display_height_pt = _hwpx_picture_display_size(pic_el)
 
-        binary_path = _find_hwpx_binary_path(binary_name_map, img_el.get("binaryItemIDRef"))
-        if binary_path is None:
-            continue
+    image_counter += 1
+    return ImageIR(
+        unit_id=f"{paragraph_id}.img{image_counter}",
+        image_id=image_id,
+        display_width_pt=display_width_pt,
+        display_height_pt=display_height_pt,
+    ), image_counter
 
-        data = archive.read(binary_path)
-        filename = Path(binary_path).name
-        image_id = _register_image_asset(
-            assets,
-            asset_lookup,
-            data=data,
-            mime_type=_mime_type_for_filename(filename),
-            filename=filename,
-        )
-        display_width_pt, display_height_pt = _hwpx_picture_display_size(child)
 
-        image_counter += 1
-        images.append(
-            ImageIR(
-                unit_id=f"{paragraph_id}.img{image_counter}",
-                image_id=image_id,
-                display_width_pt=display_width_pt,
-                display_height_pt=display_height_pt,
-            )
-        )
-
-    return images, image_counter
+def _hwpx_text_element_text(text_el: ET.Element) -> str:
+    return "".join(text_el.itertext())
 
 
 def _parse_hwpx_paragraph_content(
@@ -798,6 +791,7 @@ def _parse_hwpx_paragraph_content(
     content: list[object] = []
     image_counter = 0
     table_counter = 0
+    content_position = 0
 
     run_els = paragraph_el.findall(f"{_HP}run")
     if not run_els:
@@ -811,44 +805,88 @@ def _parse_hwpx_paragraph_content(
             content.append(run)
         return runs, images, tables, content
 
-    for run_index, run_el in enumerate(run_els, start=1):
-        text = _run_text(run_el)
-        run_images, image_counter = _parse_hwpx_run_images(
-            run_el,
-            paragraph_id=paragraph_id,
-            image_counter=image_counter,
-            archive=archive,
-            binary_name_map=binary_name_map,
-            assets=assets,
-            asset_lookup=asset_lookup,
-        )
-        run_tables: list[TableIR] = []
-        if include_tables:
-            for table_el in run_el.findall(f"{_HP}tbl"):
-                table_counter += 1
-                table_ir = _parse_hwpx_table(
-                    table_el,
-                    table_id_builder(table_counter),
-                    include_tables=include_tables,
-                    skip_empty=skip_empty,
+    for run_el in run_els:
+        pending_text_parts: list[str] = []
+        emitted_run_content = False
+        saw_run_level_content = False
+
+        def flush_pending_text() -> None:
+            nonlocal content_position, emitted_run_content
+            if not pending_text_parts:
+                return
+
+            text = "".join(pending_text_parts)
+            pending_text_parts.clear()
+            if not text and (skip_empty or saw_run_level_content):
+                return
+
+            content_position += 1
+            run = RunIR(
+                unit_id=f"{paragraph_id}.r{content_position}",
+                text=text,
+            )
+            runs.append(run)
+            content.append(run)
+            emitted_run_content = True
+
+        for child in list(run_el):
+            tag = child.tag
+            if tag == f"{_HP}t":
+                pending_text_parts.append(_hwpx_text_element_text(child))
+                continue
+
+            if tag not in {f"{_HP}pic", f"{_HP}tbl"}:
+                continue
+
+            flush_pending_text()
+            saw_run_level_content = True
+
+            if tag == f"{_HP}pic":
+                image_ir, image_counter = _parse_hwpx_picture_image(
+                    child,
+                    paragraph_id=paragraph_id,
+                    image_counter=image_counter,
                     archive=archive,
                     binary_name_map=binary_name_map,
                     assets=assets,
                     asset_lookup=asset_lookup,
                 )
-                run_tables.append(table_ir)
+                if image_ir is not None:
+                    content_position += 1
+                    images.append(image_ir)
+                    content.append(image_ir)
+                    emitted_run_content = True
+                continue
 
-        if text or (not skip_empty and not run_images and not run_tables):
+            if not include_tables:
+                continue
+
+            table_counter += 1
+            table_ir = _parse_hwpx_table(
+                child,
+                table_id_builder(table_counter),
+                include_tables=include_tables,
+                skip_empty=skip_empty,
+                archive=archive,
+                binary_name_map=binary_name_map,
+                assets=assets,
+                asset_lookup=asset_lookup,
+            )
+            content_position += 1
+            tables.append(table_ir)
+            content.append(table_ir)
+            emitted_run_content = True
+
+        flush_pending_text()
+
+        if not emitted_run_content and not skip_empty:
+            content_position += 1
             run = RunIR(
-                unit_id=f"{paragraph_id}.r{run_index}",
-                text=text,
+                unit_id=f"{paragraph_id}.r{content_position}",
+                text="",
             )
             runs.append(run)
             content.append(run)
-        images.extend(run_images)
-        content.extend(run_images)
-        tables.extend(run_tables)
-        content.extend(run_tables)
 
     return runs, images, tables, content
 

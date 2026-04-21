@@ -120,6 +120,57 @@ class ImageSupportTests(unittest.TestCase):
         self.assertIn("Before", html)
         self.assertIn("After", html)
 
+    def test_hwpx_images_inside_one_run_preserve_child_order(self) -> None:
+        image_markup = """
+        <hp:imgDim dimwidth="7200" dimheight="3600"/>
+        <hc:img binaryItemIDRef="image1"/>
+"""
+        hwpx_bytes_io = BytesIO()
+        with zipfile.ZipFile(hwpx_bytes_io, "w") as zf:
+            zf.writestr(
+                "Contents/header.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core" />
+""",
+            )
+            zf.writestr(
+                "Contents/section0.xml",
+                f"""<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section"
+        xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
+        xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core">
+  <hp:p>
+    <hp:run>
+      <hp:t>Before </hp:t>
+      <hp:pic>{image_markup}</hp:pic>
+      <hp:t>Middle </hp:t>
+      <hp:pic>{image_markup}</hp:pic>
+      <hp:t>After</hp:t>
+    </hp:run>
+  </hp:p>
+</hs:sec>
+""",
+            )
+            zf.writestr("BinData/image1.png", PNG_BYTES)
+
+        parsed = DocIR.from_file(hwpx_bytes_io.getvalue(), doc_type="hwpx")
+        paragraph_ir = parsed.paragraphs[0]
+
+        self.assertEqual(
+            [type(node).__name__ for node in paragraph_ir.content],
+            ["RunIR", "ImageIR", "RunIR", "ImageIR", "RunIR"],
+        )
+        self.assertEqual(
+            [(run.unit_id, run.text) for run in paragraph_ir.runs],
+            [
+                ("s1.p1.r1", "Before "),
+                ("s1.p1.r3", "Middle "),
+                ("s1.p1.r5", "After"),
+            ],
+        )
+        self.assertEqual([image.unit_id for image in paragraph_ir.images], ["s1.p1.img1", "s1.p1.img2"])
+        self.assertEqual(len(parsed.assets), 1)
+
     def test_hwpx_image_display_size_prefers_object_size_over_intrinsic_size(self) -> None:
         hwpx_bytes = self._build_hwpx_with_inline_image(
             image_markup="""
