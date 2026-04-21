@@ -12,6 +12,7 @@ SRC_ROOT = THIS_DIR.parent / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from document_processor import HwpxDocument
 from document_processor.core.style_extractor import extract_styles, extract_styles_docx, extract_styles_hwpx
 
 
@@ -110,8 +111,6 @@ class StyleExtractorTests(unittest.TestCase):
         self.assertAlmostEqual(rstyle.size_pt or 0.0, 12.0, places=3)
 
     def test_extract_hwpx_styles_from_hwpx_document(self) -> None:
-        from document_processor.hwpx import HwpxDocument
-
         header_xml = """<?xml version="1.0" encoding="UTF-8"?>
 <hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core">
   <hh:paraProperties itemCnt="1">

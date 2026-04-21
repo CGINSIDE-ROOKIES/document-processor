@@ -14,6 +14,7 @@ from document_processor import (
     DocIR,
     DocumentInput,
     GetDocumentContextRequest,
+    HwpxDocument,
     RenderReviewHtmlRequest,
     TextAnnotation,
     TextEdit,

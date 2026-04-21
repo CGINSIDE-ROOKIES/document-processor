@@ -181,6 +181,9 @@ Install the visualization extra first:
 
 ```bash
 pip install "document-processor[viz]"
+
+# might need compiler flags depending on version, might error out
+CFLAGS="-Wno-error=incompatible-pointer-types" ... install
 ```
 
 Erdantic also needs Graphviz available on the system.

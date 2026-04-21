@@ -24,8 +24,8 @@ document-processor-diagram = "document_processor.diagram:main"
 
 [dependency-groups]
 dev = [
-    "pytest>=9.0.2",
+    "pytest>=9.0.3",
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/document_processor", "src/hwpx"]
+packages = ["src/document_processor"]
