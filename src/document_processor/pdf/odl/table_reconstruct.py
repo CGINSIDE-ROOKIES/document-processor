@@ -70,10 +70,82 @@ def preprocess_dotted_rule_splits(
             dotted_v = [p for p in primitives if p.object_type == "segmented_vertical_rule"]
             if not dotted_h and not dotted_v:
                 continue
-            for table in tables:
-                _apply_dotted_splits(table, dotted_h, dotted_v)
+            # A dotted rule belongs to the innermost enclosing table. When
+            # processing one table, strip rules that fall inside any nested
+            # table on the same page — those belong to that nested table's
+            # own turn in this loop.
+            table_bboxes = [
+                (t, coerce_bbox(t.get("bounding box"))) for t in tables
+            ]
+            # Process innermost tables first: a shallow copy of an already-
+            # rewritten nested table will carry the new ``rows`` reference
+            # into the outer table's rebuilt cells. Sorting by enclosing-
+            # depth (most enclosed → deepest → processed first) keeps this
+            # invariant without relying on depth-first visit order.
+            ordered_tables = sorted(
+                tables,
+                key=lambda t: -_enclosing_depth(t, table_bboxes),
+            )
+            for table in ordered_tables:
+                outer_bbox = coerce_bbox(table.get("bounding box"))
+                nested_bboxes = [
+                    other_bbox
+                    for other, other_bbox in table_bboxes
+                    if other is not table
+                    and other_bbox is not None
+                    and outer_bbox is not None
+                    and _bbox_encloses(outer_bbox, other_bbox)
+                ]
+                table_dotted_h = _rules_outside(dotted_h, nested_bboxes)
+                table_dotted_v = _rules_outside(dotted_v, nested_bboxes)
+                _apply_dotted_splits(table, table_dotted_h, table_dotted_v)
     finally:
         document.close()
+
+
+def _enclosing_depth(
+    table: dict[str, Any],
+    table_bboxes: list[tuple[dict[str, Any], PdfBoundingBox | None]],
+) -> int:
+    self_bbox = coerce_bbox(table.get("bounding box"))
+    if self_bbox is None:
+        return 0
+    return sum(
+        1
+        for other, other_bbox in table_bboxes
+        if other is not table
+        and other_bbox is not None
+        and _bbox_encloses(other_bbox, self_bbox)
+    )
+
+
+def _bbox_encloses(outer: PdfBoundingBox, inner: PdfBoundingBox, pad: float = 1.0) -> bool:
+    return (
+        inner.left_pt >= outer.left_pt - pad
+        and inner.right_pt <= outer.right_pt + pad
+        and inner.bottom_pt >= outer.bottom_pt - pad
+        and inner.top_pt <= outer.top_pt + pad
+    )
+
+
+def _rules_outside(
+    rules: list[PdfPreviewVisualPrimitive],
+    exclude_bboxes: list[PdfBoundingBox],
+) -> list[PdfPreviewVisualPrimitive]:
+    if not exclude_bboxes:
+        return rules
+    kept: list[PdfPreviewVisualPrimitive] = []
+    for rule in rules:
+        b = rule.bounding_box
+        cx = (b.left_pt + b.right_pt) / 2.0
+        cy = (b.bottom_pt + b.top_pt) / 2.0
+        if any(
+            ex.left_pt <= cx <= ex.right_pt and ex.bottom_pt <= cy <= ex.top_pt
+            for ex in exclude_bboxes
+        ):
+            continue
+        kept.append(rule)
+    return kept
 
 
 def _collect_table_nodes_by_page(root: Any) -> dict[int, list[dict[str, Any]]]:
@@ -448,10 +520,12 @@ def _distribute_children(
 ) -> list[Any]:
     """Return the subset of children that belongs inside ``sub_bbox``.
 
-    A paragraph whose overall bbox fits inside ``sub_bbox`` is kept whole.
-    A paragraph whose spans straddle ``sub_bbox`` is replaced with a sub
-    paragraph that only carries the spans fitting inside — this matters for
-    cells where ODL merged many visual rows into one paragraph.
+    Every dict child is passed through ``_node_restricted_to``, which does
+    span-level pruning when the node carries leaf spans and falls back to a
+    bbox-center test otherwise. This handles ODL outputs where visually
+    distinct labels (e.g., ``선정규모`` + ``협력기업``) sit in one node with
+    multiple stacked spans, regardless of whether that node's ``type`` is
+    ``paragraph``, ``heading``, etc.
     """
     if not isinstance(children, list):
         return []
@@ -460,120 +534,140 @@ def _distribute_children(
         if not isinstance(child, dict):
             kept.append(child)
             continue
-        child_bbox = coerce_bbox(child.get("bounding box"))
-        if child_bbox is None:
-            kept.append(child)
-            continue
-        if child.get("type") == "paragraph":
-            sub_paragraph = _paragraph_restricted_to(child, sub_bbox)
-            if sub_paragraph is not None:
-                kept.append(sub_paragraph)
-            continue
-        if _bbox_center_in(child_bbox, sub_bbox):
-            kept.append(child)
+        restricted = _node_restricted_to(child, sub_bbox)
+        if restricted is not None:
+            kept.append(restricted)
     return kept
 
 
-def _paragraph_restricted_to(
-    paragraph: dict[str, Any],
+_LEAF_TEXT_TYPES = frozenset({"span", "text chunk", "run"})
+_CHILD_KEYS = ("kids", "spans", "runs", "list items")
+
+
+def _node_restricted_to(
+    node: dict[str, Any],
     sub_bbox: PdfBoundingBox,
 ) -> dict[str, Any] | None:
-    """Keep paragraph spans whose bbox center lies in ``sub_bbox``.
+    """Return a shallow copy of ``node`` restricted to descendants in ``sub_bbox``.
 
-    Returns ``None`` when no spans qualify; returns the original paragraph
-    (shallow copied) when every span qualifies; otherwise returns a pruned
-    paragraph with ``spans``/``content``/``bounding box`` rebuilt from the
-    retained spans.
+    General ODL-tree pruning: recurses through every known container key
+    (``kids``/``spans``/``runs``/``list items``) so any hierarchy — paragraph
+    with stacked spans, list holding list items, heading grouping labels —
+    is narrowed at the finest level that still preserves the node shape.
+    Leaf-like nodes (explicit leaf types or nodes without child collections)
+    fall back to a bbox-center match.
     """
-    spans = _iter_leaf_spans(paragraph)
-    if not spans:
-        pbbox = coerce_bbox(paragraph.get("bounding box"))
-        if pbbox is not None and _bbox_center_in(pbbox, sub_bbox):
-            return dict(paragraph)
+    if node.get("type") in _LEAF_TEXT_TYPES:
+        bbox = coerce_bbox(node.get("bounding box")) or coerce_bbox(node.get("bbox"))
+        if bbox is None:
+            return None
+        return dict(node) if _bbox_center_in(bbox, sub_bbox) else None
+
+    child_collections: list[tuple[str, list[Any]]] = []
+    for key in _CHILD_KEYS:
+        items = node.get(key)
+        if isinstance(items, list) and items:
+            child_collections.append((key, items))
+
+    if not child_collections:
+        node_bbox = coerce_bbox(node.get("bounding box"))
+        if node_bbox is None:
+            return dict(node)
+        return dict(node) if _bbox_center_in(node_bbox, sub_bbox) else None
+
+    new_node = dict(node)
+    kept_any = False
+    for key, items in child_collections:
+        new_items: list[Any] = []
+        for item in items:
+            if isinstance(item, dict):
+                restricted = _node_restricted_to(item, sub_bbox)
+                if restricted is not None:
+                    new_items.append(restricted)
+                    kept_any = True
+            else:
+                new_items.append(item)
+        new_node[key] = new_items
+
+    if not kept_any:
         return None
 
-    kept_spans = [s for s in spans if _span_center_in(s, sub_bbox)]
-    if not kept_spans:
-        return None
-    if len(kept_spans) == len(spans):
-        return dict(paragraph)
-    return _build_sub_paragraph(paragraph, kept_spans)
+    # Rebuild bbox from surviving leaf descendants so parent cells can rely
+    # on consistent bbox information post-pruning.
+    leaf_bboxes = _collect_leaf_bboxes(new_node)
+    if leaf_bboxes:
+        new_node["bounding box"] = [
+            min(b.left_pt for b in leaf_bboxes),
+            min(b.bottom_pt for b in leaf_bboxes),
+            max(b.right_pt for b in leaf_bboxes),
+            max(b.top_pt for b in leaf_bboxes),
+        ]
+
+    # For nodes that carry text as a concatenated ``content`` string (paragraph,
+    # heading, …), rebuild it from the surviving direct leaf spans so the
+    # downstream adapter's text extraction stays in sync with the retained
+    # spans. Nodes without direct leaf spans (list, list item, …) keep their
+    # original content field.
+    direct_spans = [
+        item
+        for key in ("spans", "runs")
+        for item in new_node.get(key) or []
+        if isinstance(item, dict) and item.get("type") in _LEAF_TEXT_TYPES
+    ]
+    if direct_spans and "content" in new_node:
+        new_node["content"] = "".join(
+            s.get("content", "")
+            for s in direct_spans
+            if isinstance(s.get("content"), str)
+        )
+
+    # Keep list metadata consistent.
+    if isinstance(new_node.get("list items"), list):
+        new_node["number of list items"] = len(new_node["list items"])
+
+    return new_node
 
 
-def _iter_leaf_spans(paragraph: dict[str, Any]) -> list[dict[str, Any]]:
-    leaves: list[dict[str, Any]] = []
+def _collect_leaf_bboxes(node: dict[str, Any]) -> list[PdfBoundingBox]:
+    bboxes: list[PdfBoundingBox] = []
 
-    def visit(node: Any) -> None:
-        if not isinstance(node, dict):
+    def visit(current: Any) -> None:
+        if not isinstance(current, dict):
             return
-        if node.get("type") in {"span", "text chunk", "run"}:
-            leaves.append(node)
+        has_children = any(
+            isinstance(current.get(k), list) and current.get(k) for k in _CHILD_KEYS
+        )
+        if current.get("type") in _LEAF_TEXT_TYPES or not has_children:
+            bbox = coerce_bbox(current.get("bounding box")) or coerce_bbox(current.get("bbox"))
+            if bbox is not None:
+                bboxes.append(bbox)
             return
-        for key in ("kids", "spans", "runs"):
-            items = node.get(key)
+        for key in _CHILD_KEYS:
+            items = current.get(key)
             if isinstance(items, list):
                 for item in items:
                     visit(item)
 
-    for key in ("kids", "spans", "runs"):
-        items = paragraph.get(key)
+    for key in _CHILD_KEYS:
+        items = node.get(key)
         if isinstance(items, list):
             for item in items:
                 visit(item)
-    return leaves
-
-
-def _span_center_in(span: dict[str, Any], sub_bbox: PdfBoundingBox) -> bool:
-    bbox = coerce_bbox(span.get("bounding box")) or coerce_bbox(span.get("bbox"))
-    if bbox is None:
-        return False
-    return _bbox_center_in(bbox, sub_bbox)
+    return bboxes
 
 
 def _bbox_center_in(bbox: PdfBoundingBox, sub_bbox: PdfBoundingBox) -> bool:
     cx = (bbox.left_pt + bbox.right_pt) / 2.0
     cy = (bbox.bottom_pt + bbox.top_pt) / 2.0
-    # Half-open interval on top/right so a center lying exactly on an interior
-    # split boundary is assigned to a single sub-cell (the one below / to the
-    # left), avoiding duplication.
+    # Strict half-open partitioning: a center lying on any sub-cell boundary
+    # is assigned to exactly one neighbor (the lower / left one). No padding
+    # on either side — when adjacent sub-cells share a boundary, padding on
+    # one side's boundary would let a boundary-hugging center match both
+    # and end up duplicated.
     return (
-        sub_bbox.left_pt - _BBOX_PAD_PT <= cx < sub_bbox.right_pt + _BBOX_PAD_PT
-        and sub_bbox.bottom_pt - _BBOX_PAD_PT <= cy < sub_bbox.top_pt + _BBOX_PAD_PT
+        sub_bbox.left_pt <= cx < sub_bbox.right_pt
+        and sub_bbox.bottom_pt <= cy < sub_bbox.top_pt
     )
-
-
-def _build_sub_paragraph(
-    paragraph: dict[str, Any],
-    spans: list[dict[str, Any]],
-) -> dict[str, Any]:
-    sub = dict(paragraph)
-    sub["spans"] = list(spans)
-    sub["content"] = "".join(
-        span.get("content", "")
-        for span in spans
-        if isinstance(span.get("content"), str)
-    )
-    if "kids" in sub:
-        sub["kids"] = []
-    bboxes = [
-        bbox
-        for span in spans
-        if (bbox := coerce_bbox(span.get("bounding box"))) is not None
-    ]
-    if bboxes:
-        union_bbox = PdfBoundingBox(
-            left_pt=min(b.left_pt for b in bboxes),
-            bottom_pt=min(b.bottom_pt for b in bboxes),
-            right_pt=max(b.right_pt for b in bboxes),
-            top_pt=max(b.top_pt for b in bboxes),
-        )
-        sub["bounding box"] = [
-            union_bbox.left_pt,
-            union_bbox.bottom_pt,
-            union_bbox.right_pt,
-            union_bbox.top_pt,
-        ]
-    return sub
 
 
 __all__ = ["preprocess_dotted_rule_splits"]
