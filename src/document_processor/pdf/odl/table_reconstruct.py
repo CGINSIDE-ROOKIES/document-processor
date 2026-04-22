@@ -20,6 +20,7 @@ bbox center.
 
 from __future__ import annotations
 
+import unicodedata
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -264,6 +265,23 @@ def _apply_dotted_splits(
         key: _snap_values(ys, merged_ys) for key, ys in sub_rect_y_splits.items()
     }
 
+    # Pre-split leaves whose bbox straddles sub-band boundaries when their
+    # content decomposes into exactly as many logical units as the number of
+    # new sub-bands crossing the leaf. This recovers rows that ODL merged
+    # into a single leaf (e.g., "④ ... § 1개사 내외" collapsed into one
+    # list_item content + bbox).
+    unit_separators = _learn_unit_separators(raw_cells)
+    for idx, cell in enumerate(raw_cells):
+        cell_y_splits_union = sorted({
+            y
+            for (cell_idx, _band_idx), ys in sub_rect_y_splits.items()
+            if cell_idx == idx
+            for y in ys
+        })
+        if not cell_y_splits_union or not unit_separators:
+            continue
+        _presplit_merged_leaves(cell, cell_y_splits_union, unit_separators)
+
     new_rows = _rebuild_rows(
         raw_cells,
         cell_x_bands=cell_x_bands,
@@ -344,6 +362,152 @@ def _cell_split_points(
         if overlap >= _CELL_COVERAGE_RATIO * cell_span:
             points.append(rule_axis)
     return _dedupe_close(sorted(points), _AXIS_MERGE_TOL_PT)
+
+
+def _learn_unit_separators(nodes: list[dict[str, Any]]) -> set[str]:
+    """Discover paragraph-leading bullet-like characters used in these nodes.
+
+    A character qualifies as a unit separator if it appears as the first non-
+    whitespace character of some leaf's ``content``, is followed by whitespace,
+    and belongs to a Unicode punctuation / symbol / other-number category
+    (catches ``§`` ``▪`` ``•`` ``※`` ``①②③`` etc. while excluding letters and
+    plain ASCII digits). Learning from the document itself avoids hard-coding
+    a fixed bullet set.
+    """
+    seps: set[str] = set()
+
+    def visit(node: Any) -> None:
+        if not isinstance(node, dict):
+            return
+        content = node.get("content")
+        if isinstance(content, str):
+            stripped = content.lstrip()
+            if len(stripped) >= 2 and stripped[1].isspace():
+                ch = stripped[0]
+                if _is_unit_marker(ch):
+                    seps.add(ch)
+        for key in _CHILD_KEYS:
+            items = node.get(key)
+            if isinstance(items, list):
+                for item in items:
+                    visit(item)
+
+    for n in nodes:
+        visit(n)
+    return seps
+
+
+def _is_unit_marker(ch: str) -> bool:
+    if ch.isalpha():
+        return False
+    if ch.isascii() and ch.isdigit():
+        return False
+    cat = unicodedata.category(ch)
+    # S* Symbol (math, other, modifier), P* Punctuation, No "Other Number"
+    # (covers circled digits like ①). Nd (decimal digit) is handled by the
+    # isascii-isdigit check above, but non-ASCII decimal digits are also
+    # excluded via that check.
+    return bool(cat) and (cat[0] == "S" or cat[0] == "P" or cat == "No")
+
+
+def _split_content_into_units(content: str, separators: set[str]) -> list[str]:
+    """Split content at ``<whitespace><separator>`` boundaries.
+
+    The very first character of the content — the leaf's own leading bullet —
+    is never treated as a split point; only mid-text separators produce unit
+    boundaries.
+    """
+    if not content or not separators:
+        return [content] if content else []
+    units: list[str] = []
+    start = 0
+    i = 1
+    while i < len(content):
+        if content[i] in separators and content[i - 1].isspace():
+            units.append(content[start:i].strip())
+            start = i
+        i += 1
+    units.append(content[start:].strip())
+    return [u for u in units if u]
+
+
+def _presplit_merged_leaves(
+    cell: dict[str, Any],
+    y_splits: list[float],
+    separators: set[str],
+) -> None:
+    """Walk ``cell``'s tree and split leaves whose bbox crosses ``y_splits``
+    when their content decomposes into exactly as many units as the crossed
+    sub-bands. Synthetic sub-leaves receive proportional bboxes so the
+    downstream distribution can place each unit in its rightful sub-band.
+    """
+
+    def process(parent: dict[str, Any]) -> None:
+        for key in _CHILD_KEYS:
+            items = parent.get(key)
+            if not isinstance(items, list):
+                continue
+            new_items: list[Any] = []
+            for item in items:
+                if not isinstance(item, dict):
+                    new_items.append(item)
+                    continue
+                process(item)
+                has_children = any(
+                    isinstance(item.get(k), list) and item.get(k) for k in _CHILD_KEYS
+                )
+                if has_children:
+                    new_items.append(item)
+                    continue
+                split = _try_split_merged_leaf(item, y_splits, separators)
+                if split:
+                    new_items.extend(split)
+                else:
+                    new_items.append(item)
+            parent[key] = new_items
+
+    process(cell)
+
+
+def _try_split_merged_leaf(
+    leaf: dict[str, Any],
+    y_splits: list[float],
+    separators: set[str],
+) -> list[dict[str, Any]] | None:
+    bbox = coerce_bbox(leaf.get("bounding box"))
+    if bbox is None:
+        return None
+    content = leaf.get("content")
+    if not isinstance(content, str) or not content:
+        return None
+    interior_ys = sorted(
+        y
+        for y in y_splits
+        if bbox.bottom_pt + _INTERIOR_PAD_PT < y < bbox.top_pt - _INTERIOR_PAD_PT
+    )
+    if not interior_ys:
+        return None
+    units = _split_content_into_units(content, separators)
+    if len(units) != len(interior_ys) + 1:
+        return None
+
+    y_cuts = [bbox.bottom_pt, *interior_ys, bbox.top_pt]
+    # Content order: first unit is visually at the TOP (highest y), so it
+    # maps to the topmost y-band (y_cuts[-2..-1]). Reverse the list so
+    # index i aligns with y_cuts[i..i+1] (bottom-up traversal).
+    units_bottom_to_top = list(reversed(units))
+    out: list[dict[str, Any]] = []
+    for i, unit in enumerate(units_bottom_to_top):
+        new_leaf = dict(leaf)
+        new_leaf["bounding box"] = [
+            bbox.left_pt,
+            y_cuts[i],
+            bbox.right_pt,
+            y_cuts[i + 1],
+        ]
+        new_leaf["content"] = unit
+        out.append(new_leaf)
+    return out
 
 
 def _collect_new_boundaries(

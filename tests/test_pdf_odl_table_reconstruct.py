@@ -345,6 +345,71 @@ class DottedRuleSplitTests(unittest.TestCase):
         self.assertEqual(cells_by_pos[(4, 3)]["paragraphs"][0]["content"], "Row4")
 
 
+    def test_merged_leaf_content_is_split_when_units_match_sub_bands(self) -> None:
+        # Mirrors the p8 list_item pathology: a single leaf whose bbox spans
+        # two rows and whose content concatenates "① ... " with "§ 1개사
+        # 내외" via a learned bullet character. A detected dotted rule at
+        # y=50 divides the cell into two sub-bands.
+        merged_leaf = {
+            "type": "list item",
+            "page number": 1,
+            "bounding box": [15.0, 15.0, 105.0, 85.0],
+            "content": "① Major task that spans multiple lines of text § 1pt",
+        }
+        sibling_bullet_ref = _paragraph("§ sibling", left=15.0, bottom=5.0, right=105.0, top=14.0)
+        table = {
+            "type": "table",
+            "page number": 1,
+            "bounding box": [10.0, 0.0, 110.0, 90.0],
+            "number of rows": 1,
+            "number of columns": 1,
+            "grid row boundaries": [90.0, 0.0],
+            "grid column boundaries": [10.0, 110.0],
+            "rows": [
+                {
+                    "type": "table row",
+                    "row number": 1,
+                    "cells": [
+                        {
+                            "type": "table cell",
+                            "page number": 1,
+                            "row number": 1,
+                            "column number": 1,
+                            "row span": 1,
+                            "column span": 1,
+                            "bounding box": [10.0, 0.0, 110.0, 90.0],
+                            "kids": [merged_leaf, sibling_bullet_ref],
+                            "paragraphs": [merged_leaf, sibling_bullet_ref],
+                        }
+                    ],
+                }
+            ],
+        }
+        dotted = _dotted_primitive(
+            orientation="horizontal",
+            left=10.0, bottom=49.5, right=110.0, top=50.5,
+        )
+        _apply_dotted_splits(table, dotted_h=[dotted], dotted_v=[])
+        self.assertEqual(table["number of rows"], 2)
+        cells_by_row = {
+            row["row number"]: row["cells"][0] for row in table["rows"]
+        }
+        # Top sub-band keeps only the ① segment.
+        top_kids = [k for k in cells_by_row[1]["kids"] if isinstance(k, dict)]
+        self.assertTrue(
+            any("① Major task" in (k.get("content") or "") and "1pt" not in (k.get("content") or "")
+                for k in top_kids),
+            f"top sub-band should carry only '①' unit, got: {[k.get('content') for k in top_kids]}",
+        )
+        # Bottom sub-band gets the § unit.
+        bottom_kids = [k for k in cells_by_row[2]["kids"] if isinstance(k, dict)]
+        self.assertTrue(
+            any("1pt" in (k.get("content") or "")
+                for k in bottom_kids),
+            f"bottom sub-band should carry '§ 1pt' unit, got: {[k.get('content') for k in bottom_kids]}",
+        )
+
+
 class DottedRuleSplitAdapterIntegrationTests(unittest.TestCase):
     """End-to-end: preprocessed raw table flows through adapter correctly."""
 
