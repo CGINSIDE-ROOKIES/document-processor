@@ -10,8 +10,8 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from document_processor import Annotation, DocIR, render_annotated_html
-from document_processor.models import ColumnLayoutInfo, ImageAsset, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
-from document_processor.style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
+from document_processor.models import ImageAsset, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
+from document_processor.style_types import CellStyleInfo, ColumnLayoutInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
 
 
 class HtmlExporterTests(unittest.TestCase):
@@ -277,10 +277,10 @@ class HtmlExporterTests(unittest.TestCase):
         two_columns = ColumnLayoutInfo(count=2, gap_pt=18.0)
         doc = DocIR(paragraphs=[
                 ParagraphIR(content=[RunIR(text="Title")]),
-                ParagraphIR(column_layout=two_columns,
+                ParagraphIR(para_style=ParaStyleInfo(column_layout=two_columns),
                     content=[RunIR(text="Column body one")],
                 ),
-                ParagraphIR(column_layout=two_columns,
+                ParagraphIR(para_style=ParaStyleInfo(column_layout=two_columns),
                     content=[RunIR(text="Column body two")],
                 ),
                 ParagraphIR(content=[RunIR(text="Footer")]),

@@ -79,6 +79,7 @@ def _has_para_style(info: ParaStyleInfo) -> bool:
             info.right_indent_pt,
             info.first_line_indent_pt,
             info.hanging_indent_pt,
+            info.column_layout,
         )
     )
 

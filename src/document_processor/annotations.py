@@ -7,8 +7,8 @@ import re
 
 from pydantic import BaseModel, Field, model_validator
 
-from .models import ColumnLayoutInfo, DocIR, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
-from .style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo
+from .models import DocIR, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
+from .style_types import CellStyleInfo, ColumnLayoutInfo, ParaStyleInfo, RunStyleInfo
 
 
 def _non_negative_pt(value: float | None) -> float | None:
@@ -27,6 +27,10 @@ def _column_layout_key(layout: ColumnLayoutInfo | None) -> tuple[object, ...] | 
         tuple(round(gap, 3) for gap in layout.gaps_pt),
         layout.equal_width,
     )
+
+
+def _paragraph_column_layout(paragraph: ParagraphIR) -> ColumnLayoutInfo | None:
+    return paragraph.para_style.column_layout if paragraph.para_style is not None else None
 
 
 def _column_group_css(layout: ColumnLayoutInfo) -> str:
@@ -848,10 +852,12 @@ def _render_column_group(
     paragraph_annotations_by_id: dict[str, list[ResolvedAnnotation]],
     run_annotations_by_id: dict[str, list[ResolvedAnnotation]],
 ) -> str:
-    if not paragraphs or paragraphs[0].column_layout is None:
+    if not paragraphs or _paragraph_column_layout(paragraphs[0]) is None:
         return ""
 
-    layout = paragraphs[0].column_layout
+    layout = _paragraph_column_layout(paragraphs[0])
+    if layout is None:
+        return ""
     content_html = "\n\n".join(
         _render_paragraph(doc_ir, paragraph, paragraph_annotations_by_id, run_annotations_by_id)
         for paragraph in paragraphs
@@ -889,7 +895,7 @@ def _render_paragraph_sequence(
         current_column_key = None
 
     for paragraph in paragraphs:
-        column_key = _column_layout_key(paragraph.column_layout)
+        column_key = _column_layout_key(_paragraph_column_layout(paragraph))
         if column_key is None:
             flush_column_group()
             parts.append(_render_paragraph(doc_ir, paragraph, paragraph_annotations_by_id, run_annotations_by_id))

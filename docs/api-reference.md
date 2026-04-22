@@ -115,8 +115,9 @@ indents cannot start text outside the page/table-cell content edge. Valid
 hanging indents are preserved when the positive left indent is large enough.
 Table cell padding is rendered from `CellStyleInfo` when extracted from source
 cell margins such as HWPX `hp:cellMargin` or DOCX `w:tcMar`.
-Top-level consecutive paragraphs with the same multi-column `column_layout`
-are wrapped in a CSS multi-column group when rendered to HTML.
+Top-level consecutive paragraphs with the same multi-column
+`para_style.column_layout` are wrapped in a CSS multi-column group when rendered
+to HTML.
 
 ### `ParagraphIR`
 
@@ -127,7 +128,6 @@ Important fields:
 - `node_id`
 - `text`
 - `page_number`
-- `column_layout`
 - `para_style`
 - `content`
 
@@ -225,9 +225,24 @@ Important fields:
 HWPX `hp:cellMargin` and DOCX `w:tcMar`/`w:tblCellMar` are represented as
 cell padding fields in points. Paragraph indents remain in `ParaStyleInfo`.
 
+#### `ParaStyleInfo`
+
+Paragraph-level formatting for `ParagraphIR.para_style`.
+
+Important fields:
+
+- `align`
+- `left_indent_pt`
+- `right_indent_pt`
+- `first_line_indent_pt`
+- `hanging_indent_pt`
+- `column_layout`
+
 #### `ColumnLayoutInfo`
 
-Active section/text-column layout for a paragraph.
+Active section/text-column layout for a paragraph. This is stored as
+`ParagraphIR.para_style.column_layout` because it affects paragraph rendering
+rather than the structural identity of the paragraph.
 
 Important fields:
 

@@ -14,7 +14,6 @@ import zipfile
 
 from ..io_utils import coerce_source_to_supported_value
 from ..models import (
-    ColumnLayoutInfo,
     DocIR,
     ImageAsset,
     ImageIR,
@@ -26,6 +25,7 @@ from ..models import (
     _anchored_node_id,
     _make_native_anchor,
 )
+from ..style_types import ColumnLayoutInfo, ParaStyleInfo
 from .docx_structured_exporter import _iter_blocks, _iter_blocks_from_element, _load_docx_source
 from .hwp_converter import convert_hwp_to_hwpx_bytes
 from .hwpx_structured_exporter import _HP, _logical_table_cells, _paragraph_text, _run_text, _safe_int, _section_roots_from_bytes
@@ -115,6 +115,13 @@ def _page_layout(
 
 def _copy_column_layout(column_layout: ColumnLayoutInfo | None) -> ColumnLayoutInfo | None:
     return column_layout.model_copy(deep=True) if column_layout is not None else None
+
+
+def _para_style_with_column_layout(column_layout: ColumnLayoutInfo | None) -> ParaStyleInfo | None:
+    copied_column_layout = _copy_column_layout(column_layout)
+    if copied_column_layout is None:
+        return None
+    return ParaStyleInfo(column_layout=copied_column_layout)
 
 
 def _ensure_page_info(
@@ -710,7 +717,7 @@ def _build_docx_doc_ir(
                     part_name="word/document.xml",
                 ),
                 page_number=current_page_number,
-                column_layout=_copy_column_layout(current_layout.get("column_layout")),
+                para_style=_para_style_with_column_layout(current_layout.get("column_layout")),
                 content=content,
             )
             _assign_page_number_to_paragraph(paragraph_ir, current_page_number)
@@ -759,7 +766,7 @@ def _build_docx_doc_ir(
                 part_name="word/document.xml",
             ),
             page_number=current_page_number,
-            column_layout=_copy_column_layout(current_layout.get("column_layout")),
+            para_style=_para_style_with_column_layout(current_layout.get("column_layout")),
             content=[table_ir],
         )
         _assign_page_number_to_paragraph(paragraph_ir, current_page_number)
@@ -1186,7 +1193,7 @@ def _build_hwpx_doc_ir(
                         part_name=f"Contents/section{s_idx - 1}.xml",
                     ),
                     page_number=absolute_page_number,
-                    column_layout=_copy_column_layout(current_column_layout),
+                    para_style=_para_style_with_column_layout(current_column_layout),
                     content=content,
                 )
                 _assign_page_number_to_paragraph(paragraph_ir, absolute_page_number)

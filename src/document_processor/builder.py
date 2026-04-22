@@ -18,7 +18,7 @@ from .models import (
 )
 
 if TYPE_CHECKING:
-    from .style_types import StyleMap
+    from .style_types import ParaStyleInfo, StyleMap
 
 
 _LEGACY_NUM_RE = re.compile(r"\d+")
@@ -81,6 +81,20 @@ def _safe_para_for_id(
     paragraph = _new_paragraph(paragraph_id, para_style=para_style)
     paragraph_map[paragraph_id] = paragraph
     return paragraph
+
+
+def _merge_para_style(
+    existing_style: "ParaStyleInfo | None",
+    incoming_style: "ParaStyleInfo | None",
+) -> "ParaStyleInfo | None":
+    if incoming_style is None:
+        return existing_style
+    if existing_style is None or incoming_style.column_layout is not None:
+        return incoming_style
+
+    merged_style = incoming_style.model_copy(deep=True)
+    merged_style.column_layout = existing_style.column_layout
+    return merged_style
 
 
 def _is_token(token: str, prefix: str) -> bool:
@@ -335,7 +349,10 @@ def apply_style_map_to_doc_ir(doc_ir: "DocIR", style_map: "StyleMap | None") -> 
             for paragraph in cell.paragraphs:
                 paragraph_path = _node_anchor_path(paragraph)
                 if paragraph_path in style_map.paragraphs:
-                    paragraph.para_style = style_map.paragraphs[paragraph_path]
+                    paragraph.para_style = _merge_para_style(
+                        paragraph.para_style,
+                        style_map.paragraphs[paragraph_path],
+                    )
                 for run in paragraph.runs:
                     run_path = _node_anchor_path(run)
                     if run_path in style_map.runs:
@@ -346,7 +363,10 @@ def apply_style_map_to_doc_ir(doc_ir: "DocIR", style_map: "StyleMap | None") -> 
     for paragraph in doc_ir.paragraphs:
         paragraph_path = _node_anchor_path(paragraph)
         if paragraph_path in style_map.paragraphs:
-            paragraph.para_style = style_map.paragraphs[paragraph_path]
+            paragraph.para_style = _merge_para_style(
+                paragraph.para_style,
+                style_map.paragraphs[paragraph_path],
+            )
         for run in paragraph.runs:
             run_path = _node_anchor_path(run)
             if run_path in style_map.runs:

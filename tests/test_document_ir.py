@@ -300,9 +300,9 @@ class DocumentIRTests(unittest.TestCase):
             parsed = DocIR.from_file(docx_path, skip_empty=True)
 
         self.assertEqual([paragraph.text for paragraph in parsed.paragraphs], ["One column title", "Three column body"])
-        self.assertEqual(parsed.paragraphs[0].column_layout.count, 1)
-        self.assertEqual(parsed.paragraphs[1].column_layout.count, 3)
-        self.assertAlmostEqual(parsed.paragraphs[1].column_layout.gap_pt or 0.0, 36.0, places=2)
+        self.assertEqual(parsed.paragraphs[0].para_style.column_layout.count, 1)
+        self.assertEqual(parsed.paragraphs[1].para_style.column_layout.count, 3)
+        self.assertAlmostEqual(parsed.paragraphs[1].para_style.column_layout.gap_pt or 0.0, 36.0, places=2)
 
     def test_from_file_hwpx_extracts_paragraph_column_layouts(self) -> None:
         hwpx_bytes_io = BytesIO()
@@ -343,8 +343,8 @@ class DocumentIRTests(unittest.TestCase):
             "Three column body start",
             "Three column body continued",
         ])
-        self.assertEqual([paragraph.column_layout.count for paragraph in parsed.paragraphs], [1, 3, 3])
-        self.assertAlmostEqual(parsed.paragraphs[1].column_layout.gap_pt or 0.0, 3.0, places=2)
+        self.assertEqual([paragraph.para_style.column_layout.count for paragraph in parsed.paragraphs], [1, 3, 3])
+        self.assertAlmostEqual(parsed.paragraphs[1].para_style.column_layout.gap_pt or 0.0, 3.0, places=2)
 
     def test_from_file_hwp_file_object_materializes_temp_path(self) -> None:
         fake_hwp = b"fake-hwp"
