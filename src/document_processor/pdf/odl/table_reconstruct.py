@@ -1,215 +1,80 @@
-"""Visual-first table grid reconstruction.
+"""Dotted-rule cell-split preprocessor for ODL raw tables.
 
-Replaces the previous `table_split_plan` post-correction approach. Instead of
-trusting ODL's row/col structure and patching splits onto it, we rebuild the
-table grid directly from detected line primitives:
+ODL parses solid grid lines well but misses dotted/dashed grid lines inside
+tables: a cell bounded by solid lines and internally divided by a dotted
+rule ends up reported as a single cell. This module detects those dotted
+rules via pdfium visual primitives (`segmented_horizontal_rule` /
+`segmented_vertical_rule`) and rewrites the raw ODL table in place so that
+its `rows`/`cells`/`grid boundaries` reflect the extra splits. Downstream
+conversion in `adapter.py` then sees an ODL structure that is already
+complete, and no visual-grid reconstruction is needed.
 
-  1. For each ODL table bbox, collect horizontal/vertical line primitives
-     (solid segments, segmented rules, axis-box edges) inside the bbox.
-  2. Derive row boundaries from unique h-line y-coords, col boundaries from
-     unique v-line x-coords (with proximity-merge to kill noise).
-  3. Detect merged cells by checking whether each (i,j) cell's bottom/right
-     border is actually drawn. Missing borders mean merge with neighbor.
-  4. BFS connected merge directions into rectangular merge groups.
-
-The adapter then maps each ODL raw cell's paragraphs into the merge group
-whose grid-rect contains the cell's center, preserving ODL's text/reading
-order while using the visually-faithful grid as ground truth.
+Scope intentionally narrow:
+  * Only full-span dotted rules (>= `_FULL_SPAN_RATIO` of the table axis)
+    are promoted to new grid boundaries. Partial rules are ignored.
+  * Only tables whose cells are all rowspan=colspan=1 are rewritten; the
+    adapter handles merged-cell tables via its standard raw-topology path.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-from ..meta import PdfBoundingBox, coerce_bbox, coerce_int
+from ..meta import PdfBoundingBox, coerce_bbox, coerce_float, coerce_int
 from ..preview.analyze import extract_pdfium_table_rule_primitives
 from ..preview.models import PdfPreviewVisualPrimitive
 
-
-_COORD_MERGE_TOLERANCE_PT = 2.0
-_BORDER_AXIS_TOLERANCE_PT = 2.0
-_BORDER_SNAP_TOLERANCE_PT = 3.0
-_MIN_EDGE_BAND_PT = 4.0
-_BORDER_COVERAGE_RATIO = 0.30
+_AXIS_MERGE_TOL_PT = 2.0
+_BOUNDARY_NEAR_TOL_PT = 2.0
+_FULL_SPAN_RATIO = 0.9
+_BBOX_PAD_PT = 1.0
 
 
-@dataclass(frozen=True)
-class TableNodeKey:
-    page_number: int
-    reading_order_index: int | None
-    left_pt: float
-    bottom_pt: float
-    right_pt: float
-    top_pt: float
-
-
-@dataclass(frozen=True)
-class MergeGroup:
-    """A rectangular group of grid cells that share one logical cell."""
-
-    min_row: int  # 0-based, inclusive
-    min_col: int
-    max_row: int  # inclusive
-    max_col: int
-
-    @property
-    def rowspan(self) -> int:
-        return self.max_row - self.min_row + 1
-
-    @property
-    def colspan(self) -> int:
-        return self.max_col - self.min_col + 1
-
-
-@dataclass
-class TableGrid:
-    table_key: TableNodeKey
-    h_y: list[float] = field(default_factory=list)  # row boundaries (PDF pt, bottom-to-top not required)
-    v_x: list[float] = field(default_factory=list)  # col boundaries
-    merge_groups: list[MergeGroup] = field(default_factory=list)
-
-    @property
-    def row_count(self) -> int:
-        return max(len(self.h_y) - 1, 0)
-
-    @property
-    def col_count(self) -> int:
-        return max(len(self.v_x) - 1, 0)
-
-    def group_bbox(self, group: MergeGroup) -> PdfBoundingBox:
-        left = self.v_x[group.min_col]
-        right = self.v_x[group.max_col + 1]
-        bottom = self.h_y[group.min_row]
-        top = self.h_y[group.max_row + 1]
-        return PdfBoundingBox(
-            left_pt=left, bottom_pt=bottom, right_pt=right, top_pt=top
-        )
-
-
-def table_node_key(node: dict[str, Any]) -> TableNodeKey:
-    bbox = coerce_bbox(node.get("bounding box")) or PdfBoundingBox(0.0, 0.0, 0.0, 0.0)
-    return TableNodeKey(
-        page_number=coerce_int(node.get("page number")) or 0,
-        reading_order_index=coerce_int(node.get("reading order index")),
-        left_pt=bbox.left_pt,
-        bottom_pt=bbox.bottom_pt,
-        right_pt=bbox.right_pt,
-        top_pt=bbox.top_pt,
-    )
-
-
-def _union_bboxes(boxes: Iterable[PdfBoundingBox]) -> PdfBoundingBox | None:
-    collected = list(boxes)
-    if not collected:
-        return None
-    return PdfBoundingBox(
-        left_pt=min(box.left_pt for box in collected),
-        bottom_pt=min(box.bottom_pt for box in collected),
-        right_pt=max(box.right_pt for box in collected),
-        top_pt=max(box.top_pt for box in collected),
-    )
-
-
-def _is_leaf_text_bbox_node(node: dict[str, Any]) -> bool:
-    return node.get("type") in {"span", "text chunk", "run"}
-
-
-def _descendant_bboxes(node: dict[str, Any]) -> list[PdfBoundingBox]:
-    bboxes: list[PdfBoundingBox] = []
-
-    def visit(current: Any) -> None:
-        if not isinstance(current, dict):
-            return
-        if _is_leaf_text_bbox_node(current):
-            bbox = coerce_bbox(current.get("bounding box")) or coerce_bbox(current.get("bbox"))
-            if bbox is not None:
-                bboxes.append(bbox)
-        for key in ("kids", "spans", "runs"):
-            items = current.get(key)
-            if not isinstance(items, list):
+def preprocess_dotted_rule_splits(
+    raw_document: dict[str, Any],
+    *,
+    pdf_path: str | Path,
+    page_numbers: Iterable[int] | None = None,
+) -> None:
+    """Mutate `raw_document` in place so tables include dotted-rule splits."""
+    resolved_pdf_path = Path(pdf_path).expanduser()
+    if not resolved_pdf_path.exists():
+        return
+    tables_by_page = _collect_table_nodes_by_page(raw_document)
+    if page_numbers is not None:
+        wanted = {int(p) for p in page_numbers}
+        tables_by_page = {p: t for p, t in tables_by_page.items() if p in wanted}
+    if not tables_by_page:
+        return
+    try:
+        import pypdfium2 as pdfium
+    except Exception:
+        return
+    try:
+        document = pdfium.PdfDocument(str(resolved_pdf_path))
+    except Exception:
+        return
+    try:
+        page_count = _document_page_count(document)
+        for page_number, tables in tables_by_page.items():
+            if page_number <= 0 or page_number > page_count:
                 continue
-            for item in items:
-                visit(item)
-
-    for key in ("kids", "spans", "runs"):
-        items = node.get(key)
-        if not isinstance(items, list):
-            continue
-        for item in items:
-            visit(item)
-    return bboxes
-
-
-def _effective_bbox_from_descendants(
-    node: dict[str, Any],
-    fallback_bbox: PdfBoundingBox | None = None,
-) -> PdfBoundingBox | None:
-    bbox = coerce_bbox(node.get("bounding box")) or coerce_bbox(node.get("bbox"))
-    if bbox is not None:
-        return bbox
-
-    descendant_bbox = _union_bboxes(_descendant_bboxes(node))
-    if descendant_bbox is not None:
-        return descendant_bbox
-
-    return fallback_bbox
+            primitives = extract_pdfium_table_rule_primitives(
+                document[page_number - 1],
+                page_number=page_number,
+            )
+            dotted_h = [p for p in primitives if p.object_type == "segmented_horizontal_rule"]
+            dotted_v = [p for p in primitives if p.object_type == "segmented_vertical_rule"]
+            if not dotted_h and not dotted_v:
+                continue
+            for table in tables:
+                _apply_dotted_splits(table, dotted_h, dotted_v)
+    finally:
+        document.close()
 
 
-def _iter_table_fragments(raw_cell: dict[str, Any]) -> Iterable[dict[str, Any]]:
-    def visit(node: Any) -> Iterable[dict[str, Any]]:
-        if not isinstance(node, dict):
-            return
-        if node.get("type") == "paragraph":
-            yield node
-        kids = node.get("kids")
-        if isinstance(kids, list):
-            for kid in kids:
-                yield from visit(kid)
-
-    return visit(raw_cell)
-
-
-def _find_group_for_bbox_center(bbox: PdfBoundingBox, grid: TableGrid) -> MergeGroup | None:
-    center_x = (bbox.left_pt + bbox.right_pt) / 2.0
-    center_y = (bbox.bottom_pt + bbox.top_pt) / 2.0
-
-    matches: list[MergeGroup] = []
-    for group in grid.merge_groups:
-        group_bbox = grid.group_bbox(group)
-        if (
-            group_bbox.left_pt <= center_x <= group_bbox.right_pt
-            and group_bbox.bottom_pt <= center_y <= group_bbox.top_pt
-        ):
-            matches.append(group)
-            if len(matches) > 1:
-                return None
-
-    return matches[0] if matches else None
-
-
-def assign_fragments_to_groups(
-    raw_cells: list[dict[str, Any]],
-    grid: TableGrid,
-) -> dict[MergeGroup, list[dict[str, Any]]]:
-    mapping: dict[MergeGroup, list[dict[str, Any]]] = {}
-
-    for raw_cell in raw_cells:
-        cell_bbox = coerce_bbox(raw_cell.get("bounding box"))
-        for fragment in _iter_table_fragments(raw_cell):
-            fragment_bbox = _effective_bbox_from_descendants(fragment, fallback_bbox=cell_bbox)
-            if fragment_bbox is None:
-                return {}
-            group = _find_group_for_bbox_center(fragment_bbox, grid)
-            if group is None:
-                return {}
-            mapping.setdefault(group, []).append(fragment)
-
-    return mapping
-
-
-def _collect_table_nodes_by_page(raw_document: dict[str, Any]) -> dict[int, list[dict[str, Any]]]:
+def _collect_table_nodes_by_page(root: Any) -> dict[int, list[dict[str, Any]]]:
     grouped: dict[int, list[dict[str, Any]]] = {}
 
     def visit(node: Any) -> None:
@@ -225,7 +90,7 @@ def _collect_table_nodes_by_page(raw_document: dict[str, Any]) -> dict[int, list
             for item in node:
                 visit(item)
 
-    visit(raw_document)
+    visit(root)
     return grouped
 
 
@@ -239,299 +104,256 @@ def _document_page_count(document: Any) -> int:
         return 0
 
 
-def build_table_grids(
-    raw_document: dict[str, Any],
-    *,
-    pdf_path: str | Path,
-    page_numbers: Iterable[int] | None = None,
-) -> dict[TableNodeKey, TableGrid]:
-    resolved_pdf_path = Path(pdf_path).expanduser()
-    if not resolved_pdf_path.exists():
-        return {}
+def _apply_dotted_splits(
+    table: dict[str, Any],
+    dotted_h: list[PdfPreviewVisualPrimitive],
+    dotted_v: list[PdfPreviewVisualPrimitive],
+) -> None:
+    table_bbox = coerce_bbox(table.get("bounding box"))
+    if table_bbox is None:
+        return
 
-    tables_by_page = _collect_table_nodes_by_page(raw_document)
-    if page_numbers is not None:
-        requested_pages = {int(page_number) for page_number in page_numbers}
-        tables_by_page = {
-            page_number: tables
-            for page_number, tables in tables_by_page.items()
-            if page_number in requested_pages
-        }
-    if not tables_by_page:
-        return {}
+    existing_ys = _boundary_values(table.get("grid row boundaries"))
+    existing_xs = _boundary_values(table.get("grid column boundaries"))
+    if len(existing_ys) < 2 or len(existing_xs) < 2:
+        return
+    if not _cells_are_simple(table):
+        return
 
-    try:
-        import pypdfium2 as pdfium
-    except Exception:
-        return {}
-
-    try:
-        document = pdfium.PdfDocument(str(resolved_pdf_path))
-    except Exception:
-        return {}
-
-    try:
-        page_count = _document_page_count(document)
-        table_grids: dict[TableNodeKey, TableGrid] = {}
-        for page_number, tables in tables_by_page.items():
-            if page_number <= 0 or page_number > page_count:
-                continue
-            primitives = extract_pdfium_table_rule_primitives(
-                document[page_number - 1],
-                page_number=page_number,
-            )
-            for table_node in tables:
-                table_grid = reconstruct_table_grid(table_node, primitives=primitives)
-                if table_grid is not None:
-                    table_grids[table_grid.table_key] = table_grid
-        return table_grids
-    except Exception:
-        return {}
-    finally:
-        document.close()
-
-
-# ---------- line collection ----------
-
-
-def _is_horizontal_primitive(prim: PdfPreviewVisualPrimitive) -> bool:
-    roles = set(prim.candidate_roles or ())
-    return bool(
-        {"horizontal_line_segment", "segmented_horizontal_rule", "long_horizontal_rule"} & roles
-    ) or prim.object_type in {"segmented_horizontal_rule", "axis_box_edge_horizontal"}
-
-
-def _is_vertical_primitive(prim: PdfPreviewVisualPrimitive) -> bool:
-    roles = set(prim.candidate_roles or ())
-    return bool(
-        {"vertical_line_segment", "segmented_vertical_rule", "long_vertical_rule"} & roles
-    ) or prim.object_type in {"segmented_vertical_rule", "axis_box_edge_vertical"}
-
-
-def _bbox_inside(inner: PdfBoundingBox, outer: PdfBoundingBox, pad: float = 1.0) -> bool:
-    return (
-        inner.left_pt >= outer.left_pt - pad
-        and inner.right_pt <= outer.right_pt + pad
-        and inner.bottom_pt >= outer.bottom_pt - pad
-        and inner.top_pt <= outer.top_pt + pad
+    new_ys = _interior_axis_values(
+        dotted_h, table_bbox, axis="y", existing=existing_ys
     )
+    new_xs = _interior_axis_values(
+        dotted_v, table_bbox, axis="x", existing=existing_xs
+    )
+    if not new_ys and not new_xs:
+        return
+
+    merged_ys = _dedupe_close(sorted(existing_ys + new_ys), _AXIS_MERGE_TOL_PT)
+    merged_xs = _dedupe_close(sorted(existing_xs + new_xs), _AXIS_MERGE_TOL_PT)
+    if len(merged_ys) == len(existing_ys) and len(merged_xs) == len(existing_xs):
+        return
+
+    _rebuild_rows(table, sorted_xs=merged_xs, sorted_ys=merged_ys)
+    # Preserve ODL's top-down (descending-y) ordering for row boundaries.
+    table["grid row boundaries"] = list(reversed(merged_ys))
+    table["grid column boundaries"] = list(merged_xs)
+    table["number of rows"] = max(len(merged_ys) - 1, 0)
+    table["number of columns"] = max(len(merged_xs) - 1, 0)
 
 
-def _snap_axis_to_table_border(axis: float, lower: float, upper: float) -> float:
-    if abs(axis - lower) <= _BORDER_SNAP_TOLERANCE_PT:
-        return lower
-    if abs(axis - upper) <= _BORDER_SNAP_TOLERANCE_PT:
-        return upper
-    return axis
+def _boundary_values(raw: Any) -> list[float]:
+    if not isinstance(raw, list):
+        return []
+    values: list[float] = []
+    for item in raw:
+        f = coerce_float(item)
+        if f is not None:
+            values.append(f)
+    values.sort()
+    return values
 
 
-def _suppress_narrow_edge_band(boundaries: list[float]) -> list[float]:
-    if len(boundaries) < 3:
-        return boundaries
-
-    compact = list(boundaries)
-    while len(compact) >= 3:
-        lower_band = compact[1] - compact[0]
-        upper_band = compact[-1] - compact[-2]
-        if lower_band < _MIN_EDGE_BAND_PT:
-            del compact[1]
-            continue
-        if upper_band < _MIN_EDGE_BAND_PT:
-            del compact[-2]
-            continue
-        break
-    return compact
-
-
-def collect_lines(
-    primitives: list[PdfPreviewVisualPrimitive],
+def _interior_axis_values(
+    rules: list[PdfPreviewVisualPrimitive],
     table_bbox: PdfBoundingBox,
-) -> tuple[list[tuple[float, float, float]], list[tuple[float, float, float]]]:
-    """Return (h_lines, v_lines) inside the table bbox.
+    *,
+    axis: str,
+    existing: list[float],
+) -> list[float]:
+    """Return dotted-rule axis values that represent new interior grid lines."""
+    if not rules:
+        return []
+    # Rule-length axis: horizontal rules span the table's width, vertical
+    # rules span the table's height. Compare like-to-like.
+    if axis == "y":
+        table_span = table_bbox.right_pt - table_bbox.left_pt
+    else:
+        table_span = table_bbox.top_pt - table_bbox.bottom_pt
+    if table_span <= 0:
+        return []
 
-    h_lines: list of (axis_y, x_start, x_end)
-    v_lines: list of (axis_x, y_start, y_end)
-    The table's outer border is appended so the grid always closes.
-    """
-    h_lines: list[tuple[float, float, float]] = []
-    v_lines: list[tuple[float, float, float]] = []
+    interior_lo = min(existing) + _BOUNDARY_NEAR_TOL_PT
+    interior_hi = max(existing) - _BOUNDARY_NEAR_TOL_PT
+    candidates: list[float] = []
 
-    for prim in primitives:
-        bbox = prim.bounding_box
-        if not _bbox_inside(bbox, table_bbox):
+    for rule in rules:
+        bbox = rule.bounding_box
+        if axis == "y":
+            if not (
+                table_bbox.left_pt - _BBOX_PAD_PT <= bbox.left_pt
+                and bbox.right_pt <= table_bbox.right_pt + _BBOX_PAD_PT
+            ):
+                continue
+            rule_span = bbox.right_pt - bbox.left_pt
+            if rule_span < _FULL_SPAN_RATIO * table_span:
+                continue
+            value = (bbox.top_pt + bbox.bottom_pt) / 2.0
+        else:
+            if not (
+                table_bbox.bottom_pt - _BBOX_PAD_PT <= bbox.bottom_pt
+                and bbox.top_pt <= table_bbox.top_pt + _BBOX_PAD_PT
+            ):
+                continue
+            rule_span = bbox.top_pt - bbox.bottom_pt
+            if rule_span < _FULL_SPAN_RATIO * table_span:
+                continue
+            value = (bbox.left_pt + bbox.right_pt) / 2.0
+
+        if not (interior_lo < value < interior_hi):
             continue
-        is_h = _is_horizontal_primitive(prim)
-        is_v = _is_vertical_primitive(prim)
-        if is_h:
-            y_axis = (bbox.top_pt + bbox.bottom_pt) / 2.0
-            y_axis = _snap_axis_to_table_border(y_axis, table_bbox.bottom_pt, table_bbox.top_pt)
-            h_lines.append((y_axis, bbox.left_pt, bbox.right_pt))
-        if is_v:
-            x_axis = (bbox.left_pt + bbox.right_pt) / 2.0
-            x_axis = _snap_axis_to_table_border(x_axis, table_bbox.left_pt, table_bbox.right_pt)
-            v_lines.append((x_axis, bbox.bottom_pt, bbox.top_pt))
+        if any(abs(value - e) <= _BOUNDARY_NEAR_TOL_PT for e in existing):
+            continue
+        if any(abs(value - e) <= _BOUNDARY_NEAR_TOL_PT for e in candidates):
+            continue
+        candidates.append(value)
 
-    # Outer borders of the table itself.
-    h_lines.append((table_bbox.top_pt, table_bbox.left_pt, table_bbox.right_pt))
-    h_lines.append((table_bbox.bottom_pt, table_bbox.left_pt, table_bbox.right_pt))
-    v_lines.append((table_bbox.left_pt, table_bbox.bottom_pt, table_bbox.top_pt))
-    v_lines.append((table_bbox.right_pt, table_bbox.bottom_pt, table_bbox.top_pt))
-
-    return h_lines, v_lines
+    return candidates
 
 
-# ---------- grid construction ----------
+def _cells_are_simple(table: dict[str, Any]) -> bool:
+    for row in table.get("rows", []) or []:
+        if not isinstance(row, dict):
+            continue
+        for cell in row.get("cells", []) or []:
+            if not isinstance(cell, dict):
+                continue
+            rs = coerce_int(cell.get("row span")) or 1
+            cs = coerce_int(cell.get("column span")) or 1
+            if rs != 1 or cs != 1:
+                return False
+    return True
 
 
-def _merge_close_coords(values: Iterable[float], tol: float) -> list[float]:
-    sorted_values = sorted(values)
+def _dedupe_close(sorted_values: list[float], tol: float) -> list[float]:
     if not sorted_values:
         return []
-    groups: list[list[float]] = [[sorted_values[0]]]
+    out = [sorted_values[0]]
     for v in sorted_values[1:]:
-        if v - groups[-1][-1] <= tol:
-            groups[-1].append(v)
-        else:
-            groups.append([v])
-    return [sum(g) / len(g) for g in groups]
+        if v - out[-1] > tol:
+            out.append(v)
+    return out
 
 
-def _detect_merge_matrix(
-    h_lines: list[tuple[float, float, float]],
-    v_lines: list[tuple[float, float, float]],
-    h_y: list[float],
-    v_x: list[float],
-) -> list[list[int]]:
-    """Return merge flags per cell: 0=none, 1=merge-down, 2=merge-right, 3=both."""
-    rows = len(h_y) - 1
-    cols = len(v_x) - 1
-    if rows <= 0 or cols <= 0:
-        return []
+def _rebuild_rows(
+    table: dict[str, Any],
+    *,
+    sorted_xs: list[float],
+    sorted_ys: list[float],
+) -> None:
+    """Replace ``table['rows']`` with a grid that matches the expanded boundaries.
 
-    h_segs: dict[int, list[tuple[float, float]]] = {i: [] for i in range(len(h_y))}
-    for y, x0, x1 in h_lines:
-        for i, grid_y in enumerate(h_y):
-            if abs(y - grid_y) <= _BORDER_AXIS_TOLERANCE_PT:
-                h_segs[i].append((x0, x1))
-                break
-
-    v_segs: dict[int, list[tuple[float, float]]] = {j: [] for j in range(len(v_x))}
-    for x, y0, y1 in v_lines:
-        for j, grid_x in enumerate(v_x):
-            if abs(x - grid_x) <= _BORDER_AXIS_TOLERANCE_PT:
-                v_segs[j].append((y0, y1))
-                break
-
-    def covers(segments: list[tuple[float, float]], lo: float, hi: float) -> bool:
-        span = hi - lo
-        if span <= 0:
-            return False
-        for s0, s1 in segments:
-            if s1 < lo + _BORDER_AXIS_TOLERANCE_PT or s0 > hi - _BORDER_AXIS_TOLERANCE_PT:
-                continue
-            overlap = min(s1, hi) - max(s0, lo)
-            if overlap >= span * _BORDER_COVERAGE_RATIO:
-                return True
-        return False
-
-    matrix = [[0] * cols for _ in range(rows)]
-    for i in range(rows):
-        for j in range(cols):
-            left_x, right_x = v_x[j], v_x[j + 1]
-            bot_y, top_y = h_y[i], h_y[i + 1]
-            if i < rows - 1:
-                if not covers(h_segs.get(i + 1, []), left_x, right_x):
-                    matrix[i][j] = 1
-            if j < cols - 1:
-                if not covers(v_segs.get(j + 1, []), bot_y, top_y):
-                    matrix[i][j] = 3 if matrix[i][j] == 1 else 2
-    return matrix
-
-
-def _build_merge_groups(merge_matrix: list[list[int]]) -> list[MergeGroup] | None:
-    if not merge_matrix:
-        return []
-    rows = len(merge_matrix)
-    cols = len(merge_matrix[0])
-    visited = [[False] * cols for _ in range(rows)]
-    groups: list[MergeGroup] = []
-
-    for i in range(rows):
-        for j in range(cols):
-            if visited[i][j]:
-                continue
-            queue = [(i, j)]
-            visited[i][j] = True
-            min_r = max_r = i
-            min_c = max_c = j
-            component_cells: list[tuple[int, int]] = []
-            while queue:
-                r, c = queue.pop(0)
-                component_cells.append((r, c))
-                min_r, max_r = min(min_r, r), max(max_r, r)
-                min_c, max_c = min(min_c, c), max(max_c, c)
-                flag = merge_matrix[r][c]
-                if r < rows - 1 and flag in (1, 3) and not visited[r + 1][c]:
-                    visited[r + 1][c] = True
-                    queue.append((r + 1, c))
-                if c < cols - 1 and flag in (2, 3) and not visited[r][c + 1]:
-                    visited[r][c + 1] = True
-                    queue.append((r, c + 1))
-            expected_cells = (max_r - min_r + 1) * (max_c - min_c + 1)
-            if len(component_cells) != expected_cells:
-                return None
-            groups.append(
-                MergeGroup(min_row=min_r, min_col=min_c, max_row=max_r, max_col=max_c)
-            )
-    return groups
-
-
-def reconstruct_table_grid(
-    node: dict[str, Any],
-    primitives: list[PdfPreviewVisualPrimitive],
-) -> TableGrid | None:
-    """Reconstruct the grid of a single ODL table node from visual primitives.
-
-    Returns None when the bbox is missing or the grid collapses to 0 rows/cols.
+    Each sub-cell inherits its paragraphs from the original cell whose bbox
+    contains the sub-cell's center; paragraphs/kids whose bbox centers fall
+    outside the sub-cell's bbox are dropped, so a cell split by a dotted
+    rule distributes its text to the correct sub-cell.
     """
-    table_bbox = coerce_bbox(node.get("bounding box"))
-    if table_bbox is None:
-        return None
+    originals: list[dict[str, Any]] = []
+    for row in table.get("rows", []) or []:
+        if not isinstance(row, dict):
+            continue
+        for cell in row.get("cells", []) or []:
+            if isinstance(cell, dict):
+                originals.append(cell)
 
-    page_number = coerce_int(node.get("page number"))
-    if page_number is None:
-        return None
-    primitives = [p for p in primitives if p.page_number == page_number]
-
-    h_lines, v_lines = collect_lines(primitives, table_bbox)
-    h_y = _merge_close_coords((y for y, _, _ in h_lines), _COORD_MERGE_TOLERANCE_PT)
-    v_x = _merge_close_coords((x for x, _, _ in v_lines), _COORD_MERGE_TOLERANCE_PT)
-    h_y = _suppress_narrow_edge_band(h_y)
-    v_x = _suppress_narrow_edge_band(v_x)
-
-    if len(h_y) < 2 or len(v_x) < 2:
-        return None
-
-    matrix = _detect_merge_matrix(h_lines, v_lines, h_y, v_x)
-    groups = _build_merge_groups(matrix)
-    if not groups:
-        return None
-
-    return TableGrid(
-        table_key=table_node_key(node),
-        h_y=h_y,
-        v_x=v_x,
-        merge_groups=groups,
-    )
+    ny = len(sorted_ys) - 1
+    nx = len(sorted_xs) - 1
+    new_rows: list[dict[str, Any]] = []
+    for visual_row_idx in range(ny):
+        i = ny - 1 - visual_row_idx
+        y_lo, y_hi = sorted_ys[i], sorted_ys[i + 1]
+        row_number = visual_row_idx + 1
+        cells: list[dict[str, Any]] = []
+        for j in range(nx):
+            x_lo, x_hi = sorted_xs[j], sorted_xs[j + 1]
+            col_number = j + 1
+            sub_bbox = PdfBoundingBox(
+                left_pt=x_lo, bottom_pt=y_lo, right_pt=x_hi, top_pt=y_hi
+            )
+            source = _find_original_covering(originals, sub_bbox)
+            cells.append(_build_sub_cell(source, sub_bbox, row_number, col_number))
+        new_rows.append(
+            {"type": "table row", "row number": row_number, "cells": cells}
+        )
+    table["rows"] = new_rows
 
 
-__all__ = [
-    "assign_fragments_to_groups",
-    "build_table_grids",
-    "MergeGroup",
-    "TableGrid",
-    "TableNodeKey",
-    "collect_lines",
-    "reconstruct_table_grid",
-    "table_node_key",
-]
+def _find_original_covering(
+    originals: list[dict[str, Any]],
+    sub_bbox: PdfBoundingBox,
+) -> dict[str, Any] | None:
+    cx = (sub_bbox.left_pt + sub_bbox.right_pt) / 2.0
+    cy = (sub_bbox.bottom_pt + sub_bbox.top_pt) / 2.0
+    for cell in originals:
+        bbox = coerce_bbox(cell.get("bounding box"))
+        if bbox is None:
+            continue
+        if (
+            bbox.left_pt - _BBOX_PAD_PT <= cx <= bbox.right_pt + _BBOX_PAD_PT
+            and bbox.bottom_pt - _BBOX_PAD_PT <= cy <= bbox.top_pt + _BBOX_PAD_PT
+        ):
+            return cell
+    return None
+
+
+def _build_sub_cell(
+    source: dict[str, Any] | None,
+    sub_bbox: PdfBoundingBox,
+    row_number: int,
+    col_number: int,
+) -> dict[str, Any]:
+    sub_bbox_list = [
+        sub_bbox.left_pt,
+        sub_bbox.bottom_pt,
+        sub_bbox.right_pt,
+        sub_bbox.top_pt,
+    ]
+    if source is None:
+        return {
+            "type": "table cell",
+            "row number": row_number,
+            "column number": col_number,
+            "row span": 1,
+            "column span": 1,
+            "bounding box": sub_bbox_list,
+            "kids": [],
+            "paragraphs": [],
+        }
+    cell = dict(source)
+    cell["row number"] = row_number
+    cell["column number"] = col_number
+    cell["row span"] = 1
+    cell["column span"] = 1
+    cell["bounding box"] = sub_bbox_list
+    cell["kids"] = _filter_children_by_bbox(source.get("kids"), sub_bbox)
+    if "paragraphs" in source:
+        cell["paragraphs"] = _filter_children_by_bbox(source.get("paragraphs"), sub_bbox)
+    return cell
+
+
+def _filter_children_by_bbox(
+    children: Any,
+    sub_bbox: PdfBoundingBox,
+) -> list[Any]:
+    if not isinstance(children, list):
+        return []
+    kept: list[Any] = []
+    for child in children:
+        if not isinstance(child, dict):
+            kept.append(child)
+            continue
+        child_bbox = coerce_bbox(child.get("bounding box"))
+        if child_bbox is None:
+            kept.append(child)
+            continue
+        cx = (child_bbox.left_pt + child_bbox.right_pt) / 2.0
+        cy = (child_bbox.bottom_pt + child_bbox.top_pt) / 2.0
+        if (
+            sub_bbox.left_pt - _BBOX_PAD_PT <= cx <= sub_bbox.right_pt + _BBOX_PAD_PT
+            and sub_bbox.bottom_pt - _BBOX_PAD_PT <= cy <= sub_bbox.top_pt + _BBOX_PAD_PT
+        ):
+            kept.append(child)
+    return kept
+
+
+__all__ = ["preprocess_dotted_rule_splits"]

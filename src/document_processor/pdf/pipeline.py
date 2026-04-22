@@ -9,7 +9,7 @@ from ..models import DocIR, PageInfo
 from .config import PdfParseConfig
 from .enhancement import enrich_pdf_table_borders
 from .meta import PdfDocumentMeta
-from .odl import build_doc_ir_from_odl_result, build_table_grids, run_odl_json
+from .odl import build_doc_ir_from_odl_result, preprocess_dotted_rule_splits, run_odl_json
 from .parsing import PageClass, PdfProfile, decide_page, probe_pdf
 from .preview.context import build_pdf_preview_context
 from .preview.models import PdfPreviewContext
@@ -81,7 +81,7 @@ def _parse_pdf_to_doc_ir_with_preview(
             pdf_path=source_path,
             page_numbers=structured_pages,
         )
-        table_grids = build_table_grids(
+        preprocess_dotted_rule_splits(
             raw_document,
             pdf_path=source_path,
             page_numbers=structured_pages,
@@ -91,7 +91,6 @@ def _parse_pdf_to_doc_ir_with_preview(
             source_path=str(source_path),
             doc_id=doc_id,
             doc_cls=resolved_doc_cls,
-            table_grids=table_grids,
             **doc_kwargs,
         )
     else:
