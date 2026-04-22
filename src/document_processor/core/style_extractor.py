@@ -26,6 +26,7 @@ _NS_HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 _HP = f"{{{_NS_HP}}}"
 
 _HWPUNIT_PER_PT = 100.0
+_HWPX_INHERIT_UINT = "4294967295"
 
 _HWPX_BORDER_STYLE = {
     "SOLID": "solid",
@@ -151,8 +152,11 @@ def _apply_cell_padding(info: CellStyleInfo, padding: dict[str, float]) -> None:
 def _hwp_numeric_to_pt(raw_value: str | None) -> float | None:
     if raw_value is None:
         return None
+    raw_text = str(raw_value).strip()
+    if raw_text in {_HWPX_INHERIT_UINT, "-1"}:
+        return None
     try:
-        return float(raw_value) / _HWPUNIT_PER_PT
+        return float(raw_text) / _HWPUNIT_PER_PT
     except (TypeError, ValueError):
         return None
 
@@ -164,9 +168,12 @@ def _hwp_margin_value_to_pt(el: ET.Element | None) -> float | None:
     raw = el.get("value")
     if raw is None:
         return None
+    raw_text = str(raw).strip()
+    if raw_text == _HWPX_INHERIT_UINT:
+        return None
 
     try:
-        number = float(raw)
+        number = float(raw_text)
     except (TypeError, ValueError):
         return None
 
@@ -178,14 +185,36 @@ def _hwp_margin_value_to_pt(el: ET.Element | None) -> float | None:
     return number
 
 
-def _apply_hwpx_cell_margin(info: CellStyleInfo, margin_el: ET.Element | None) -> None:
+def _hwpx_table_cell_padding_defaults(table_el: ET.Element) -> dict[str, float]:
+    margin_el = table_el.find(f"{_HP}inMargin")
     if margin_el is None:
+        return {}
+
+    padding: dict[str, float] = {}
+    for side in ("top", "right", "bottom", "left"):
+        value_pt = _hwp_numeric_to_pt(margin_el.get(side))
+        if value_pt is not None:
+            padding[side] = value_pt
+    return padding
+
+
+def _apply_hwpx_cell_margin(
+    info: CellStyleInfo,
+    margin_el: ET.Element | None,
+    *,
+    defaults: dict[str, float] | None = None,
+) -> None:
+    padding = dict(defaults or {})
+    if margin_el is None and not padding:
         return
 
-    info.padding_top_pt = _hwp_numeric_to_pt(margin_el.get("top"))
-    info.padding_right_pt = _hwp_numeric_to_pt(margin_el.get("right"))
-    info.padding_bottom_pt = _hwp_numeric_to_pt(margin_el.get("bottom"))
-    info.padding_left_pt = _hwp_numeric_to_pt(margin_el.get("left"))
+    if margin_el is not None:
+        for side in ("top", "right", "bottom", "left"):
+            value_pt = _hwp_numeric_to_pt(margin_el.get(side))
+            if value_pt is not None:
+                padding[side] = value_pt
+
+    _apply_cell_padding(info, padding)
 
 
 def _hwpx_border_css(border_el: ET.Element | None) -> str | None:
@@ -363,6 +392,7 @@ def _extract_hwpx_table_styles(
 ) -> None:
     row_count, col_count = _hwpx_table_dimensions(table_el)
     width_pt, height_pt = _hwpx_table_size(table_el)
+    table_cell_padding_defaults = _hwpx_table_cell_padding_defaults(table_el)
     style_map.tables[table_id] = TableStyleInfo(
         row_count=row_count,
         col_count=col_count,
@@ -377,6 +407,7 @@ def _extract_hwpx_table_styles(
                 cell_el,
                 para_pr_map=para_pr_map,
                 border_fill_map=border_fill_map,
+                table_cell_padding_defaults=table_cell_padding_defaults,
             )
 
             cell_paragraphs = _iter_cell_paragraphs(cell_el)
@@ -443,6 +474,7 @@ def _hwpx_cell_style(
     *,
     para_pr_map: dict[str, ET.Element],
     border_fill_map: dict[str, ET.Element],
+    table_cell_padding_defaults: dict[str, float] | None = None,
 ) -> CellStyleInfo:
     info = CellStyleInfo()
 
@@ -494,7 +526,11 @@ def _hwpx_cell_style(
         info.width_pt = _hwp_numeric_to_pt(cell_size.get("width"))
         info.height_pt = _hwp_numeric_to_pt(cell_size.get("height"))
 
-    _apply_hwpx_cell_margin(info, cell_el.find(f"{_HP}cellMargin"))
+    _apply_hwpx_cell_margin(
+        info,
+        cell_el.find(f"{_HP}cellMargin"),
+        defaults=table_cell_padding_defaults,
+    )
 
     return info
 

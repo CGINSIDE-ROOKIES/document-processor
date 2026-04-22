@@ -12,7 +12,7 @@ SRC_ROOT = THIS_DIR.parent / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from document_processor import HwpxDocument
+from document_processor import DocIR, HwpxDocument
 from document_processor.core.style_extractor import extract_styles, extract_styles_docx, extract_styles_hwpx
 
 
@@ -489,6 +489,53 @@ class StyleExtractorTests(unittest.TestCase):
         self.assertAlmostEqual(cell_style.padding_right_pt or 0.0, 5.2, places=3)
         self.assertAlmostEqual(cell_style.padding_top_pt or 0.0, 1.4, places=3)
         self.assertAlmostEqual(cell_style.padding_bottom_pt or 0.0, 1.5, places=3)
+
+    def test_extract_hwpx_cell_margin_inherits_table_margin_sentinel(self) -> None:
+        hwpx_bytes_io = BytesIO()
+        with zipfile.ZipFile(hwpx_bytes_io, "w") as zf:
+            zf.writestr(
+                "Contents/header.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core" />
+""",
+            )
+            zf.writestr(
+                "Contents/section0.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p>
+    <hp:run>
+      <hp:tbl rowCnt="1" colCnt="1">
+        <hp:sz width="14400" height="4800" widthRelTo="ABSOLUTE" heightRelTo="ABSOLUTE" protect="0"/>
+        <hp:inMargin left="510" right="510" top="141" bottom="141"/>
+        <hp:tr>
+          <hp:tc>
+            <hp:subList><hp:p><hp:run><hp:t>Cell</hp:t></hp:run></hp:p></hp:subList>
+            <hp:cellAddr colAddr="0" rowAddr="0"/>
+            <hp:cellSpan colSpan="1" rowSpan="1"/>
+            <hp:cellSz width="7200" height="3600"/>
+            <hp:cellMargin left="4294967295" right="4294967295" top="4294967295" bottom="4294967295"/>
+          </hp:tc>
+        </hp:tr>
+      </hp:tbl>
+    </hp:run>
+  </hp:p>
+</hs:sec>
+""",
+            )
+        hwpx_bytes = hwpx_bytes_io.getvalue()
+
+        style_map = extract_styles_hwpx(hwpx_bytes)
+        cell_style = style_map.cells["s1.p1.r1.tbl1.tr1.tc1"]
+
+        self.assertAlmostEqual(cell_style.padding_left_pt or 0.0, 5.1, places=3)
+        self.assertAlmostEqual(cell_style.padding_right_pt or 0.0, 5.1, places=3)
+        self.assertAlmostEqual(cell_style.padding_top_pt or 0.0, 1.41, places=3)
+        self.assertAlmostEqual(cell_style.padding_bottom_pt or 0.0, 1.41, places=3)
+
+        html = DocIR.from_file(hwpx_bytes, doc_type="hwpx").to_html()
+        self.assertIn("padding:1.4pt 5.1pt 1.4pt 5.1pt", html)
+        self.assertNotIn("42949673", html)
 
     def test_extract_docx_cell_margins(self) -> None:
         from docx import Document

@@ -53,7 +53,7 @@ from .edit_engine import (
     validate_edit_commands,
 )
 from .hwpx import HwpxDocument
-from .models import DocIR, ImageAsset, ImageIR, PageInfo, ParagraphContentNode, ParagraphIR, RunIR, TableCellIR, TableIR
+from .models import ColumnLayoutInfo, DocIR, ImageAsset, ImageIR, PageInfo, ParagraphContentNode, ParagraphIR, RunIR, TableCellIR, TableIR
 from .style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo, StyleMap, TableStyleInfo
 
 __all__ = [
@@ -68,6 +68,7 @@ __all__ = [
     "ApplyTextEditsResult",
     "CellStyleInfo",
     "CellTextEdit",
+    "ColumnLayoutInfo",
     "DocIR",
     "DocumentContextResult",
     "DocumentInput",
