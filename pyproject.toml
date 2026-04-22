@@ -33,6 +33,7 @@ document-processor-diagram = "document_processor.diagram:main"
 
 [dependency-groups]
 dev = [
+    "ipykernel>=6.29.5",
     "pytest>=9.0.3",
 ]
 

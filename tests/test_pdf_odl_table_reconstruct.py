@@ -157,14 +157,192 @@ class DottedRuleSplitTests(unittest.TestCase):
         _apply_dotted_splits(table, dotted_h=[dotted], dotted_v=[])
         self.assertEqual(table["number of rows"], 1)
 
-    def test_merged_cell_table_is_skipped(self) -> None:
-        table = _single_cell_table(
-            paragraphs=[_paragraph("Only", left=14.0, bottom=20.0, right=108.0, top=80.0)]
+    def test_dotted_rule_partial_width_splits_only_covered_cells(self) -> None:
+        # Simulates the p24-style case: three cells in one row, with a dotted
+        # rule that covers only the right two cells. Left cell must survive
+        # as a single cell with rowspan=2; right two cells split into two rows.
+        table = {
+            "type": "table",
+            "page number": 1,
+            "bounding box": [50.0, 10.0, 540.0, 90.0],
+            "number of rows": 1,
+            "number of columns": 3,
+            "grid row boundaries": [90.0, 10.0],
+            "grid column boundaries": [50.0, 120.0, 200.0, 540.0],
+            "rows": [
+                {
+                    "type": "table row",
+                    "row number": 1,
+                    "cells": [
+                        {
+                            "type": "table cell",
+                            "page number": 1,
+                            "row number": 1,
+                            "column number": 1,
+                            "row span": 1,
+                            "column span": 1,
+                            "bounding box": [50.0, 10.0, 120.0, 90.0],
+                            "kids": [
+                                _paragraph("Category", left=55.0, bottom=40.0, right=115.0, top=60.0),
+                            ],
+                            "paragraphs": [
+                                _paragraph("Category", left=55.0, bottom=40.0, right=115.0, top=60.0),
+                            ],
+                        },
+                        {
+                            "type": "table cell",
+                            "page number": 1,
+                            "row number": 1,
+                            "column number": 2,
+                            "row span": 1,
+                            "column span": 1,
+                            "bounding box": [120.0, 10.0, 200.0, 90.0],
+                            "kids": [
+                                _paragraph("MidTop", left=125.0, bottom=55.0, right=195.0, top=85.0),
+                                _paragraph("MidBot", left=125.0, bottom=15.0, right=195.0, top=45.0),
+                            ],
+                            "paragraphs": [
+                                _paragraph("MidTop", left=125.0, bottom=55.0, right=195.0, top=85.0),
+                                _paragraph("MidBot", left=125.0, bottom=15.0, right=195.0, top=45.0),
+                            ],
+                        },
+                        {
+                            "type": "table cell",
+                            "page number": 1,
+                            "row number": 1,
+                            "column number": 3,
+                            "row span": 1,
+                            "column span": 1,
+                            "bounding box": [200.0, 10.0, 540.0, 90.0],
+                            "kids": [
+                                _paragraph("RightTop", left=205.0, bottom=55.0, right=535.0, top=85.0),
+                                _paragraph("RightBot", left=205.0, bottom=15.0, right=535.0, top=45.0),
+                            ],
+                            "paragraphs": [
+                                _paragraph("RightTop", left=205.0, bottom=55.0, right=535.0, top=85.0),
+                                _paragraph("RightBot", left=205.0, bottom=15.0, right=535.0, top=45.0),
+                            ],
+                        },
+                    ],
+                }
+            ],
+        }
+        # Rule covers only middle+right columns (x=120-540), at y=50.
+        dotted = _dotted_primitive(
+            orientation="horizontal",
+            left=120.0, bottom=49.5, right=540.0, top=50.5,
         )
-        table["rows"][0]["cells"][0]["row span"] = 2  # no longer "simple"
-        dotted = _dotted_primitive(orientation="horizontal", left=10.0, bottom=49.5, right=110.0, top=50.5)
         _apply_dotted_splits(table, dotted_h=[dotted], dotted_v=[])
-        self.assertEqual(table["number of rows"], 1)
+        self.assertEqual(table["number of rows"], 2)
+        self.assertEqual(table["number of columns"], 3)
+
+        # Collect cells by (row, col).
+        cells_by_pos = {
+            (c["row number"], c["column number"]): c
+            for row in table["rows"] for c in row["cells"]
+        }
+        # Category cell must still be one cell with rowspan=2.
+        category = cells_by_pos[(1, 1)]
+        self.assertEqual(category["row span"], 2)
+        self.assertEqual(category["paragraphs"][0]["content"], "Category")
+
+        # Middle column split into two rows.
+        self.assertEqual(cells_by_pos[(1, 2)]["paragraphs"][0]["content"], "MidTop")
+        self.assertEqual(cells_by_pos[(1, 2)]["row span"], 1)
+        self.assertEqual(cells_by_pos[(2, 2)]["paragraphs"][0]["content"], "MidBot")
+
+        # Right column likewise split.
+        self.assertEqual(cells_by_pos[(1, 3)]["paragraphs"][0]["content"], "RightTop")
+        self.assertEqual(cells_by_pos[(2, 3)]["paragraphs"][0]["content"], "RightBot")
+        # Row 2 should have only 2 cells (col 2, col 3); col 1 is occupied by rowspan.
+        row2_cells = [c for row in table["rows"] if row["row number"] == 2 for c in row["cells"]]
+        self.assertEqual(len(row2_cells), 2)
+
+
+    def test_vertical_rule_splits_cell_and_horizontal_rule_affects_only_right_sub_column(self) -> None:
+        # Mirrors the p32 "동종창업" pattern: the cell is split by a vertical
+        # dotted rule into a left sub-column (a rowspan label) and a right
+        # sub-column that is further cut by horizontal dotted rules.
+        table = {
+            "type": "table",
+            "page number": 1,
+            "bounding box": [50.0, 10.0, 540.0, 90.0],
+            "number of rows": 1,
+            "number of columns": 2,
+            "grid row boundaries": [90.0, 10.0],
+            "grid column boundaries": [50.0, 120.0, 540.0],
+            "rows": [
+                {
+                    "type": "table row",
+                    "row number": 1,
+                    "cells": [
+                        {
+                            "type": "table cell",
+                            "page number": 1,
+                            "row number": 1,
+                            "column number": 1,
+                            "row span": 1,
+                            "column span": 1,
+                            "bounding box": [50.0, 10.0, 120.0, 90.0],
+                            "kids": [_paragraph("Header", left=55.0, bottom=45.0, right=115.0, top=60.0)],
+                            "paragraphs": [_paragraph("Header", left=55.0, bottom=45.0, right=115.0, top=60.0)],
+                        },
+                        {
+                            "type": "table cell",
+                            "page number": 1,
+                            "row number": 1,
+                            "column number": 2,
+                            "row span": 1,
+                            "column span": 1,
+                            "bounding box": [120.0, 10.0, 540.0, 90.0],
+                            "kids": [
+                                _paragraph("Label", left=135.0, bottom=45.0, right=195.0, top=60.0),
+                                _paragraph("Row1", left=210.0, bottom=75.0, right=535.0, top=85.0),
+                                _paragraph("Row2", left=210.0, bottom=55.0, right=535.0, top=65.0),
+                                _paragraph("Row3", left=210.0, bottom=35.0, right=535.0, top=45.0),
+                                _paragraph("Row4", left=210.0, bottom=15.0, right=535.0, top=25.0),
+                            ],
+                            "paragraphs": [
+                                _paragraph("Label", left=135.0, bottom=45.0, right=195.0, top=60.0),
+                                _paragraph("Row1", left=210.0, bottom=75.0, right=535.0, top=85.0),
+                                _paragraph("Row2", left=210.0, bottom=55.0, right=535.0, top=65.0),
+                                _paragraph("Row3", left=210.0, bottom=35.0, right=535.0, top=45.0),
+                                _paragraph("Row4", left=210.0, bottom=15.0, right=535.0, top=25.0),
+                            ],
+                        },
+                    ],
+                }
+            ],
+        }
+        # Vertical rule splits the second cell at x=200 (into label sub-column
+        # 120-200 and detail sub-column 200-540).
+        v_rule = _dotted_primitive(orientation="vertical", left=199.5, bottom=10.0, right=200.5, top=90.0)
+        # Three horizontal rules, each covering only the right sub-column.
+        h_rules = [
+            _dotted_primitive(orientation="horizontal", left=200.0, bottom=69.5, right=540.0, top=70.5),
+            _dotted_primitive(orientation="horizontal", left=200.0, bottom=49.5, right=540.0, top=50.5),
+            _dotted_primitive(orientation="horizontal", left=200.0, bottom=29.5, right=540.0, top=30.5),
+        ]
+        _apply_dotted_splits(table, dotted_h=h_rules, dotted_v=[v_rule])
+
+        # Expectation: 4 rows, 3 columns.
+        self.assertEqual(table["number of rows"], 4)
+        self.assertEqual(table["number of columns"], 3)
+        cells_by_pos = {
+            (c["row number"], c["column number"]): c
+            for row in table["rows"] for c in row["cells"]
+        }
+        # Header column stays rowspan=4 with single paragraph.
+        self.assertEqual(cells_by_pos[(1, 1)]["row span"], 4)
+        self.assertEqual(cells_by_pos[(1, 1)]["paragraphs"][0]["content"], "Header")
+        # Label sub-column (col 2) stays rowspan=4 with single paragraph.
+        self.assertEqual(cells_by_pos[(1, 2)]["row span"], 4)
+        self.assertEqual(cells_by_pos[(1, 2)]["paragraphs"][0]["content"], "Label")
+        # Right sub-column (col 3) is cut into 4 separate cells.
+        self.assertEqual(cells_by_pos[(1, 3)]["paragraphs"][0]["content"], "Row1")
+        self.assertEqual(cells_by_pos[(2, 3)]["paragraphs"][0]["content"], "Row2")
+        self.assertEqual(cells_by_pos[(3, 3)]["paragraphs"][0]["content"], "Row3")
+        self.assertEqual(cells_by_pos[(4, 3)]["paragraphs"][0]["content"], "Row4")
 
 
 class DottedRuleSplitAdapterIntegrationTests(unittest.TestCase):

@@ -220,6 +220,7 @@ src/document_processor/pdf/__pycache__/
 
 # docs for local development
 docs
+graphify-out/
 
 # local experimental scripts
 scripts
