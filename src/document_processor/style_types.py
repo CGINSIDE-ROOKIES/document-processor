@@ -61,7 +61,7 @@ class TableStyleInfo(BaseModel):
 
 
 class StyleMap(BaseModel):
-    """Style lookup map keyed by structural unit IDs."""
+    """Style lookup map keyed by native structural paths."""
 
     runs: dict[str, RunStyleInfo] = Field(default_factory=dict)
     paragraphs: dict[str, ParaStyleInfo] = Field(default_factory=dict)

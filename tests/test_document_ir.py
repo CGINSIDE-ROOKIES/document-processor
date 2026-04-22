@@ -44,8 +44,7 @@ class DocumentIRTests(unittest.TestCase):
         }
 
     def _sample_style_map(self) -> StyleMap:
-        return StyleMap(
-            runs={
+        return StyleMap(runs={
                 "s1.p1.r1": RunStyleInfo(bold=True, size_pt=11.0),
                 "s1.p1.r2": RunStyleInfo(italic=True, size_pt=11.0),
             },
@@ -65,7 +64,7 @@ class DocumentIRTests(unittest.TestCase):
 
         self.assertEqual(len(doc_ir.paragraphs), 2)
         self.assertEqual(doc_ir.paragraphs[0].text, "Hello World")
-        self.assertEqual(doc_ir.paragraphs[1].content[0].unit_id, "s1.p2.r1.tbl1")
+        self.assertEqual(doc_ir.paragraphs[1].content[0].native_anchor.debug_path, "s1.p2.r1.tbl1")
         self.assertEqual(doc_ir.paragraphs[1].tables[0].row_count, 2)
         self.assertEqual(doc_ir.paragraphs[1].tables[0].col_count, 2)
 
@@ -84,14 +83,11 @@ class DocumentIRTests(unittest.TestCase):
         self.assertEqual(doc.custom_field, 7)
 
     def test_content_is_source_of_truth(self) -> None:
-        doc = DocIR(
-            paragraphs=[
-                ParagraphIR(
-                    unit_id="s1.p1",
-                    content=[
-                        RunIR(unit_id="s1.p1.r1", text="Hello"),
-                        ImageIR(unit_id="s1.p1.img1", image_id="img1"),
-                        TableIR(unit_id="s1.p1.tbl1"),
+        doc = DocIR(paragraphs=[
+                ParagraphIR(content=[
+                        RunIR(text="Hello"),
+                        ImageIR(image_id="img1"),
+                        TableIR(),
                     ],
                 )
             ]
@@ -104,7 +100,7 @@ class DocumentIRTests(unittest.TestCase):
         )
         self.assertEqual([run.text for run in paragraph.runs], ["Hello"])
         self.assertEqual([image.image_id for image in paragraph.images], ["img1"])
-        self.assertEqual([table.unit_id for table in paragraph.tables], ["s1.p1.tbl1"])
+        self.assertEqual([table.native_anchor.debug_path for table in paragraph.tables], ["s1.p1.r1.tbl1"])
 
         content_annotation = ParagraphIR.model_fields["content"].annotation
         self.assertIn("RunIR", str(content_annotation))
@@ -433,34 +429,29 @@ class DocumentIRTests(unittest.TestCase):
 
         self.assertEqual(outer_cell_paragraph.text, "Outer\nInner")
         self.assertEqual(len(outer_cell_paragraph.tables), 1)
-        self.assertEqual(outer_cell_paragraph.tables[0].unit_id, "s1.p1.r1.tbl1.tr1.tc1.p1.tbl1")
+        self.assertEqual(
+            outer_cell_paragraph.tables[0].native_anchor.debug_path,
+            "s1.p1.r1.tbl1.tr1.tc1.p1.tbl1",
+        )
         self.assertEqual(
             outer_cell_paragraph.tables[0].cells[0].paragraphs[0].runs[0].text,
             "Inner",
         )
 
     def test_table_markdown_repeats_merged_cells(self) -> None:
-        table = TableIR(
-            unit_id="s1.p1.tbl1",
-            cells=[
-                TableCellIR(
-                    unit_id="s1.p1.tbl1.tr1.tc1",
-                    row_index=1,
+        table = TableIR(cells=[
+                TableCellIR(row_index=1,
                     col_index=1,
                     cell_style=CellStyleInfo(rowspan=2, colspan=2),
-                    paragraphs=[ParagraphIR(unit_id="s1.p1.tbl1.tr1.tc1.p1", content=[RunIR(unit_id="x", text="Merged")])],
+                    paragraphs=[ParagraphIR(content=[RunIR(text="Merged")])],
                 ),
-                TableCellIR(
-                    unit_id="s1.p1.tbl1.tr1.tc3",
-                    row_index=1,
+                TableCellIR(row_index=1,
                     col_index=3,
-                    paragraphs=[ParagraphIR(unit_id="s1.p1.tbl1.tr1.tc3.p1", content=[RunIR(unit_id="y", text="Right")])],
+                    paragraphs=[ParagraphIR(content=[RunIR(text="Right")])],
                 ),
-                TableCellIR(
-                    unit_id="s1.p1.tbl1.tr2.tc3",
-                    row_index=2,
+                TableCellIR(row_index=2,
                     col_index=3,
-                    paragraphs=[ParagraphIR(unit_id="s1.p1.tbl1.tr2.tc3.p1", content=[RunIR(unit_id="z", text="Bottom")])],
+                    paragraphs=[ParagraphIR(content=[RunIR(text="Bottom")])],
                 ),
             ],
         )
@@ -472,54 +463,19 @@ class DocumentIRTests(unittest.TestCase):
         self.assertIn("| Merged | Merged | Bottom |", markdown)
 
     def test_table_markdown_appends_nested_tables_by_reference(self) -> None:
-        nested = TableIR(
-            unit_id="s1.p1.tbl1.tr1.tc2.p1.tbl1",
-            cells=[
-                TableCellIR(
-                    unit_id="s1.p1.tbl1.tr1.tc2.p1.tbl1.tr1.tc1",
-                    row_index=1,
-                    col_index=1,
-                    paragraphs=[
-                        ParagraphIR(
-                            unit_id="s1.p1.tbl1.tr1.tc2.p1.tbl1.tr1.tc1.p1",
-                            content=[RunIR(unit_id="inner", text="Inner")],
-                        )
-                    ],
-                )
-            ],
+        doc = DocIR.from_mapping(
+            {
+                "s1.p1.r1.tbl1.tr1.tc1.p1.r1": "Outer",
+                "s1.p1.r1.tbl1.tr1.tc2.p1.tbl1.tr1.tc1.p1.r1": "Inner",
+            }
         )
-        outer = TableIR(
-            unit_id="s1.p1.tbl1",
-            cells=[
-                TableCellIR(
-                    unit_id="s1.p1.tbl1.tr1.tc1",
-                    row_index=1,
-                    col_index=1,
-                    paragraphs=[
-                        ParagraphIR(
-                            unit_id="s1.p1.tbl1.tr1.tc1.p1",
-                            content=[RunIR(unit_id="outer", text="Outer")],
-                        )
-                    ],
-                ),
-                TableCellIR(
-                    unit_id="s1.p1.tbl1.tr1.tc2",
-                    row_index=1,
-                    col_index=2,
-                    paragraphs=[
-                        ParagraphIR(
-                            unit_id="s1.p1.tbl1.tr1.tc2.p1",
-                            content=[nested],
-                        )
-                    ],
-                ),
-            ],
-        )
+        outer = doc.paragraphs[0].tables[0]
+        nested_path = outer.cells[1].paragraphs[0].tables[0].native_anchor.debug_path
 
         markdown = outer.markdown
 
-        self.assertIn("| Outer | [tbl:s1.p1.tbl1.tr1.tc2.p1.tbl1] |", markdown)
-        self.assertIn("[tbl:s1.p1.tbl1.tr1.tc2.p1.tbl1]", markdown)
+        self.assertIn(f"| Outer | [tbl:{nested_path}] |", markdown)
+        self.assertIn(f"[tbl:{nested_path}]", markdown)
         self.assertIn("| col1 |", markdown)
         self.assertIn("| Inner |", markdown)
 
@@ -588,10 +544,10 @@ class DocumentIRTests(unittest.TestCase):
             ["RunIR", "TableIR", "RunIR"],
         )
         self.assertEqual(
-            [(run.unit_id, run.text) for run in paragraph_ir.runs],
+            [(run.native_anchor.debug_path, run.text) for run in paragraph_ir.runs],
             [("s1.p1.r1", "Before"), ("s1.p1.r3", "After")],
         )
-        self.assertEqual(paragraph_ir.tables[0].unit_id, "s1.p1.r1.tbl1")
+        self.assertEqual(paragraph_ir.tables[0].native_anchor.debug_path, "s1.p1.r1.tbl1")
         self.assertEqual(paragraph_ir.tables[0].cells[0].paragraphs[0].runs[0].text, "Cell")
 
     def test_hwpx_nested_tables_are_parsed(self) -> None:

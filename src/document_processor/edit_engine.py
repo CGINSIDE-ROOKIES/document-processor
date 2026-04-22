@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from .core import convert_hwp_to_hwpx_bytes
 from .io_utils import SourceDocType, TemporarySourcePath, coerce_source_to_supported_value, infer_doc_type
-from .models import DocIR, ParagraphIR, RunIR, TableCellIR, TableIR
+from .models import DocIR, ParagraphIR, RunIR, TableCellIR, TableIR, _anchored_node_id
 
 
 class EditValidationError(ValueError):
@@ -22,21 +22,21 @@ class EditValidationError(ValueError):
 
 
 class RunTextEdit(BaseModel):
-    run_unit_id: str
+    run_id: str
     old_text: str
     new_text: str
     reason: str = ""
 
 
 class ParagraphTextEdit(BaseModel):
-    paragraph_unit_id: str
+    paragraph_id: str
     old_text: str
     new_text: str
     reason: str = ""
 
 
 class CellTextEdit(BaseModel):
-    cell_unit_id: str
+    cell_id: str
     old_text: str
     new_text: str
     reason: str = ""
@@ -54,7 +54,7 @@ class ApplyEditsResult(BaseModel):
     output_bytes: bytes | None = None
     updated_doc_ir: DocIR | None = None
     edits_applied: int = 0
-    modified_unit_ids: list[str] = Field(default_factory=list)
+    modified_target_ids: list[str] = Field(default_factory=list)
     modified_run_ids: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
@@ -63,11 +63,11 @@ class _EditableRunRef:
     def __init__(
         self,
         *,
-        unit_id: str,
+        node_id: str,
         get_text: Callable[[], str],
         set_text: Callable[[str], None],
     ) -> None:
-        self.unit_id = unit_id
+        self.node_id = node_id
         self._get_text = get_text
         self._set_text = set_text
 
@@ -84,12 +84,12 @@ class _EditableParagraphRef:
     def __init__(
         self,
         *,
-        unit_id: str,
+        node_id: str,
         runs: list[_EditableRunRef],
         has_non_run_content: bool = False,
         recompute: Callable[[], None] | None = None,
     ) -> None:
-        self.unit_id = unit_id
+        self.node_id = node_id
         self.runs = runs
         self.has_non_run_content = has_non_run_content
         self._recompute = recompute
@@ -107,11 +107,11 @@ class _EditableCellRef:
     def __init__(
         self,
         *,
-        unit_id: str,
+        node_id: str,
         paragraphs: list[_EditableParagraphRef],
         recompute: Callable[[], None] | None = None,
     ) -> None:
-        self.unit_id = unit_id
+        self.node_id = node_id
         self.paragraphs = paragraphs
         self._recompute = recompute
 
@@ -165,6 +165,7 @@ def _iter_doc_ir_table_paragraphs(table: TableIR):
 
 
 def _build_doc_ir_index(doc: DocIR) -> _EditableDocIndex:
+    doc.ensure_node_identity()
     paragraphs: dict[str, _EditableParagraphRef] = {}
     runs: dict[str, _EditableRunRef] = {}
     cells: dict[str, _EditableCellRef] = {}
@@ -183,21 +184,21 @@ def _build_doc_ir_index(doc: DocIR) -> _EditableDocIndex:
                 recompute_after()
 
         paragraph_ref = _EditableParagraphRef(
-            unit_id=paragraph.unit_id,
+            node_id=paragraph.node_id,
             runs=run_refs,
             has_non_run_content=bool(paragraph.images or paragraph.tables),
             recompute=recompute,
         )
-        paragraphs[paragraph.unit_id] = paragraph_ref
+        paragraphs[paragraph.node_id] = paragraph_ref
         for run in paragraph.runs:
             run_ref = _EditableRunRef(
-                unit_id=run.unit_id,
+                node_id=run.node_id,
                 get_text=lambda node=run: node.text,
                 set_text=lambda value, node=run: setattr(node, "text", value),
             )
             run_refs.append(run_ref)
-            runs[run.unit_id] = run_ref
-            run_to_paragraph[run.unit_id] = paragraph_ref
+            runs[run.node_id] = run_ref
+            run_to_paragraph[run.node_id] = paragraph_ref
         return paragraph_ref
 
     def walk_table(table: TableIR, *, recompute_after: Callable[[], None] | None) -> None:
@@ -210,11 +211,11 @@ def _build_doc_ir_index(doc: DocIR) -> _EditableDocIndex:
                     recompute_after()
 
             cell_ref = _EditableCellRef(
-                unit_id=cell.unit_id,
+                node_id=cell.node_id,
                 paragraphs=cell_paragraph_refs,
                 recompute=recompute_cell,
             )
-            cells[cell.unit_id] = cell_ref
+            cells[cell.node_id] = cell_ref
 
             for cell_paragraph in cell.paragraphs:
                 paragraph_ref = register_paragraph(
@@ -270,62 +271,66 @@ def _build_docx_index(doc) -> _EditableDocIndex:
     cells: dict[str, _EditableCellRef] = {}
     run_to_paragraph: dict[str, _EditableParagraphRef] = {}
 
-    def register_paragraph(paragraph, paragraph_id: str, *, has_non_run_content: bool = False) -> _EditableParagraphRef:
+    def register_paragraph(paragraph, paragraph_path: str, *, has_non_run_content: bool = False) -> _EditableParagraphRef:
         run_refs: list[_EditableRunRef] = []
+        paragraph_node_id = _anchored_node_id("paragraph", paragraph_path)
         paragraph_ref = _EditableParagraphRef(
-            unit_id=paragraph_id,
+            node_id=paragraph_node_id,
             runs=run_refs,
             has_non_run_content=has_non_run_content,
         )
-        paragraphs[paragraph_id] = paragraph_ref
+        paragraphs[paragraph_node_id] = paragraph_ref
         for run_index, run in enumerate(paragraph.runs, start=1):
-            run_id = f"{paragraph_id}.r{run_index}"
+            run_path = f"{paragraph_path}.r{run_index}"
+            run_node_id = _anchored_node_id("run", run_path)
             run_ref = _EditableRunRef(
-                unit_id=run_id,
+                node_id=run_node_id,
                 get_text=lambda node=run: node.text or "",
                 set_text=lambda value, node=run: setattr(node, "text", value),
             )
             run_refs.append(run_ref)
-            runs[run_id] = run_ref
-            run_to_paragraph[run_id] = paragraph_ref
+            runs[run_node_id] = run_ref
+            run_to_paragraph[run_node_id] = paragraph_ref
         return paragraph_ref
 
     def walk_table(table, table_base: str) -> None:
         for tr_idx, row in enumerate(table.rows, start=1):
             for tc_idx, cell in enumerate(row.cells, start=1):
-                cell_id = f"{table_base}.tr{tr_idx}.tc{tc_idx}"
+                cell_path = f"{table_base}.tr{tr_idx}.tc{tc_idx}"
+                cell_node_id = _anchored_node_id("cell", cell_path)
                 cell_paragraph_refs: list[_EditableParagraphRef] = []
-                cells[cell_id] = _EditableCellRef(unit_id=cell_id, paragraphs=cell_paragraph_refs)
+                cells[cell_node_id] = _EditableCellRef(node_id=cell_node_id, paragraphs=cell_paragraph_refs)
                 cp_idx = 0
-                current_paragraph_id: str | None = None
+                current_paragraph_path: str | None = None
                 nested_table_counter_by_paragraph: dict[str, int] = {}
 
                 for block in _iter_docx_blocks_from_element(cell, cell._tc):
                     if block.__class__.__name__ == "Paragraph":
                         cp_idx += 1
-                        current_paragraph_id = f"{cell_id}.p{cp_idx}"
-                        cell_paragraph_refs.append(register_paragraph(block, current_paragraph_id))
+                        current_paragraph_path = f"{cell_path}.p{cp_idx}"
+                        cell_paragraph_refs.append(register_paragraph(block, current_paragraph_path))
                         continue
 
                     if block.__class__.__name__ != "Table":
                         continue
 
-                    if current_paragraph_id is None:
+                    if current_paragraph_path is None:
                         cp_idx += 1
-                        current_paragraph_id = f"{cell_id}.p{cp_idx}"
+                        current_paragraph_path = f"{cell_path}.p{cp_idx}"
+                        paragraph_node_id = _anchored_node_id("paragraph", current_paragraph_path)
                         paragraph_ref = _EditableParagraphRef(
-                            unit_id=current_paragraph_id,
+                            node_id=paragraph_node_id,
                             runs=[],
                             has_non_run_content=True,
                         )
-                        paragraphs[current_paragraph_id] = paragraph_ref
+                        paragraphs[paragraph_node_id] = paragraph_ref
                         cell_paragraph_refs.append(paragraph_ref)
                     else:
-                        paragraphs[current_paragraph_id].has_non_run_content = True
+                        paragraphs[_anchored_node_id("paragraph", current_paragraph_path)].has_non_run_content = True
 
-                    tbl_counter = nested_table_counter_by_paragraph.get(current_paragraph_id, 0) + 1
-                    nested_table_counter_by_paragraph[current_paragraph_id] = tbl_counter
-                    nested_table_base = f"{current_paragraph_id}.tbl{tbl_counter}"
+                    tbl_counter = nested_table_counter_by_paragraph.get(current_paragraph_path, 0) + 1
+                    nested_table_counter_by_paragraph[current_paragraph_path] = tbl_counter
+                    nested_table_base = f"{current_paragraph_path}.tbl{tbl_counter}"
                     walk_table(block, nested_table_base)
 
     p_idx = 0
@@ -512,54 +517,58 @@ def _build_hwpx_index(archive: _EditableHwpxArchive) -> _EditableDocIndex:
     cells: dict[str, _EditableCellRef] = {}
     run_to_paragraph: dict[str, _EditableParagraphRef] = {}
 
-    def register_paragraph(paragraph_el: ET.Element, paragraph_id: str) -> _EditableParagraphRef:
+    def register_paragraph(paragraph_el: ET.Element, paragraph_path: str) -> _EditableParagraphRef:
         run_elements = paragraph_el.findall(f"{_HP}run")
+        paragraph_node_id = _anchored_node_id("paragraph", paragraph_path)
         paragraph_ref = _EditableParagraphRef(
-            unit_id=paragraph_id,
+            node_id=paragraph_node_id,
             runs=[],
             has_non_run_content=bool(_iter_paragraph_tables(paragraph_el)),
         )
-        paragraphs[paragraph_id] = paragraph_ref
+        paragraphs[paragraph_node_id] = paragraph_ref
         if not run_elements:
             return paragraph_ref
 
         for run_index, run_el in enumerate(run_elements, start=1):
-            run_id = f"{paragraph_id}.r{run_index}"
+            run_path = f"{paragraph_path}.r{run_index}"
+            run_node_id = _anchored_node_id("run", run_path)
             run_ref = _EditableRunRef(
-                unit_id=run_id,
+                node_id=run_node_id,
                 get_text=lambda node=run_el: _run_text(node),
                 set_text=lambda value, node=run_el: _set_hwpx_run_text(node, value),
             )
             paragraph_ref.runs.append(run_ref)
-            runs[run_id] = run_ref
-            run_to_paragraph[run_id] = paragraph_ref
+            runs[run_node_id] = run_ref
+            run_to_paragraph[run_node_id] = paragraph_ref
         return paragraph_ref
 
     def walk_table(table_el: ET.Element, table_base: str) -> None:
         for tr_idx, row_el in enumerate(table_el.findall(f"{_HP}tr"), start=1):
             for tc_idx, cell_el in _logical_table_cells(row_el):
-                cell_id = f"{table_base}.tr{tr_idx}.tc{tc_idx}"
+                cell_path = f"{table_base}.tr{tr_idx}.tc{tc_idx}"
+                cell_node_id = _anchored_node_id("cell", cell_path)
                 cell_paragraph_refs: list[_EditableParagraphRef] = []
-                cells[cell_id] = _EditableCellRef(unit_id=cell_id, paragraphs=cell_paragraph_refs)
+                cells[cell_node_id] = _EditableCellRef(node_id=cell_node_id, paragraphs=cell_paragraph_refs)
                 cell_paragraphs = _iter_cell_paragraphs(cell_el)
                 if not cell_paragraphs:
-                    paragraph_id = f"{cell_id}.p1"
+                    paragraph_path = f"{cell_path}.p1"
+                    paragraph_node_id = _anchored_node_id("paragraph", paragraph_path)
                     paragraph_ref = _EditableParagraphRef(
-                        unit_id=paragraph_id,
+                        node_id=paragraph_node_id,
                         runs=[],
                         has_non_run_content=False,
                     )
-                    paragraphs[paragraph_id] = paragraph_ref
+                    paragraphs[paragraph_node_id] = paragraph_ref
                     cell_paragraph_refs.append(paragraph_ref)
                     continue
 
                 for cp_idx, paragraph_el in enumerate(cell_paragraphs, start=1):
-                    paragraph_id = f"{cell_id}.p{cp_idx}"
-                    paragraph_ref = register_paragraph(paragraph_el, paragraph_id)
+                    paragraph_path = f"{cell_path}.p{cp_idx}"
+                    paragraph_ref = register_paragraph(paragraph_el, paragraph_path)
                     cell_paragraph_refs.append(paragraph_ref)
                     for nested_index, nested_table in enumerate(_iter_paragraph_tables(paragraph_el), start=1):
                         paragraph_ref.has_non_run_content = True
-                        walk_table(nested_table, f"{paragraph_id}.tbl{nested_index}")
+                        walk_table(nested_table, f"{paragraph_path}.tbl{nested_index}")
 
     for section_index, section in enumerate(archive.section_entries, start=1):
         for paragraph_index, paragraph_el in enumerate(_iter_section_paragraphs(section.root), start=1):
@@ -633,11 +642,11 @@ def _apply_to_run_with_offsets(
     local_end: int,
     offset_deltas: dict[str, int],
 ) -> None:
-    delta = offset_deltas.get(run.unit_id, 0)
+    delta = offset_deltas.get(run.node_id, 0)
     actual_start = local_start + delta
     actual_end = local_end + delta
     _apply_to_run(run, new_text, actual_start, actual_end)
-    offset_deltas[run.unit_id] = delta + len(new_text) - (local_end - local_start)
+    offset_deltas[run.node_id] = delta + len(new_text) - (local_end - local_start)
 
 
 def _apply_multi_run(
@@ -665,7 +674,7 @@ def _apply_multi_run(
                 local_start = abs_a1 - span.full_start
                 local_end = abs_a2 - span.full_start
                 _apply_to_run_with_offsets(span.run, new_sub[b1:b2], local_start, local_end, offset_deltas)
-                _append_unique(result.modified_run_ids, span.run.unit_id)
+                _append_unique(result.modified_run_ids, span.run.node_id)
                 continue
             _apply_multi_run(
                 orig_sub[a1:a2],
@@ -686,7 +695,7 @@ def _apply_multi_run(
         first.end - first.full_start,
         offset_deltas,
     )
-    _append_unique(result.modified_run_ids, first.run.unit_id)
+    _append_unique(result.modified_run_ids, first.run.node_id)
     for span in spans[1:]:
         _apply_to_run_with_offsets(
             span.run,
@@ -695,58 +704,58 @@ def _apply_multi_run(
             span.end - span.full_start,
             offset_deltas,
         )
-        _append_unique(result.modified_run_ids, span.run.unit_id)
+        _append_unique(result.modified_run_ids, span.run.node_id)
     result.warnings.append(
         "Multi-run fallback used for "
-        f"{[span.run.unit_id for span in spans]}: all replacement text assigned to {first.run.unit_id}"
+        f"{[span.run.node_id for span in spans]}: all replacement text assigned to {first.run.node_id}"
     )
 
 
 def _validate_paragraph_edit(index: _EditableDocIndex, edit: ParagraphTextEdit) -> _EditableParagraphRef:
-    paragraph = index.paragraphs.get(edit.paragraph_unit_id)
+    paragraph = index.paragraphs.get(edit.paragraph_id)
     if paragraph is None:
-        raise EditValidationError(f"Paragraph does not exist: {edit.paragraph_unit_id}")
+        raise EditValidationError(f"Paragraph does not exist: {edit.paragraph_id}")
     if paragraph.has_non_run_content:
         raise EditValidationError(
-            f"Paragraph edit targets unsupported mixed content (tables/images): {edit.paragraph_unit_id}"
+            f"Paragraph edit targets unsupported mixed content (tables/images): {edit.paragraph_id}"
         )
     if paragraph.text != edit.old_text:
         raise EditValidationError(
-            f"Paragraph text mismatch for {edit.paragraph_unit_id}: expected {edit.old_text!r}, got {paragraph.text!r}"
+            f"Paragraph text mismatch for {edit.paragraph_id}: expected {edit.old_text!r}, got {paragraph.text!r}"
         )
     return paragraph
 
 
 def _validate_run_edit(index: _EditableDocIndex, edit: RunTextEdit) -> _EditableRunRef:
-    run = index.runs.get(edit.run_unit_id)
+    run = index.runs.get(edit.run_id)
     if run is None:
-        raise EditValidationError(f"Run does not exist: {edit.run_unit_id}")
+        raise EditValidationError(f"Run does not exist: {edit.run_id}")
     if run.text != edit.old_text:
         raise EditValidationError(
-            f"Run text mismatch for {edit.run_unit_id}: expected {edit.old_text!r}, got {run.text!r}"
+            f"Run text mismatch for {edit.run_id}: expected {edit.old_text!r}, got {run.text!r}"
         )
     return run
 
 
 def _validate_cell_edit(index: _EditableDocIndex, edit: CellTextEdit) -> _EditableCellRef:
-    cell = index.cells.get(edit.cell_unit_id)
+    cell = index.cells.get(edit.cell_id)
     if cell is None:
-        raise EditValidationError(f"Cell does not exist: {edit.cell_unit_id}")
+        raise EditValidationError(f"Cell does not exist: {edit.cell_id}")
     if any(paragraph.has_non_run_content for paragraph in cell.paragraphs):
         raise EditValidationError(
-            f"Cell edit targets unsupported mixed content (nested tables/images): {edit.cell_unit_id}"
+            f"Cell edit targets unsupported mixed content (nested tables/images): {edit.cell_id}"
         )
     if not cell.paragraphs or any(not paragraph.runs for paragraph in cell.paragraphs):
-        raise EditValidationError(f"Cell does not contain editable text runs: {edit.cell_unit_id}")
+        raise EditValidationError(f"Cell does not contain editable text runs: {edit.cell_id}")
     if cell.text != edit.old_text:
         raise EditValidationError(
-            f"Cell text mismatch for {edit.cell_unit_id}: expected {edit.old_text!r}, got {cell.text!r}"
+            f"Cell text mismatch for {edit.cell_id}: expected {edit.old_text!r}, got {cell.text!r}"
         )
     expected_paragraphs = len(cell.paragraphs)
     new_paragraphs = len(edit.new_text.split("\n"))
     if new_paragraphs != expected_paragraphs:
         raise EditValidationError(
-            f"Cell text replacement for {edit.cell_unit_id} must preserve paragraph count: "
+            f"Cell text replacement for {edit.cell_id} must preserve paragraph count: "
             f"expected {expected_paragraphs} line(s), got {new_paragraphs}."
         )
     return cell
@@ -762,7 +771,7 @@ def _replace_paragraph_text(
     if len(spans) == 1:
         run = spans[0].run
         run.text = new_text
-        _append_unique(result.modified_run_ids, run.unit_id)
+        _append_unique(result.modified_run_ids, run.node_id)
         paragraph.recompute()
         return
 
@@ -779,7 +788,7 @@ def _replace_paragraph_text(
             local_start = i1 - span.full_start
             local_end = i2 - span.full_start
             _apply_to_run_with_offsets(span.run, new_text[j1:j2], local_start, local_end, offset_deltas)
-            _append_unique(result.modified_run_ids, span.run.unit_id)
+            _append_unique(result.modified_run_ids, span.run.node_id)
             continue
         _apply_multi_run(
             original[i1:i2],
@@ -796,18 +805,18 @@ def _apply_single_edit(index: _EditableDocIndex, edit: EditCommand, result: Appl
     if isinstance(edit, RunTextEdit):
         run = _validate_run_edit(index, edit)
         run.text = edit.new_text
-        paragraph = index.run_to_paragraph.get(edit.run_unit_id)
+        paragraph = index.run_to_paragraph.get(edit.run_id)
         if paragraph is not None:
             paragraph.recompute()
-        _append_unique(result.modified_unit_ids, edit.run_unit_id)
-        _append_unique(result.modified_run_ids, edit.run_unit_id)
+        _append_unique(result.modified_target_ids, edit.run_id)
+        _append_unique(result.modified_run_ids, edit.run_id)
         result.edits_applied += 1
         return
 
     if isinstance(edit, ParagraphTextEdit):
         paragraph = _validate_paragraph_edit(index, edit)
         _replace_paragraph_text(paragraph, edit.new_text, result)
-        _append_unique(result.modified_unit_ids, edit.paragraph_unit_id)
+        _append_unique(result.modified_target_ids, edit.paragraph_id)
         result.edits_applied += 1
         return
 
@@ -815,7 +824,7 @@ def _apply_single_edit(index: _EditableDocIndex, edit: EditCommand, result: Appl
     for paragraph, new_paragraph_text in zip(cell.paragraphs, edit.new_text.split("\n"), strict=True):
         _replace_paragraph_text(paragraph, new_paragraph_text, result)
     cell.recompute()
-    _append_unique(result.modified_unit_ids, edit.cell_unit_id)
+    _append_unique(result.modified_target_ids, edit.cell_id)
     result.edits_applied += 1
 
 

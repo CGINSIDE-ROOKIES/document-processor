@@ -15,18 +15,31 @@ from document_processor import (
     DocumentInput,
     GetDocumentContextRequest,
     HwpxDocument,
+    ListEditableTargetsRequest,
+    NativeAnchor,
+    NodeKind,
+    ReadDocumentRequest,
     RenderReviewHtmlRequest,
     TextAnnotation,
     TextEdit,
+    ValidateTextAnnotationsRequest,
+    ValidateTextEditsRequest,
     apply_text_edits,
     apply_edits_to_doc_ir,
     apply_edits_to_source,
     get_document_context,
+    list_editable_targets,
+    read_document,
     render_review_html,
+    validate_text_annotations,
+    validate_text_edits,
 )
 ```
 
 ## Core IR Models
+
+See [PDF Parser DocIR Integration](pdf-parser-docir-integration.md) for guidance on
+building stable IDs and native anchors from an external PDF parser.
 
 ### `DocIR`
 
@@ -37,9 +50,19 @@ Key fields:
 - `doc_id: str | None`
 - `source_path: str | None`
 - `source_doc_type: str | None`
+- `identity_version: int`
 - `assets: dict[str, ImageAsset]`
 - `pages: list[PageInfo]`
 - `paragraphs: list[ParagraphIR]`
+
+All addressable IR nodes expose:
+
+- `node_id`: stable opaque id intended for LLM tool calls and edit/annotation targets.
+
+Nodes parsed from a native document also receive `native_anchor`, which records the
+source document type, debug path, parent debug path, native part name, structural
+path, and a source text hash where available. Use `node_id` in exposed tool-call
+APIs. Native/package locators live only under `native_anchor`.
 
 Key methods:
 
@@ -101,7 +124,7 @@ Paragraph-like structural node.
 
 Important fields:
 
-- `unit_id`
+- `node_id`
 - `text`
 - `page_number`
 - `column_layout`
@@ -122,7 +145,7 @@ Smallest text unit that preserves run-level styling.
 
 Important fields:
 
-- `unit_id`
+- `node_id`
 - `text`
 - `run_style`
 
@@ -132,7 +155,7 @@ Nested table node under a paragraph.
 
 Important fields:
 
-- `unit_id`
+- `node_id`
 - `row_count`
 - `col_count`
 - `table_style`
@@ -149,11 +172,31 @@ Computed helper:
 - `ColumnLayoutInfo`
 - `PageInfo`
 - `TableCellIR`
+- `NativeAnchor`
 - `CellStyleInfo`
 - `ParaStyleInfo`
 - `RunStyleInfo`
 - `TableStyleInfo`
 - `StyleMap`
+
+#### `NativeAnchor`
+
+Native/source-location metadata attached to addressable nodes.
+
+Fields:
+
+- `source_doc_type`: source format such as `docx`, `hwpx`, `hwp`, or parser-defined values.
+- `node_kind`: one of `paragraph`, `run`, `image`, `table`, or `cell`.
+- `debug_path`: human-readable internal path for diagnostics and native write-back tracing.
+- `parent_debug_path`: debug path of the containing native/IR node when available.
+- `part_name`: package part or source segment name, such as `word/document.xml`,
+  `Contents/section0.xml`, or `page:3`.
+- `structural_path`: optional parser-native structural locator.
+- `text_hash`: SHA-1 hash of the source text for drift detection.
+
+`NativeAnchor` helps a writer or external parser reconnect a stable `node_id` to
+native structures. It is returned for inspection, but LLM edit and annotation calls
+should still target `node_id`.
 
 #### `CellStyleInfo`
 
@@ -218,6 +261,33 @@ Rules:
 
 These functions operate on `DocumentInput` and are intended for public API usage.
 
+### `read_document(request: ReadDocumentRequest) -> ReadDocumentResult`
+
+Read a bounded paragraph window from a document. This is the preferred tool-call entry
+point when an LLM needs to inspect a document incrementally.
+
+Request fields:
+
+- `document`
+- `start`
+- `limit`
+- `include_runs`
+
+Response fields:
+
+- `source_path`
+- `source_doc_type`
+- `source_name`
+- `start`
+- `limit`
+- `total_paragraphs`
+- `next_start`
+- `paragraphs`
+
+Each paragraph contains a fully constructed `text` field for readability. When
+`include_runs=True`, each run includes `start` and `end` offsets relative to that
+paragraph text so callers can map readable text spans back to editable run IDs.
+
 ### `get_document_context(request: GetDocumentContextRequest) -> DocumentContextResult`
 
 Return surrounding paragraph context for paragraph or run ids.
@@ -225,7 +295,7 @@ Return surrounding paragraph context for paragraph or run ids.
 Request fields:
 
 - `document`
-- `unit_ids`
+- `target_ids`
 - `before`
 - `after`
 - `include_runs`
@@ -236,7 +306,7 @@ Response fields:
 - `source_doc_type`
 - `source_name`
 - `paragraphs`
-- `missing_unit_ids`
+- `missing_target_ids`
 
 ### `list_editable_targets(request: ListEditableTargetsRequest) -> ListEditableTargetsResult`
 
@@ -245,7 +315,7 @@ Enumerate paragraph, run, and cell targets that can be edited safely.
 Request fields:
 
 - `document`
-- `unit_ids`
+- `target_ids`
 - `target_kinds`
 - `include_child_runs`
 - `only_writable`
@@ -257,7 +327,7 @@ Response fields:
 - `source_doc_type`
 - `source_name`
 - `targets`
-- `missing_unit_ids`
+- `missing_target_ids`
 
 ### `validate_text_edits(request: ValidateTextEditsRequest) -> EditValidationResult`
 
@@ -284,6 +354,7 @@ Request fields:
 
 - `document`
 - `edits`
+- `dry_run`
 - `output_path`
 - `output_filename`
 - `return_doc_ir`
@@ -317,6 +388,12 @@ Native write-back is currently supported for:
 
 For `.hwp`, edited output is written as `.hwpx`.
 
+`modified_target_ids` and `modified_run_ids` contain stable `node_id` values.
+
+### `validate_text_annotations(request: ValidateTextAnnotationsRequest) -> AnnotationValidationResult`
+
+Validate annotation targets and selected text without rendering HTML.
+
 ### `render_review_html(request: RenderReviewHtmlRequest) -> ReviewHtmlResult`
 
 Render annotated review HTML from `DocIR`, bytes, or a source path.
@@ -341,10 +418,13 @@ Response fields:
 Fields:
 
 - `target_kind: Literal["paragraph", "run", "cell"]`
-- `target_unit_id: str`
+- `target_id: str`
 - `expected_text: str`
 - `new_text: str`
 - `reason: str = ""`
+
+Use the `node_id` returned by `read_document`, `get_document_context`, or
+`list_editable_targets` as `target_id`.
 
 Cell text edits replace the full text of a table cell. For multi-paragraph cells, `new_text`
 must contain the same number of newline-separated lines as the current cell text; the API
@@ -355,7 +435,7 @@ does not create or delete paragraphs inside cells.
 Fields:
 
 - `target_kind: Literal["paragraph", "run"]`
-- `target_unit_id: str`
+- `target_id: str`
 - `selected_text: str | None`
 - `occurrence_index: int | None`
 - `label: str`
@@ -373,12 +453,26 @@ Behavior:
 Fields:
 
 - `target_kind`
-- `target_unit_id`
-- `parent_paragraph_unit_id`
+- `target_id`
+- `parent_paragraph_id`
 - `current_text`
 - `page_number`
+- `native_anchor`
 - `writable`
 - `writable_reason`
+
+### `DocumentRunContext`
+
+Fields:
+
+- `node_id`
+- `text`
+- `start`
+- `end`
+- `native_anchor`
+
+`start` and `end` are character offsets into the containing
+`DocumentParagraphContext.text`.
 
 ## Low-Level Edit Engine
 
@@ -390,7 +484,7 @@ Low-level run edit DTO.
 
 Fields:
 
-- `run_unit_id`
+- `run_id`
 - `old_text`
 - `new_text`
 - `reason`
@@ -401,7 +495,7 @@ Low-level paragraph edit DTO.
 
 Fields:
 
-- `paragraph_unit_id`
+- `paragraph_id`
 - `old_text`
 - `new_text`
 - `reason`
@@ -412,7 +506,7 @@ Low-level table-cell text edit DTO.
 
 Fields:
 
-- `cell_unit_id`
+- `cell_id`
 - `old_text`
 - `new_text`
 - `reason`
@@ -452,7 +546,7 @@ Low-level annotation DTO used by the HTML annotation renderer.
 
 Fields:
 
-- `target_unit_id`
+- `target_id`
 - `selected_text`
 - `occurrence_index`
 - `label`
@@ -461,11 +555,12 @@ Fields:
 
 ### `resolve_annotations(doc: DocIR, annotations: list[Annotation]) -> list[ResolvedAnnotation]`
 
-Resolve annotations against a `DocIR` and compute canonical offsets from exact matched text.
+Resolve annotations against a `DocIR` node ID and compute canonical offsets from
+exact matched text.
 
 ### `render_annotated_html(doc: DocIR, annotations: list[Annotation], *, title=None) -> str`
 
-Render review HTML with `<mark>` tags and unit-id data attributes.
+Render review HTML with `<mark>` tags and diagnostic data attributes.
 
 ## Diagram Helpers
 

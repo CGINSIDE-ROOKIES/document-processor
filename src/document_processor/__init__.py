@@ -9,7 +9,9 @@ from .api import (
     apply_text_edits,
     get_document_context,
     list_editable_targets,
+    read_document,
     render_review_html,
+    validate_text_annotations,
     validate_text_edits,
 )
 from .api_types import (
@@ -30,12 +32,15 @@ from .api_types import (
     GetDocumentContextRequest,
     ListEditableTargetsRequest,
     ListEditableTargetsResult,
+    ReadDocumentRequest,
+    ReadDocumentResult,
     RenderReviewHtmlRequest,
     ResolvedTextAnnotation,
     ReviewHtmlResult,
     TargetKind,
     TextAnnotation,
     TextEdit,
+    ValidateTextAnnotationsRequest,
     ValidateTextEditsRequest,
 )
 from .builder import build_doc_ir_from_mapping
@@ -53,7 +58,7 @@ from .edit_engine import (
     validate_edit_commands,
 )
 from .hwpx import HwpxDocument
-from .models import ColumnLayoutInfo, DocIR, ImageAsset, ImageIR, PageInfo, ParagraphContentNode, ParagraphIR, RunIR, TableCellIR, TableIR
+from .models import ColumnLayoutInfo, DocIR, ImageAsset, ImageIR, NativeAnchor, NodeKind, PageInfo, ParagraphContentNode, ParagraphIR, RunIR, TableCellIR, TableIR
 from .style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo, StyleMap, TableStyleInfo
 
 __all__ = [
@@ -85,11 +90,15 @@ __all__ = [
     "ImageIR",
     "ListEditableTargetsRequest",
     "ListEditableTargetsResult",
+    "NativeAnchor",
+    "NodeKind",
     "ParagraphTextEdit",
     "PageInfo",
     "ParagraphContentNode",
     "ParagraphIR",
     "ParaStyleInfo",
+    "ReadDocumentRequest",
+    "ReadDocumentResult",
     "RenderReviewHtmlRequest",
     "ResolvedAnnotation",
     "ResolvedTextAnnotation",
@@ -104,6 +113,7 @@ __all__ = [
     "TargetKind",
     "TextAnnotation",
     "TextEdit",
+    "ValidateTextAnnotationsRequest",
     "ValidateTextEditsRequest",
     "apply_edits_to_bytes",
     "apply_edits_to_doc_ir",
@@ -115,9 +125,11 @@ __all__ = [
     "draw_model_diagram",
     "get_document_context",
     "list_editable_targets",
+    "read_document",
     "render_annotated_html",
     "render_review_html",
     "resolve_annotations",
+    "validate_text_annotations",
     "validate_edit_commands",
     "validate_text_edits",
 ]

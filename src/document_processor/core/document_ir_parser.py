@@ -13,7 +13,19 @@ from xml.etree import ElementTree as ET
 import zipfile
 
 from ..io_utils import coerce_source_to_supported_value
-from ..models import ColumnLayoutInfo, DocIR, ImageAsset, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
+from ..models import (
+    ColumnLayoutInfo,
+    DocIR,
+    ImageAsset,
+    ImageIR,
+    PageInfo,
+    ParagraphIR,
+    RunIR,
+    TableCellIR,
+    TableIR,
+    _anchored_node_id,
+    _make_native_anchor,
+)
 from .docx_structured_exporter import _iter_blocks, _iter_blocks_from_element, _load_docx_source
 from .hwp_converter import convert_hwp_to_hwpx_bytes
 from .hwpx_structured_exporter import _HP, _logical_table_cells, _paragraph_text, _run_text, _safe_int, _section_roots_from_bytes
@@ -31,6 +43,28 @@ _HC_IMG_TAG = "img"
 _EMU_PER_PT = 12700.0
 _HWPUNIT_PER_PT = 100.0
 _TWIPS_PER_PT = 20.0
+
+
+def _node_kwargs(
+    kind,
+    structural_path: str,
+    *,
+    source_doc_type: str,
+    parent_debug_path: str | None = None,
+    part_name: str | None = None,
+    text: str | None = None,
+) -> dict[str, object]:
+    return {
+        "node_id": _anchored_node_id(kind, structural_path),
+        "native_anchor": _make_native_anchor(
+            kind,
+            structural_path,
+            source_doc_type=source_doc_type,
+            parent_debug_path=parent_debug_path,
+            part_name=part_name,
+            text=text,
+        ),
+    }
 
 
 def _emu_to_pt(value: str | int | None) -> float | None:
@@ -419,7 +453,13 @@ def _parse_docx_run_images(
         )
         images.append(
             ImageIR(
-                unit_id=f"{paragraph_id}.img{image_counter}",
+                **_node_kwargs(
+                    "image",
+                    f"{paragraph_id}.img{image_counter}",
+                    source_doc_type="docx",
+                    parent_debug_path=paragraph_id,
+                    part_name=str(part_name) if part_name is not None else None,
+                ),
                 image_id=image_id,
                 alt_text=doc_pr_el.get("descr") if doc_pr_el is not None else None,
                 title=doc_pr_el.get("name") if doc_pr_el is not None else None,
@@ -448,7 +488,14 @@ def _parse_docx_paragraph_content(
         text = paragraph.text or ""
         if text or not skip_empty:
             run = RunIR(
-                unit_id=f"{paragraph_id}.r1",
+                **_node_kwargs(
+                    "run",
+                    f"{paragraph_id}.r1",
+                    source_doc_type="docx",
+                    parent_debug_path=paragraph_id,
+                    part_name="word/document.xml",
+                    text=text,
+                ),
                 text=text,
             )
             runs.append(run)
@@ -466,7 +513,14 @@ def _parse_docx_paragraph_content(
         )
         if text or (not skip_empty and not run_images):
             run_ir = RunIR(
-                unit_id=f"{paragraph_id}.r{run_index}",
+                **_node_kwargs(
+                    "run",
+                    f"{paragraph_id}.r{run_index}",
+                    source_doc_type="docx",
+                    parent_debug_path=paragraph_id,
+                    part_name="word/document.xml",
+                    text=text,
+                ),
                 text=text,
             )
             runs.append(run_ir)
@@ -490,12 +544,27 @@ def _parse_docx_table(
     Paragraph,
     Table,
 ) -> TableIR:
-    table_ir = TableIR(unit_id=table_id)
+    table_ir = TableIR(
+        **_node_kwargs(
+            "table",
+            table_id,
+            source_doc_type="docx",
+            parent_debug_path=table_id.rsplit(".", 1)[0] if "." in table_id else None,
+            part_name="word/document.xml",
+        )
+    )
 
     for tr_idx, row in enumerate(table.rows, start=1):
         for tc_idx, cell in enumerate(row.cells, start=1):
+            cell_id = f"{table_id}.tr{tr_idx}.tc{tc_idx}"
             cell_ir = TableCellIR(
-                unit_id=f"{table_id}.tr{tr_idx}.tc{tc_idx}",
+                **_node_kwargs(
+                    "cell",
+                    cell_id,
+                    source_doc_type="docx",
+                    parent_debug_path=table_id,
+                    part_name="word/document.xml",
+                ),
                 row_index=tr_idx,
                 col_index=tc_idx,
             )
@@ -524,7 +593,13 @@ def _parse_docx_table(
                         asset_lookup=asset_lookup,
                     )
                     current_paragraph = ParagraphIR(
-                        unit_id=paragraph_id,
+                        **_node_kwargs(
+                            "paragraph",
+                            paragraph_id,
+                            source_doc_type="docx",
+                            parent_debug_path=cell_id,
+                            part_name="word/document.xml",
+                        ),
                         content=content,
                     )
                     current_paragraph.recompute_text()
@@ -537,16 +612,24 @@ def _parse_docx_table(
 
                 if current_paragraph is None:
                     cp_idx += 1
+                    paragraph_id = f"{table_id}.tr{tr_idx}.tc{tc_idx}.p{cp_idx}"
                     current_paragraph = ParagraphIR(
-                        unit_id=f"{table_id}.tr{tr_idx}.tc{tc_idx}.p{cp_idx}",
+                        **_node_kwargs(
+                            "paragraph",
+                            paragraph_id,
+                            source_doc_type="docx",
+                            parent_debug_path=cell_id,
+                            part_name="word/document.xml",
+                        ),
                     )
                     cell_ir.paragraphs.append(current_paragraph)
 
-                table_counter = nested_table_counter_by_paragraph.get(current_paragraph.unit_id, 0) + 1
-                nested_table_counter_by_paragraph[current_paragraph.unit_id] = table_counter
+                current_paragraph_id = current_paragraph.native_anchor.debug_path
+                table_counter = nested_table_counter_by_paragraph.get(current_paragraph_id, 0) + 1
+                nested_table_counter_by_paragraph[current_paragraph_id] = table_counter
                 nested_table = _parse_docx_table(
                     block,
-                    f"{current_paragraph.unit_id}.tbl{table_counter}",
+                    f"{current_paragraph_id}.tbl{table_counter}",
                     include_tables=include_tables,
                     skip_empty=skip_empty,
                     assets=assets,
@@ -620,7 +703,12 @@ def _build_docx_doc_ir(
                 asset_lookup=asset_lookup,
             )
             paragraph_ir = ParagraphIR(
-                unit_id=paragraph_id,
+                **_node_kwargs(
+                    "paragraph",
+                    paragraph_id,
+                    source_doc_type="docx",
+                    part_name="word/document.xml",
+                ),
                 page_number=current_page_number,
                 column_layout=_copy_column_layout(current_layout.get("column_layout")),
                 content=content,
@@ -664,7 +752,12 @@ def _build_docx_doc_ir(
             Table=Table,
         )
         paragraph_ir = ParagraphIR(
-            unit_id=paragraph_id,
+            **_node_kwargs(
+                "paragraph",
+                paragraph_id,
+                source_doc_type="docx",
+                part_name="word/document.xml",
+            ),
             page_number=current_page_number,
             column_layout=_copy_column_layout(current_layout.get("column_layout")),
             content=[table_ir],
@@ -762,7 +855,13 @@ def _parse_hwpx_picture_image(
 
     image_counter += 1
     return ImageIR(
-        unit_id=f"{paragraph_id}.img{image_counter}",
+        **_node_kwargs(
+            "image",
+            f"{paragraph_id}.img{image_counter}",
+            source_doc_type="hwpx",
+            parent_debug_path=paragraph_id,
+            part_name=binary_path,
+        ),
         image_id=image_id,
         display_width_pt=display_width_pt,
         display_height_pt=display_height_pt,
@@ -798,7 +897,13 @@ def _parse_hwpx_paragraph_content(
         text = _paragraph_text(paragraph_el)
         if text or not skip_empty:
             run = RunIR(
-                unit_id=f"{paragraph_id}.r1",
+                **_node_kwargs(
+                    "run",
+                    f"{paragraph_id}.r1",
+                    source_doc_type="hwpx",
+                    parent_debug_path=paragraph_id,
+                    text=text,
+                ),
                 text=text,
             )
             runs.append(run)
@@ -822,7 +927,13 @@ def _parse_hwpx_paragraph_content(
 
             content_position += 1
             run = RunIR(
-                unit_id=f"{paragraph_id}.r{content_position}",
+                **_node_kwargs(
+                    "run",
+                    f"{paragraph_id}.r{content_position}",
+                    source_doc_type="hwpx",
+                    parent_debug_path=paragraph_id,
+                    text=text,
+                ),
                 text=text,
             )
             runs.append(run)
@@ -882,7 +993,13 @@ def _parse_hwpx_paragraph_content(
         if not emitted_run_content and not skip_empty:
             content_position += 1
             run = RunIR(
-                unit_id=f"{paragraph_id}.r{content_position}",
+                **_node_kwargs(
+                    "run",
+                    f"{paragraph_id}.r{content_position}",
+                    source_doc_type="hwpx",
+                    parent_debug_path=paragraph_id,
+                    text="",
+                ),
                 text="",
             )
             runs.append(run)
@@ -909,12 +1026,25 @@ def _parse_hwpx_table(
     assets: dict[str, ImageAsset],
     asset_lookup: dict[tuple[str, str], str],
 ) -> TableIR:
-    table_ir = TableIR(unit_id=table_id)
+    table_ir = TableIR(
+        **_node_kwargs(
+            "table",
+            table_id,
+            source_doc_type="hwpx",
+            parent_debug_path=table_id.rsplit(".", 1)[0] if "." in table_id else None,
+        )
+    )
 
     for tr_idx, row_el in enumerate(table_el.findall(f"{_HP}tr"), start=1):
         for tc_idx, cell_el in _logical_table_cells(row_el):
+            cell_id = f"{table_id}.tr{tr_idx}.tc{tc_idx}"
             cell_ir = TableCellIR(
-                unit_id=f"{table_id}.tr{tr_idx}.tc{tc_idx}",
+                **_node_kwargs(
+                    "cell",
+                    cell_id,
+                    source_doc_type="hwpx",
+                    parent_debug_path=table_id,
+                ),
                 row_index=tr_idx,
                 col_index=tc_idx,
             )
@@ -924,10 +1054,21 @@ def _parse_hwpx_table(
             if not cell_paragraphs:
                 if not skip_empty:
                     paragraph_ir = ParagraphIR(
-                        unit_id=f"{table_id}.tr{tr_idx}.tc{tc_idx}.p1",
+                        **_node_kwargs(
+                            "paragraph",
+                            f"{cell_id}.p1",
+                            source_doc_type="hwpx",
+                            parent_debug_path=cell_id,
+                        ),
                         content=[
                             RunIR(
-                                unit_id=f"{table_id}.tr{tr_idx}.tc{tc_idx}.p1.r1",
+                                **_node_kwargs(
+                                    "run",
+                                    f"{cell_id}.p1.r1",
+                                    source_doc_type="hwpx",
+                                    parent_debug_path=f"{cell_id}.p1",
+                                    text="",
+                                ),
                                 text="",
                             )
                         ],
@@ -951,7 +1092,12 @@ def _parse_hwpx_table(
                     asset_lookup=asset_lookup,
                 )
                 paragraph_ir = ParagraphIR(
-                    unit_id=paragraph_id,
+                    **_node_kwargs(
+                        "paragraph",
+                        paragraph_id,
+                        source_doc_type="hwpx",
+                        parent_debug_path=cell_id,
+                    ),
                     content=content,
                 )
                 paragraph_ir.recompute_text()
@@ -1033,7 +1179,12 @@ def _build_hwpx_doc_ir(
                 )
 
                 paragraph_ir = ParagraphIR(
-                    unit_id=paragraph_id,
+                    **_node_kwargs(
+                        "paragraph",
+                        paragraph_id,
+                        source_doc_type="hwpx",
+                        part_name=f"Contents/section{s_idx - 1}.xml",
+                    ),
                     page_number=absolute_page_number,
                     column_layout=_copy_column_layout(current_column_layout),
                     content=content,
