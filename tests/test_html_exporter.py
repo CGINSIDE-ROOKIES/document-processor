@@ -9,9 +9,27 @@ SRC_ROOT = THIS_DIR.parent / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from document_processor import Annotation, DocIR, render_annotated_html
+from document_processor import (
+    DocIR,
+    DocumentInput,
+    RenderReviewHtmlRequest,
+    TextAnnotation,
+    render_review_html,
+)
 from document_processor.models import ImageAsset, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
 from document_processor.style_types import CellStyleInfo, ColumnLayoutInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
+
+
+def _render_review_html_for_doc(doc: DocIR, annotations: list[TextAnnotation] | None = None) -> str:
+    result = render_review_html(
+        RenderReviewHtmlRequest(
+            document=DocumentInput(doc_ir=doc),
+            annotations=annotations or [],
+        )
+    )
+    assert result.ok
+    assert result.html is not None
+    return result.html
 
 
 class HtmlExporterTests(unittest.TestCase):
@@ -124,7 +142,7 @@ class HtmlExporterTests(unittest.TestCase):
         )
 
         html = doc.to_html()
-        annotated_html = render_annotated_html(doc, [])
+        annotated_html = _render_review_html_for_doc(doc)
 
         for rendered in (html, annotated_html):
             self.assertIn("table-layout:fixed", rendered)
@@ -162,7 +180,7 @@ class HtmlExporterTests(unittest.TestCase):
         )
 
         html = doc.to_html()
-        annotated_html = render_annotated_html(doc, [])
+        annotated_html = _render_review_html_for_doc(doc)
 
         for rendered in (html, annotated_html):
             self.assertIn("padding:1.4pt 5.1pt 1.4pt 5.1pt", rendered)
@@ -287,7 +305,7 @@ class HtmlExporterTests(unittest.TestCase):
             ],
         )
 
-        for html in (doc.to_html(), render_annotated_html(doc, [])):
+        for html in (doc.to_html(), _render_review_html_for_doc(doc)):
             self.assertIn('class="document-column-group"', html)
             self.assertIn('data-column-count="2"', html)
             self.assertIn("column-count:2", html)
@@ -363,7 +381,7 @@ class HtmlExporterTests(unittest.TestCase):
         self.assertIn("text-indent:-12.0pt", html)
         self.assertNotIn("text-indent:-30.0pt", html)
 
-    def test_render_annotated_html_uses_same_indent_clamp(self) -> None:
+    def test_review_html_uses_same_indent_clamp(self) -> None:
         doc = DocIR(paragraphs=[
                 ParagraphIR(para_style=ParaStyleInfo(first_line_indent_pt=-27.6),
                     content=[RunIR(text="Review text")],
@@ -371,9 +389,9 @@ class HtmlExporterTests(unittest.TestCase):
             ]
         )
 
-        html = render_annotated_html(
+        html = _render_review_html_for_doc(
             doc,
-            [Annotation(target_id=doc.paragraphs[0].node_id, label="Review")],
+            [TextAnnotation(target_kind="paragraph", target_id=doc.paragraphs[0].node_id, label="Review")],
         )
 
         self.assertIn("text-indent:0.0pt", html)

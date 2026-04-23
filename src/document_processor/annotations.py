@@ -47,13 +47,13 @@ def _column_group_css(layout: ColumnLayoutInfo) -> str:
     return ";".join(parts)
 
 
-class AnnotationValidationError(ValueError):
+class _AnnotationValidationError(ValueError):
     def __init__(self, message: str, *, code: str | None = None) -> None:
         super().__init__(message)
         self.code = code
 
 
-class Annotation(BaseModel):
+class _Annotation(BaseModel):
     target_id: str
     selected_text: str | None = None
     occurrence_index: int | None = Field(default=None, ge=0)
@@ -62,15 +62,15 @@ class Annotation(BaseModel):
     note: str = ""
 
     @model_validator(mode="after")
-    def _validate_selection(self) -> "Annotation":
+    def _validate_selection(self) -> "_Annotation":
         if self.selected_text == "":
-            raise ValueError("Annotation.selected_text must not be empty.")
+            raise ValueError("selected_text must not be empty.")
         if self.selected_text is None and self.occurrence_index is not None:
-            raise ValueError("Annotation.occurrence_index requires Annotation.selected_text.")
+            raise ValueError("occurrence_index requires selected_text.")
         return self
 
 
-class ResolvedAnnotation(BaseModel):
+class _ResolvedAnnotation(BaseModel):
     target_id: str
     target_kind: str
     selected_text: str
@@ -124,20 +124,20 @@ def _resolve_selected_span(
 
     matches = _find_text_occurrences(text, selected_text)
     if not matches:
-        raise AnnotationValidationError(
+        raise _AnnotationValidationError(
             f"Selected text does not occur in {target_id}: {selected_text!r}.",
             code="selected_text_not_found",
         )
 
     if occurrence_index is None:
         if len(matches) > 1:
-            raise AnnotationValidationError(
+            raise _AnnotationValidationError(
                 f"Selected text is ambiguous in {target_id}; specify occurrence_index.",
                 code="selected_text_ambiguous",
             )
         occurrence_index = 0
     elif occurrence_index >= len(matches):
-        raise AnnotationValidationError(
+        raise _AnnotationValidationError(
             f"occurrence_index {occurrence_index} is out of bounds for {target_id}; found {len(matches)} match(es).",
             code="occurrence_index_out_of_bounds",
         )
@@ -149,8 +149,8 @@ def _resolve_selected_span(
 
 def _resolve_annotation_target(
     doc: DocIR,
-    annotation: Annotation,
-) -> ResolvedAnnotation:
+    annotation: _Annotation,
+) -> _ResolvedAnnotation:
     doc.ensure_node_identity()
     paragraph_map = {paragraph.node_id: paragraph for paragraph in _iter_paragraphs(doc.paragraphs)}
     paragraph_id_map = {
@@ -178,7 +178,7 @@ def _resolve_annotation_target(
             occurrence_index=annotation.occurrence_index,
             target_id=annotation.target_id,
         )
-        return ResolvedAnnotation(
+        return _ResolvedAnnotation(
             target_id=annotation.target_id,
             target_kind="run",
             selected_text=resolved_text,
@@ -193,7 +193,7 @@ def _resolve_annotation_target(
     if annotation.target_id in paragraph_id_map:
         paragraph = paragraph_id_map[annotation.target_id]
         if paragraph.tables or paragraph.images:
-            raise AnnotationValidationError(
+            raise _AnnotationValidationError(
                 f"Paragraph annotations do not support tables/images yet: {annotation.target_id}."
             )
         text = _paragraph_plain_text(paragraph)
@@ -203,7 +203,7 @@ def _resolve_annotation_target(
             occurrence_index=annotation.occurrence_index,
             target_id=annotation.target_id,
         )
-        return ResolvedAnnotation(
+        return _ResolvedAnnotation(
             target_id=annotation.target_id,
             target_kind="paragraph",
             selected_text=resolved_text,
@@ -215,13 +215,13 @@ def _resolve_annotation_target(
             note=annotation.note,
         )
 
-    raise AnnotationValidationError(f"Annotation target does not exist in DocIR: {annotation.target_id}")
+    raise _AnnotationValidationError(f"Annotation target does not exist in DocIR: {annotation.target_id}")
 
 
-def resolve_annotations(
+def _resolve_annotations(
     doc: DocIR,
-    annotations: list[Annotation],
-) -> list[ResolvedAnnotation]:
+    annotations: list[_Annotation],
+) -> list[_ResolvedAnnotation]:
     return [_resolve_annotation_target(doc, annotation) for annotation in annotations]
 
 
@@ -274,7 +274,7 @@ def _escape_whitespace(html: str) -> str:
 
 def _apply_annotations(
     text: str,
-    annotations: list[ResolvedAnnotation],
+    annotations: list[_ResolvedAnnotation],
 ) -> str:
     if not annotations:
         return escape(text)
@@ -311,7 +311,7 @@ def _apply_annotations(
     return "".join(fragments)
 
 
-def _wrap_run_with_annotations(run: RunIR, annotations: list[ResolvedAnnotation]) -> str:
+def _wrap_run_with_annotations(run: RunIR, annotations: list[_ResolvedAnnotation]) -> str:
     html = _apply_annotations(run.text, annotations)
     if not html:
         return ""
@@ -605,11 +605,11 @@ def _render_colgroup(table: TableIR) -> list[str]:
 
 def _run_annotations_for_segment(
     run: RunIR,
-    run_annotations_by_id: dict[str, list[ResolvedAnnotation]],
-    paragraph_annotations: list[ResolvedAnnotation],
+    run_annotations_by_id: dict[str, list[_ResolvedAnnotation]],
+    paragraph_annotations: list[_ResolvedAnnotation],
     paragraph_cursor: int,
-) -> list[ResolvedAnnotation]:
-    resolved: list[ResolvedAnnotation] = []
+) -> list[_ResolvedAnnotation]:
+    resolved: list[_ResolvedAnnotation] = []
     for item in run_annotations_by_id.get(run.node_id, []):
         resolved.append(item)
 
@@ -623,7 +623,7 @@ def _run_annotations_for_segment(
         if local_start >= local_end:
             continue
         resolved.append(
-            ResolvedAnnotation(
+            _ResolvedAnnotation(
                 target_id=run.node_id or "",
                 target_kind="run_segment",
                 selected_text=run.text[local_start:local_end],
@@ -640,9 +640,9 @@ def _run_annotations_for_segment(
 def _render_paragraph_like(
     doc_ir: DocIR,
     paragraph: ParagraphIR,
-    paragraph_annotations: list[ResolvedAnnotation],
-    paragraph_annotations_by_id: dict[str, list[ResolvedAnnotation]],
-    run_annotations_by_id: dict[str, list[ResolvedAnnotation]],
+    paragraph_annotations: list[_ResolvedAnnotation],
+    paragraph_annotations_by_id: dict[str, list[_ResolvedAnnotation]],
+    run_annotations_by_id: dict[str, list[_ResolvedAnnotation]],
 ) -> str:
     parts: list[str] = []
     inline_fragments: list[str] = []
@@ -709,8 +709,8 @@ def _render_paragraph_like(
 def _render_cell_paragraph(
     doc_ir: DocIR,
     paragraph: ParagraphIR,
-    paragraph_annotations_by_id: dict[str, list[ResolvedAnnotation]],
-    run_annotations_by_id: dict[str, list[ResolvedAnnotation]],
+    paragraph_annotations_by_id: dict[str, list[_ResolvedAnnotation]],
+    run_annotations_by_id: dict[str, list[_ResolvedAnnotation]],
 ) -> str:
     return _render_paragraph_like(
         doc_ir,
@@ -724,8 +724,8 @@ def _render_cell_paragraph(
 def _render_cell(
     doc_ir: DocIR,
     cell: TableCellIR,
-    paragraph_annotations_by_id: dict[str, list[ResolvedAnnotation]],
-    run_annotations_by_id: dict[str, list[ResolvedAnnotation]],
+    paragraph_annotations_by_id: dict[str, list[_ResolvedAnnotation]],
+    run_annotations_by_id: dict[str, list[_ResolvedAnnotation]],
 ) -> str:
     attrs = [
         f'data-node-id="{escape(cell.node_id or "")}"',
@@ -751,10 +751,10 @@ def _render_cell(
 def _render_table(
     doc_ir: DocIR,
     table: TableIR,
-    run_annotations_by_id: dict[str, list[ResolvedAnnotation]],
+    run_annotations_by_id: dict[str, list[_ResolvedAnnotation]],
     *,
     para_style: ParaStyleInfo | None = None,
-    paragraph_annotations_by_id: dict[str, list[ResolvedAnnotation]] | None = None,
+    paragraph_annotations_by_id: dict[str, list[_ResolvedAnnotation]] | None = None,
 ) -> str:
     paragraph_annotations_by_id = paragraph_annotations_by_id or {}
     if not table.cells:
@@ -834,8 +834,8 @@ def _page_content_style(page: PageInfo) -> str:
 def _render_paragraph(
     doc_ir: DocIR,
     paragraph: ParagraphIR,
-    paragraph_annotations_by_id: dict[str, list[ResolvedAnnotation]],
-    run_annotations_by_id: dict[str, list[ResolvedAnnotation]],
+    paragraph_annotations_by_id: dict[str, list[_ResolvedAnnotation]],
+    run_annotations_by_id: dict[str, list[_ResolvedAnnotation]],
 ) -> str:
     return _render_paragraph_like(
         doc_ir,
@@ -849,8 +849,8 @@ def _render_paragraph(
 def _render_column_group(
     doc_ir: DocIR,
     paragraphs: list[ParagraphIR],
-    paragraph_annotations_by_id: dict[str, list[ResolvedAnnotation]],
-    run_annotations_by_id: dict[str, list[ResolvedAnnotation]],
+    paragraph_annotations_by_id: dict[str, list[_ResolvedAnnotation]],
+    run_annotations_by_id: dict[str, list[_ResolvedAnnotation]],
 ) -> str:
     if not paragraphs or _paragraph_column_layout(paragraphs[0]) is None:
         return ""
@@ -873,8 +873,8 @@ def _render_column_group(
 def _render_paragraph_sequence(
     doc_ir: DocIR,
     paragraphs: list[ParagraphIR],
-    paragraph_annotations_by_id: dict[str, list[ResolvedAnnotation]],
-    run_annotations_by_id: dict[str, list[ResolvedAnnotation]],
+    paragraph_annotations_by_id: dict[str, list[_ResolvedAnnotation]],
+    run_annotations_by_id: dict[str, list[_ResolvedAnnotation]],
 ) -> str:
     parts: list[str] = []
     column_group: list[ParagraphIR] = []
@@ -913,8 +913,8 @@ def _render_paragraph_sequence(
 
 def _render_paged_body(
     doc_ir: DocIR,
-    paragraph_annotations_by_id: dict[str, list[ResolvedAnnotation]],
-    run_annotations_by_id: dict[str, list[ResolvedAnnotation]],
+    paragraph_annotations_by_id: dict[str, list[_ResolvedAnnotation]],
+    run_annotations_by_id: dict[str, list[_ResolvedAnnotation]],
 ) -> str:
     paragraphs_by_page: dict[int, list[ParagraphIR]] = defaultdict(list)
     unpaged: list[ParagraphIR] = []
@@ -955,15 +955,15 @@ def _render_paged_body(
     return "\n".join(parts)
 
 
-def render_annotated_html(
+def _render_annotated_html(
     doc: DocIR,
-    annotations: list[Annotation],
+    annotations: list[_Annotation],
     *,
     title: str | None = None,
 ) -> str:
-    resolved = resolve_annotations(doc, annotations)
-    paragraph_annotations_by_id: dict[str, list[ResolvedAnnotation]] = defaultdict(list)
-    run_annotations_by_id: dict[str, list[ResolvedAnnotation]] = defaultdict(list)
+    resolved = _resolve_annotations(doc, annotations)
+    paragraph_annotations_by_id: dict[str, list[_ResolvedAnnotation]] = defaultdict(list)
+    run_annotations_by_id: dict[str, list[_ResolvedAnnotation]] = defaultdict(list)
     for item in resolved:
         if item.target_kind == "paragraph":
             paragraph_annotations_by_id[item.target_id].append(item)
@@ -1031,10 +1031,4 @@ def render_annotated_html(
 """
 
 
-__all__ = [
-    "Annotation",
-    "AnnotationValidationError",
-    "ResolvedAnnotation",
-    "render_annotated_html",
-    "resolve_annotations",
-]
+__all__: list[str] = []

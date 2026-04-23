@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from .annotations import Annotation, render_annotated_html
+from .annotations import _Annotation, _render_annotated_html
 from .api_types import (
     AnnotationValidationIssue,
     AnnotationValidationResult,
@@ -31,13 +31,10 @@ from .api_types import (
     ValidateTextEditsRequest,
 )
 from .edit_engine import (
-    CellTextEdit,
     EditValidationError,
-    ParagraphTextEdit,
-    RunTextEdit,
+    _apply_text_edits_to_source,
     _build_doc_ir_index,
     _iter_doc_ir_paragraphs,
-    apply_edits_to_source,
 )
 from .models import DocIR, NativeAnchor, ParagraphIR, RunIR, TableCellIR, TableIR
 
@@ -215,9 +212,9 @@ def apply_text_edits(request: ApplyTextEditsRequest) -> ApplyTextEditsResult:
         if request.dry_run:
             preview_result = None
             if request.return_doc_ir:
-                preview_result = apply_edits_to_source(
+                preview_result = _apply_text_edits_to_source(
                     resolved.doc,
-                    [_to_internal_edit(resolved_edit) for resolved_edit in resolved_edits],
+                    [_to_canonical_text_edit(resolved_edit) for resolved_edit in resolved_edits],
                     doc_type=resolved.source_doc_type or "auto",
                     source_name=resolved.source_name,
                 )
@@ -234,9 +231,9 @@ def apply_text_edits(request: ApplyTextEditsRequest) -> ApplyTextEditsResult:
         resolved_output_filename = (
             request.output_filename if resolved.native_source_path is None else None
         )
-        internal_result = apply_edits_to_source(
+        internal_result = _apply_text_edits_to_source(
             _native_apply_source(resolved),
-            [_to_internal_edit(resolved_edit) for resolved_edit in resolved_edits],
+            [_to_canonical_text_edit(resolved_edit) for resolved_edit in resolved_edits],
             doc_type=resolved.source_doc_type or "auto",
             source_name=resolved.source_name,
             output_path=resolved_output_path,
@@ -288,9 +285,9 @@ def render_review_html(request: RenderReviewHtmlRequest) -> ReviewHtmlResult:
         return ReviewHtmlResult(ok=False, validation=validation)
 
     resolved_annotation_edits, _issues = _resolve_text_annotations_for_doc(resolved.doc, request.annotations)
-    html = render_annotated_html(
+    html = _render_annotated_html(
         resolved.doc,
-        [_to_internal_annotation(resolved_annotation) for resolved_annotation in resolved_annotation_edits],
+        [_to_render_annotation(resolved_annotation) for resolved_annotation in resolved_annotation_edits],
         title=request.title,
     )
     return ReviewHtmlResult(
@@ -986,34 +983,14 @@ def _same_path(left: Path, right: Path) -> bool:
     return left.expanduser().resolve(strict=False) == right.expanduser().resolve(strict=False)
 
 
-def _to_internal_edit(resolved_edit: _ResolvedTextEdit):
+def _to_canonical_text_edit(resolved_edit: _ResolvedTextEdit) -> TextEdit:
     edit = resolved_edit.edit
-    target_id = resolved_edit.identity.node_id
-    if edit.target_kind == "paragraph":
-        return ParagraphTextEdit(
-            paragraph_id=target_id,
-            old_text=edit.expected_text,
-            new_text=edit.new_text,
-            reason=edit.reason,
-        )
-    if edit.target_kind == "cell":
-        return CellTextEdit(
-            cell_id=target_id,
-            old_text=edit.expected_text,
-            new_text=edit.new_text,
-            reason=edit.reason,
-        )
-    return RunTextEdit(
-        run_id=target_id,
-        old_text=edit.expected_text,
-        new_text=edit.new_text,
-        reason=edit.reason,
-    )
+    return edit.model_copy(update={"target_id": resolved_edit.identity.node_id})
 
 
-def _to_internal_annotation(resolved_annotation: _ResolvedTextAnnotation) -> Annotation:
+def _to_render_annotation(resolved_annotation: _ResolvedTextAnnotation) -> _Annotation:
     annotation = resolved_annotation.annotation
-    return Annotation(
+    return _Annotation(
         target_id=resolved_annotation.identity.node_id,
         selected_text=annotation.selected_text,
         occurrence_index=annotation.occurrence_index,

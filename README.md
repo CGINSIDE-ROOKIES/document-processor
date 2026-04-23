@@ -11,6 +11,8 @@ Additional docs:
 - [Usage Guide](docs/usage-guide.md)
 - [API Reference](docs/api-reference.md)
 - [PDF Parser DocIR Integration](docs/pdf-parser-docir-integration.md)
+- [Removed Legacy Edit API](docs/removed-legacy-edit-api.md)
+- [Removed Legacy Annotation API](docs/removed-legacy-annotation-api.md)
 
 ## Installation
 

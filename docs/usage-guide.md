@@ -477,77 +477,45 @@ with open("review.html", "w", encoding="utf-8") as handle:
     handle.write(review.html)
 ```
 
-## 10. Use The Low-Level Edit Engine
+## 10. Edit Through Structured Requests
 
-Use the lower-level API when you already have a `DocIR` and want direct control.
-
-### Apply in memory
+Edits should go through `TextEdit`, `ValidateTextEditsRequest`,
+`ApplyTextEditsRequest`, `validate_text_edits`, and `apply_text_edits`.
+This keeps LLM tool calls on one schema and avoids exposing internal native
+write-back plumbing.
 
 ```python
 from document_processor import (
-    CellTextEdit,
-    DocIR,
-    ParagraphTextEdit,
-    apply_edits_to_doc_ir,
+    ApplyTextEditsRequest,
+    DocumentInput,
+    TextEdit,
+    apply_text_edits,
 )
 
-doc = DocIR.from_mapping(
-    {
-        "s1.p1.r1": "Hello ",
-        "s1.p1.r2": "World",
-    },
-    source_doc_type="docx",
-)
-paragraph_id = doc.paragraphs[0].node_id
-cell_id = doc.paragraphs[1].tables[0].cells[0].node_id
-
-updated, result = apply_edits_to_doc_ir(
-    doc,
-    [
-        ParagraphTextEdit(
-            paragraph_id=paragraph_id,
-            old_text="Hello World",
-            new_text="Hello Legal World",
-        ),
-        CellTextEdit(
-            cell_id=cell_id,
-            old_text="Old cell text",
-            new_text="Updated cell text",
-        ),
-    ],
-)
-
-print(updated.paragraphs[0].text)
-print(result.modified_run_ids)
-```
-
-### Apply through the unified low-level source function
-
-```python
-from pathlib import Path
-
-from document_processor import (
-    DocIR,
-    RunTextEdit,
-    apply_edits_to_source,
-)
-
-doc = DocIR.from_file("/path/to/contract.hwpx")
-run_id = doc.paragraphs[0].runs[1].node_id
-
-result = apply_edits_to_source(
-    Path("/path/to/contract.hwpx"),
-    [
-        RunTextEdit(
-            run_id=run_id,
-            old_text="World",
-            new_text="HWPX",
-        )
-    ],
+result = apply_text_edits(
+    ApplyTextEditsRequest(
+        document=DocumentInput(source_path="/path/to/contract.hwpx"),
+        edits=[
+            TextEdit(
+                target_kind="run",
+                target_id="r_10b2809a0c03f6e1",
+                expected_text="World",
+                new_text="HWPX",
+            )
+        ],
+        return_doc_ir=True,
+    )
 )
 
 print(result.output_path)
+print(result.modified_target_ids)
 ```
+
+The removed low-level edit engine names are documented in
+[Removed Legacy Edit API](removed-legacy-edit-api.md).
+
+The removed low-level annotation names are documented in
+[Removed Legacy Annotation API](removed-legacy-annotation-api.md).
 
 ## 11. Add Custom Metadata
 

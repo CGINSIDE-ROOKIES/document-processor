@@ -8,9 +8,7 @@ Import directly from the package root:
 
 ```python
 from document_processor import (
-    Annotation,
     ApplyTextEditsRequest,
-    CellTextEdit,
     DocIR,
     DocumentInput,
     GetDocumentContextRequest,
@@ -25,8 +23,6 @@ from document_processor import (
     ValidateTextAnnotationsRequest,
     ValidateTextEditsRequest,
     apply_text_edits,
-    apply_edits_to_doc_ir,
-    apply_edits_to_source,
     get_document_context,
     list_editable_targets,
     read_document,
@@ -489,93 +485,29 @@ Fields:
 `start` and `end` are character offsets into the containing
 `DocumentParagraphContext.text`.
 
-## Low-Level Edit Engine
+## Edit API Boundary
 
-Use these when you want direct programmatic control rather than the request/response API.
+Use `TextEdit`, `ValidateTextEditsRequest`, `ApplyTextEditsRequest`,
+`validate_text_edits`, and `apply_text_edits` for edits. These request/response
+models are the supported public surface for LLM tool calling and structured
+outputs.
 
-### `RunTextEdit`
+The older low-level edit DTOs and direct engine entrypoints were removed to keep
+DocIR editing centered on stable `target_id` values. See
+[Removed Legacy Edit API](removed-legacy-edit-api.md) for the removed names and
+migration shape.
 
-Low-level run edit DTO.
+## Annotation API Boundary
 
-Fields:
+Use `TextAnnotation`, `ValidateTextAnnotationsRequest`,
+`RenderReviewHtmlRequest`, `validate_text_annotations`, and
+`render_review_html` for annotations. These request/response models are the
+supported public surface for LLM tool calling and structured outputs.
 
-- `run_id`
-- `old_text`
-- `new_text`
-- `reason`
-
-### `ParagraphTextEdit`
-
-Low-level paragraph edit DTO.
-
-Fields:
-
-- `paragraph_id`
-- `old_text`
-- `new_text`
-- `reason`
-
-### `CellTextEdit`
-
-Low-level table-cell text edit DTO.
-
-Fields:
-
-- `cell_id`
-- `old_text`
-- `new_text`
-- `reason`
-
-Cell edits preserve the existing cell paragraph count and reject nested tables/images.
-
-### `validate_edit_commands(doc: DocIR, edits: list[RunTextEdit | ParagraphTextEdit | CellTextEdit]) -> None`
-
-Raise `EditValidationError` if any low-level edit is invalid.
-
-### `apply_edits_to_doc_ir(doc: DocIR, edits: list[RunTextEdit | ParagraphTextEdit | CellTextEdit]) -> tuple[DocIR, ApplyEditsResult]`
-
-Apply edits to a deep copy of the given `DocIR`.
-
-### `apply_edits_to_file(source_path, edits, *, output_path=None) -> ApplyEditsResult`
-
-Apply edits back to a native source file.
-
-### `apply_edits_to_bytes(source_bytes, edits, *, doc_type="auto", source_name=None, output_filename=None) -> ApplyEditsResult`
-
-Apply edits to bytes-backed native input and return edited bytes.
-
-### `apply_edits_to_source(source, edits, *, doc_type="auto", source_name=None, output_path=None, output_filename=None) -> ApplyEditsResult`
-
-Unified low-level entrypoint over:
-
-- `DocIR`
-- `str | Path`
-- `bytes`
-- binary file object
-
-## Annotation Helpers
-
-### `Annotation`
-
-Low-level annotation DTO used by the HTML annotation renderer.
-
-Fields:
-
-- `target_id`
-- `selected_text`
-- `occurrence_index`
-- `label`
-- `color`
-- `note`
-
-### `resolve_annotations(doc: DocIR, annotations: list[Annotation]) -> list[ResolvedAnnotation]`
-
-Resolve annotations against a `DocIR` node ID and compute canonical offsets from
-exact matched text.
-
-### `render_annotated_html(doc: DocIR, annotations: list[Annotation], *, title=None) -> str`
-
-Render review HTML with `<mark>` tags and diagnostic data attributes.
+The older low-level annotation DTOs and direct renderer/resolver entrypoints
+were removed to keep annotation tooling centered on stable `target_id` values.
+See [Removed Legacy Annotation API](removed-legacy-annotation-api.md) for the
+removed names and migration shape.
 
 ## Diagram Helpers
 
@@ -586,16 +518,6 @@ Render the Pydantic model graph to a file.
 ### `create_model_diagram(...)`
 
 Return the generated diagram object.
-
-## Error Types
-
-### `EditValidationError`
-
-Raised by low-level edit functions when an edit cannot be applied safely.
-
-### `AnnotationValidationError`
-
-Raised by low-level annotation resolution when a target or range is invalid.
 
 ## Current Limits
 

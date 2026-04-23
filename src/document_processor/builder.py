@@ -21,12 +21,12 @@ if TYPE_CHECKING:
     from .style_types import ParaStyleInfo, StyleMap
 
 
-_LEGACY_NUM_RE = re.compile(r"\d+")
+_STRUCTURAL_NUM_RE = re.compile(r"\d+")
 _PARAGRAPH_KEY_RE = re.compile(r"^(s\d+\.p\d+)")
 
 
 def _structural_path_sort_key(structural_path: str) -> tuple[tuple[int, ...], str]:
-    nums = tuple(int(v) for v in _LEGACY_NUM_RE.findall(structural_path))
+    nums = tuple(int(v) for v in _STRUCTURAL_NUM_RE.findall(structural_path))
     return nums, structural_path
 
 
@@ -221,7 +221,7 @@ def _ingest_table_tokens(
         table_map=table_map,
         cell_map=cell_map,
         cell_paragraph_map=cell_paragraph_map,
-        allow_legacy_table_anchor=False,
+        allow_run_anchored_table=False,
     )
 
 
@@ -235,7 +235,7 @@ def _ingest_paragraph_like_tokens(
     table_map: dict[str, TableIR],
     cell_map: dict[tuple[str, int, int], TableCellIR],
     cell_paragraph_map: dict[tuple[str, int, int, int], ParagraphIR],
-    allow_legacy_table_anchor: bool,
+    allow_run_anchored_table: bool,
 ) -> None:
     if not tokens:
         return
@@ -252,7 +252,7 @@ def _ingest_paragraph_like_tokens(
             )
             return
 
-        if allow_legacy_table_anchor and len(tokens) >= 2 and _is_token(tokens[1], "tbl"):
+        if allow_run_anchored_table and len(tokens) >= 2 and _is_token(tokens[1], "tbl"):
             table_id = f"{container_id}.{token}.{tokens[1]}"
             table = _get_or_create_table(
                 container,
@@ -388,7 +388,7 @@ def build_doc_ir_from_mapping(
     doc_cls: type["DocIR"] | None = None,
     **doc_kwargs: Any,
 ) -> "DocIR":
-    """Build document IR from a legacy run-level structural mapping."""
+    """Build document IR from a run-level structural mapping."""
 
     paragraph_map: dict[str, ParagraphIR] = {}
     table_map: dict[str, TableIR] = {}
@@ -414,7 +414,7 @@ def build_doc_ir_from_mapping(
             table_map=table_map,
             cell_map=cell_map,
             cell_paragraph_map=cell_paragraph_map,
-            allow_legacy_table_anchor=True,
+            allow_run_anchored_table=True,
         )
 
     paragraphs = sorted(paragraph_map.values(), key=lambda p: _structural_path_sort_key(_node_anchor_path(p)))

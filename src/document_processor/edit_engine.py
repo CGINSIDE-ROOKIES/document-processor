@@ -12,6 +12,7 @@ import zipfile
 
 from pydantic import BaseModel, Field
 
+from .api_types import TextEdit
 from .core import convert_hwp_to_hwpx_bytes
 from .io_utils import SourceDocType, TemporarySourcePath, coerce_source_to_supported_value, infer_doc_type
 from .models import DocIR, ParagraphIR, RunIR, TableCellIR, TableIR, _anchored_node_id
@@ -21,31 +22,7 @@ class EditValidationError(ValueError):
     pass
 
 
-class RunTextEdit(BaseModel):
-    run_id: str
-    old_text: str
-    new_text: str
-    reason: str = ""
-
-
-class ParagraphTextEdit(BaseModel):
-    paragraph_id: str
-    old_text: str
-    new_text: str
-    reason: str = ""
-
-
-class CellTextEdit(BaseModel):
-    cell_id: str
-    old_text: str
-    new_text: str
-    reason: str = ""
-
-
-EditCommand = RunTextEdit | ParagraphTextEdit | CellTextEdit
-
-
-class ApplyEditsResult(BaseModel):
+class _EditEngineResult(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
 
     source_doc_type: str | None = None
@@ -653,7 +630,7 @@ def _apply_multi_run(
     orig_sub: str,
     new_sub: str,
     spans: list[_RunSpan],
-    result: ApplyEditsResult,
+    result: _EditEngineResult,
     offset_deltas: dict[str, int],
     *,
     base_offset: int,
@@ -711,51 +688,51 @@ def _apply_multi_run(
     )
 
 
-def _validate_paragraph_edit(index: _EditableDocIndex, edit: ParagraphTextEdit) -> _EditableParagraphRef:
-    paragraph = index.paragraphs.get(edit.paragraph_id)
+def _validate_paragraph_edit(index: _EditableDocIndex, edit: TextEdit) -> _EditableParagraphRef:
+    paragraph = index.paragraphs.get(edit.target_id)
     if paragraph is None:
-        raise EditValidationError(f"Paragraph does not exist: {edit.paragraph_id}")
+        raise EditValidationError(f"Paragraph does not exist: {edit.target_id}")
     if paragraph.has_non_run_content:
         raise EditValidationError(
-            f"Paragraph edit targets unsupported mixed content (tables/images): {edit.paragraph_id}"
+            f"Paragraph edit targets unsupported mixed content (tables/images): {edit.target_id}"
         )
-    if paragraph.text != edit.old_text:
+    if paragraph.text != edit.expected_text:
         raise EditValidationError(
-            f"Paragraph text mismatch for {edit.paragraph_id}: expected {edit.old_text!r}, got {paragraph.text!r}"
+            f"Paragraph text mismatch for {edit.target_id}: expected {edit.expected_text!r}, got {paragraph.text!r}"
         )
     return paragraph
 
 
-def _validate_run_edit(index: _EditableDocIndex, edit: RunTextEdit) -> _EditableRunRef:
-    run = index.runs.get(edit.run_id)
+def _validate_run_edit(index: _EditableDocIndex, edit: TextEdit) -> _EditableRunRef:
+    run = index.runs.get(edit.target_id)
     if run is None:
-        raise EditValidationError(f"Run does not exist: {edit.run_id}")
-    if run.text != edit.old_text:
+        raise EditValidationError(f"Run does not exist: {edit.target_id}")
+    if run.text != edit.expected_text:
         raise EditValidationError(
-            f"Run text mismatch for {edit.run_id}: expected {edit.old_text!r}, got {run.text!r}"
+            f"Run text mismatch for {edit.target_id}: expected {edit.expected_text!r}, got {run.text!r}"
         )
     return run
 
 
-def _validate_cell_edit(index: _EditableDocIndex, edit: CellTextEdit) -> _EditableCellRef:
-    cell = index.cells.get(edit.cell_id)
+def _validate_cell_edit(index: _EditableDocIndex, edit: TextEdit) -> _EditableCellRef:
+    cell = index.cells.get(edit.target_id)
     if cell is None:
-        raise EditValidationError(f"Cell does not exist: {edit.cell_id}")
+        raise EditValidationError(f"Cell does not exist: {edit.target_id}")
     if any(paragraph.has_non_run_content for paragraph in cell.paragraphs):
         raise EditValidationError(
-            f"Cell edit targets unsupported mixed content (nested tables/images): {edit.cell_id}"
+            f"Cell edit targets unsupported mixed content (nested tables/images): {edit.target_id}"
         )
     if not cell.paragraphs or any(not paragraph.runs for paragraph in cell.paragraphs):
-        raise EditValidationError(f"Cell does not contain editable text runs: {edit.cell_id}")
-    if cell.text != edit.old_text:
+        raise EditValidationError(f"Cell does not contain editable text runs: {edit.target_id}")
+    if cell.text != edit.expected_text:
         raise EditValidationError(
-            f"Cell text mismatch for {edit.cell_id}: expected {edit.old_text!r}, got {cell.text!r}"
+            f"Cell text mismatch for {edit.target_id}: expected {edit.expected_text!r}, got {cell.text!r}"
         )
     expected_paragraphs = len(cell.paragraphs)
     new_paragraphs = len(edit.new_text.split("\n"))
     if new_paragraphs != expected_paragraphs:
         raise EditValidationError(
-            f"Cell text replacement for {edit.cell_id} must preserve paragraph count: "
+            f"Cell text replacement for {edit.target_id} must preserve paragraph count: "
             f"expected {expected_paragraphs} line(s), got {new_paragraphs}."
         )
     return cell
@@ -764,7 +741,7 @@ def _validate_cell_edit(index: _EditableDocIndex, edit: CellTextEdit) -> _Editab
 def _replace_paragraph_text(
     paragraph: _EditableParagraphRef,
     new_text: str,
-    result: ApplyEditsResult,
+    result: _EditEngineResult,
 ) -> None:
     spans = _build_run_spans(paragraph)
     original = paragraph.text
@@ -801,52 +778,44 @@ def _replace_paragraph_text(
     paragraph.recompute()
 
 
-def _apply_single_edit(index: _EditableDocIndex, edit: EditCommand, result: ApplyEditsResult) -> None:
-    if isinstance(edit, RunTextEdit):
+def _apply_single_edit(index: _EditableDocIndex, edit: TextEdit, result: _EditEngineResult) -> None:
+    if edit.target_kind == "run":
         run = _validate_run_edit(index, edit)
         run.text = edit.new_text
-        paragraph = index.run_to_paragraph.get(edit.run_id)
+        paragraph = index.run_to_paragraph.get(edit.target_id)
         if paragraph is not None:
             paragraph.recompute()
-        _append_unique(result.modified_target_ids, edit.run_id)
-        _append_unique(result.modified_run_ids, edit.run_id)
+        _append_unique(result.modified_target_ids, edit.target_id)
+        _append_unique(result.modified_run_ids, edit.target_id)
         result.edits_applied += 1
         return
 
-    if isinstance(edit, ParagraphTextEdit):
+    if edit.target_kind == "paragraph":
         paragraph = _validate_paragraph_edit(index, edit)
         _replace_paragraph_text(paragraph, edit.new_text, result)
-        _append_unique(result.modified_target_ids, edit.paragraph_id)
+        _append_unique(result.modified_target_ids, edit.target_id)
         result.edits_applied += 1
         return
+
+    if edit.target_kind != "cell":
+        raise EditValidationError(f"Unsupported edit target kind: {edit.target_kind!r}")
 
     cell = _validate_cell_edit(index, edit)
     for paragraph, new_paragraph_text in zip(cell.paragraphs, edit.new_text.split("\n"), strict=True):
         _replace_paragraph_text(paragraph, new_paragraph_text, result)
     cell.recompute()
-    _append_unique(result.modified_target_ids, edit.cell_id)
+    _append_unique(result.modified_target_ids, edit.target_id)
     result.edits_applied += 1
 
 
-def validate_edit_commands(doc: DocIR, edits: list[EditCommand]) -> None:
-    index = _build_doc_ir_index(doc)
-    for edit in edits:
-        if isinstance(edit, RunTextEdit):
-            _validate_run_edit(index, edit)
-        elif isinstance(edit, ParagraphTextEdit):
-            _validate_paragraph_edit(index, edit)
-        else:
-            _validate_cell_edit(index, edit)
-
-
-def apply_edits_to_doc_ir(doc: DocIR, edits: list[EditCommand]) -> tuple[DocIR, ApplyEditsResult]:
+def _apply_text_edits_to_doc_ir(doc: DocIR, edits: list[TextEdit]) -> _EditEngineResult:
     updated = doc.model_copy(deep=True)
     index = _build_doc_ir_index(updated)
-    result = ApplyEditsResult(source_doc_type=updated.source_doc_type)
+    result = _EditEngineResult(source_doc_type=updated.source_doc_type)
     for edit in edits:
         _apply_single_edit(index, edit, result)
     result.updated_doc_ir = updated
-    return updated, result
+    return result
 
 
 def _default_output_path(source_path: Path, *, output_suffix: str | None = None) -> Path:
@@ -866,7 +835,7 @@ def _normalize_output_path_for_source_doc_type(
     target_path: Path,
     *,
     source_doc_type: str | None,
-    result: ApplyEditsResult,
+    result: _EditEngineResult,
 ) -> Path:
     expected_suffix = _expected_writeback_suffix(source_doc_type)
     if expected_suffix is None or target_path.suffix.lower() == expected_suffix:
@@ -931,14 +900,14 @@ def _resolve_bytes_doc_type(
     return infer_doc_type(source_bytes, "auto")
 
 
-def apply_edits_to_bytes(
+def _apply_text_edits_to_bytes(
     source_bytes: bytes,
-    edits: list[EditCommand],
+    edits: list[TextEdit],
     *,
     doc_type: SourceDocType = "auto",
     source_name: str | None = None,
     output_filename: str | None = None,
-) -> ApplyEditsResult:
+) -> _EditEngineResult:
     resolved_doc_type = _resolve_bytes_doc_type(
         source_bytes,
         doc_type=doc_type,
@@ -953,7 +922,7 @@ def apply_edits_to_bytes(
         chosen_filename = output_filename or default_filename
         with tempfile.TemporaryDirectory() as tmp_dir:
             target_path = Path(tmp_dir) / chosen_filename
-            result = apply_edits_to_file(source_path, edits, output_path=target_path)
+            result = _apply_text_edits_to_file(source_path, edits, output_path=target_path)
             output_path = Path(result.output_path) if result.output_path is not None else target_path
             result.output_bytes = output_path.read_bytes()
             result.output_filename = output_path.name
@@ -961,19 +930,17 @@ def apply_edits_to_bytes(
             return result
 
 
-def apply_edits_to_source(
+def _apply_text_edits_to_source(
     source: DocIR | str | Path | bytes | BinaryIO,
-    edits: list[EditCommand],
+    edits: list[TextEdit],
     *,
     doc_type: SourceDocType = "auto",
     source_name: str | None = None,
     output_path: str | Path | None = None,
     output_filename: str | None = None,
-) -> ApplyEditsResult:
+) -> _EditEngineResult:
     if isinstance(source, DocIR):
-        updated, result = apply_edits_to_doc_ir(source, edits)
-        result.updated_doc_ir = updated
-        return result
+        return _apply_text_edits_to_doc_ir(source, edits)
 
     if output_path is not None and output_filename is not None:
         raise ValueError("Specify either output_path or output_filename, not both.")
@@ -982,7 +949,7 @@ def apply_edits_to_source(
         resolved_output_path = output_path
         if resolved_output_path is None and output_filename is not None:
             resolved_output_path = Path(source).with_name(output_filename)
-        result = apply_edits_to_file(source, edits, output_path=resolved_output_path)
+        result = _apply_text_edits_to_file(source, edits, output_path=resolved_output_path)
         if result.output_path is not None:
             result.output_filename = Path(result.output_path).name
         return result
@@ -990,7 +957,7 @@ def apply_edits_to_source(
     source_bytes = coerce_source_to_supported_value(source, doc_type=infer_doc_type(source, doc_type))
     if not isinstance(source_bytes, bytes):
         raise TypeError("Expected bytes-like source after coercion.")
-    return apply_edits_to_bytes(
+    return _apply_text_edits_to_bytes(
         source_bytes,
         edits,
         doc_type=doc_type,
@@ -999,17 +966,21 @@ def apply_edits_to_source(
     )
 
 
-def apply_edits_to_file(
+def _apply_text_edits_to_file(
     source_path: str | Path,
-    edits: list[EditCommand],
+    edits: list[TextEdit],
     *,
     output_path: str | Path | None = None,
-) -> ApplyEditsResult:
+) -> _EditEngineResult:
     source = Path(source_path)
     doc = DocIR.from_file(source)
-    result = ApplyEditsResult(source_doc_type=doc.source_doc_type)
+    result = _EditEngineResult(source_doc_type=doc.source_doc_type)
     target_suffix = ".hwpx" if doc.source_doc_type == "hwp" else None
-    target_path = Path(output_path) if output_path is not None else _default_output_path(source, output_suffix=target_suffix)
+    target_path = (
+        Path(output_path)
+        if output_path is not None
+        else _default_output_path(source, output_suffix=target_suffix)
+    )
     target_path = _normalize_output_path_for_source_doc_type(
         target_path,
         source_doc_type=doc.source_doc_type,
@@ -1054,15 +1025,4 @@ def apply_edits_to_file(
     return result
 
 
-__all__ = [
-    "ApplyEditsResult",
-    "CellTextEdit",
-    "EditValidationError",
-    "ParagraphTextEdit",
-    "RunTextEdit",
-    "apply_edits_to_bytes",
-    "apply_edits_to_doc_ir",
-    "apply_edits_to_file",
-    "apply_edits_to_source",
-    "validate_edit_commands",
-]
+__all__: list[str] = []
