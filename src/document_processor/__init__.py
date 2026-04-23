@@ -13,6 +13,7 @@ from .api import (
     validate_text_edits,
 )
 from .api_types import (
+    AnnotationTargetKind,
     AnnotationValidationCode,
     AnnotationValidationIssue,
     AnnotationValidationResult,
@@ -39,12 +40,48 @@ from .api_types import (
 )
 from .builder import build_doc_ir_from_mapping
 from .diagram import create_model_diagram, draw_model_diagram
-from .models import DocIR, ImageAsset, ImageIR, PageInfo, ParagraphContentNode, ParagraphIR, RunIR, TableCellIR, TableIR
+from .edit_engine import (
+    ApplyEditsResult,
+    CellTextEdit,
+    EditValidationError,
+    ParagraphTextEdit,
+    RunTextEdit,
+    apply_edits_to_bytes,
+    apply_edits_to_doc_ir,
+    apply_edits_to_file,
+    apply_edits_to_source,
+    validate_edit_commands,
+)
+from .hwpx import HwpxDocument
+from .models import (
+    BoundingBox,
+    ColumnLayoutInfo,
+    DocIR,
+    ImageAsset,
+    ImageIR,
+    PageInfo,
+    ParagraphContentNode,
+    ParagraphIR,
+    RunIR,
+    TableCellIR,
+    TableIR,
+)
 from .style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo, StyleMap, TableStyleInfo
 
 __all__ = [
-    "CellStyleInfo",
+    "Annotation",
+    "AnnotationTargetKind",
+    "AnnotationValidationCode",
+    "AnnotationValidationError",
+    "AnnotationValidationIssue",
+    "AnnotationValidationResult",
+    "ApplyEditsResult",
+    "ApplyTextEditsRequest",
+    "ApplyTextEditsResult",
     "BoundingBox",
+    "CellStyleInfo",
+    "CellTextEdit",
+    "ColumnLayoutInfo",
     "DocIR",
     "DocumentContextResult",
     "DocumentInput",
@@ -56,6 +93,7 @@ __all__ = [
     "EditValidationResult",
     "EditableTarget",
     "GetDocumentContextRequest",
+    "HwpxDocument",
     "ImageAsset",
     "ImageIR",
     "ListEditableTargetsRequest",
@@ -65,6 +103,11 @@ __all__ = [
     "ParagraphContentNode",
     "ParagraphIR",
     "ParaStyleInfo",
+    "RenderReviewHtmlRequest",
+    "ResolvedAnnotation",
+    "ResolvedTextAnnotation",
+    "ReviewHtmlResult",
+    "RunTextEdit",
     "RunIR",
     "RunStyleInfo",
     "StyleMap",
@@ -83,4 +126,11 @@ __all__ = [
     "build_doc_ir_from_mapping",
     "create_model_diagram",
     "draw_model_diagram",
+    "get_document_context",
+    "list_editable_targets",
+    "render_annotated_html",
+    "render_review_html",
+    "resolve_annotations",
+    "validate_edit_commands",
+    "validate_text_edits",
 ]

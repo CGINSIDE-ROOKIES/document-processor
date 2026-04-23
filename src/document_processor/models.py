@@ -85,6 +85,16 @@ class PageInfo(BaseModel):
     margin_bottom_pt: float | None = None
 
 
+class ColumnLayoutInfo(BaseModel):
+    """Active text-column layout for a paragraph or section."""
+
+    count: int = 1
+    gap_pt: float | None = None
+    widths_pt: list[float] = Field(default_factory=list)
+    gaps_pt: list[float] = Field(default_factory=list)
+    equal_width: bool | None = None
+
+
 class ImageIR(BaseModel, Generic[T]):
     """Image placement node inside paragraph-like content."""
 
@@ -109,6 +119,7 @@ class ParagraphIR(BaseModel, Generic[T]):
     text: str = ""
     page_number: int | None = None
     bbox: BoundingBox | None = None
+    column_layout: ColumnLayoutInfo | None = None
     para_style: ParaStyleInfo | None = None
     content: list["ParagraphContentNode"] = Field(default_factory=list)
 
@@ -323,7 +334,7 @@ class DocIR(BaseModel, Generic[T]):
             **doc_kwargs,
         )
 
-    def to_html(self, *, title: str | None = None) -> str:
+    def to_html(self, *, title: str | None = None, debug_layout: bool = False) -> str:
         """Render this document IR as styled HTML."""
         if (self.source_doc_type or "").lower() == "pdf":
             from .pdf.preview.render import render_pdf_preview_html
@@ -336,7 +347,7 @@ class DocIR(BaseModel, Generic[T]):
         from .html_exporter import render_html_document
 
         prepare_doc_ir_for_html(self)
-        return render_html_document(self, title=title)
+        return render_html_document(self, title=title, debug_layout=debug_layout)
 
 
 ParagraphContentNode: TypeAlias = RunIR | ImageIR | TableIR
@@ -452,9 +463,13 @@ def _render_table_markdown(
 
 __all__ = [
     "BoundingBox",
+    "ColumnLayoutInfo",
+    "BoundingBox",
+    "ColumnLayoutInfo",
     "DocIR",
     "ImageAsset",
     "ImageIR",
+    "PageInfo",
     "ParagraphContentNode",
     "ParagraphIR",
     "RunIR",

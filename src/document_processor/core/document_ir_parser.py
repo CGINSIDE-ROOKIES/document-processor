@@ -13,7 +13,7 @@ from xml.etree import ElementTree as ET
 import zipfile
 
 from ..io_utils import coerce_source_to_supported_value
-from ..models import DocIR, ImageAsset, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
+from ..models import ColumnLayoutInfo, DocIR, ImageAsset, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
 from .docx_structured_exporter import _iter_blocks, _iter_blocks_from_element, _load_docx_source
 from .hwp_converter import convert_hwp_to_hwpx_bytes
 from .hwpx_structured_exporter import _HP, _logical_table_cells, _paragraph_text, _run_text, _safe_int, _section_roots_from_bytes
@@ -30,6 +30,7 @@ _DOCX_EMBED_ATTR = f"{{{_REL_NS}}}embed"
 _HC_IMG_TAG = "img"
 _EMU_PER_PT = 12700.0
 _HWPUNIT_PER_PT = 100.0
+_TWIPS_PER_PT = 20.0
 
 
 def _emu_to_pt(value: str | int | None) -> float | None:
@@ -46,6 +47,15 @@ def _hwpunit_to_pt(value: str | int | None) -> float | None:
         return None
     try:
         return int(value) / _HWPUNIT_PER_PT
+    except (TypeError, ValueError):
+        return None
+
+
+def _twips_to_pt(value: str | int | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        return int(value) / _TWIPS_PER_PT
     except (TypeError, ValueError):
         return None
 
@@ -69,14 +79,29 @@ def _page_layout(
     }
 
 
+def _copy_column_layout(column_layout: ColumnLayoutInfo | None) -> ColumnLayoutInfo | None:
+    return column_layout.model_copy(deep=True) if column_layout is not None else None
+
+
 def _ensure_page_info(
     pages: "OrderedDict[int, PageInfo]",
     *,
     page_number: int,
-    layout: dict[str, float | None],
+    layout: dict[str, Any],
 ) -> None:
     if page_number not in pages:
-        pages[page_number] = PageInfo(page_number=page_number, **layout)
+        page_layout = {
+            key: layout.get(key)
+            for key in (
+                "width_pt",
+                "height_pt",
+                "margin_left_pt",
+                "margin_right_pt",
+                "margin_top_pt",
+                "margin_bottom_pt",
+            )
+        }
+        pages[page_number] = PageInfo(page_number=page_number, **page_layout)
 
 
 def _assign_page_number_to_paragraph(paragraph: ParagraphIR, page_number: int | None) -> None:
@@ -172,18 +197,53 @@ def _resolve_doc_metadata(
     return resolved_doc_id, resolved_source_path, metadata or {}
 
 
-def _docx_section_layouts(doc) -> list[dict[str, float | None]]:
-    return [
-        _page_layout(
-            width_pt=_emu_to_pt(int(section.page_width)) if section.page_width is not None else None,
-            height_pt=_emu_to_pt(int(section.page_height)) if section.page_height is not None else None,
-            margin_left_pt=_emu_to_pt(int(section.left_margin)) if section.left_margin is not None else None,
-            margin_right_pt=_emu_to_pt(int(section.right_margin)) if section.right_margin is not None else None,
-            margin_top_pt=_emu_to_pt(int(section.top_margin)) if section.top_margin is not None else None,
-            margin_bottom_pt=_emu_to_pt(int(section.bottom_margin)) if section.bottom_margin is not None else None,
+def _docx_section_layouts(doc) -> list[dict[str, Any]]:
+    from docx.oxml.ns import qn
+
+    def _docx_column_layout(sect_pr) -> ColumnLayoutInfo | None:
+        cols = sect_pr.find(qn("w:cols")) if sect_pr is not None else None
+        if cols is None:
+            return None
+
+        col_els = cols.findall(qn("w:col"))
+        explicit_count = _safe_int(cols.get(qn("w:num")))
+        count = explicit_count or len(col_els) or 1
+        gap_pt = _twips_to_pt(cols.get(qn("w:space")))
+        widths_pt = [
+            width
+            for col_el in col_els
+            if (width := _twips_to_pt(col_el.get(qn("w:w")))) is not None
+        ]
+        gaps_pt = [
+            gap
+            for col_el in col_els
+            if (gap := _twips_to_pt(col_el.get(qn("w:space")))) is not None
+        ]
+        equal_width_value = cols.get(qn("w:equalWidth"))
+        equal_width = None if equal_width_value is None else equal_width_value not in {"0", "false", "False"}
+
+        return ColumnLayoutInfo(
+            count=max(count, 1),
+            gap_pt=gap_pt,
+            widths_pt=widths_pt,
+            gaps_pt=gaps_pt,
+            equal_width=equal_width,
         )
+
+    return [
+        {
+            **_page_layout(
+                width_pt=_emu_to_pt(int(section.page_width)) if section.page_width is not None else None,
+                height_pt=_emu_to_pt(int(section.page_height)) if section.page_height is not None else None,
+                margin_left_pt=_emu_to_pt(int(section.left_margin)) if section.left_margin is not None else None,
+                margin_right_pt=_emu_to_pt(int(section.right_margin)) if section.right_margin is not None else None,
+                margin_top_pt=_emu_to_pt(int(section.top_margin)) if section.top_margin is not None else None,
+                margin_bottom_pt=_emu_to_pt(int(section.bottom_margin)) if section.bottom_margin is not None else None,
+            ),
+            "column_layout": _docx_column_layout(section._sectPr),
+        }
         for section in doc.sections
-    ] or [_page_layout(width_pt=None, height_pt=None)]
+    ] or [{**_page_layout(width_pt=None, height_pt=None), "column_layout": None}]
 
 
 def _docx_paragraph_has_page_break_before(paragraph) -> bool:
@@ -242,6 +302,48 @@ def _hwpx_section_page_layout(section_root: ET.Element) -> dict[str, float | Non
         margin_top_pt=_hwpunit_to_pt(margin.get("top")) if margin is not None else None,
         margin_bottom_pt=_hwpunit_to_pt(margin.get("bottom")) if margin is not None else None,
     )
+
+
+def _hwpx_column_layout_from_col_pr(col_pr: ET.Element) -> ColumnLayoutInfo:
+    count = _safe_int(col_pr.get("colCount")) or 1
+    same_gap_pt = _hwpunit_to_pt(col_pr.get("sameGap"))
+    same_sz = col_pr.get("sameSz")
+    equal_width = None if same_sz is None else same_sz not in {"0", "false", "False"}
+
+    widths_pt: list[float] = []
+    gaps_pt: list[float] = []
+    for child in list(col_pr):
+        local_name = child.tag.rsplit("}", 1)[-1]
+        if local_name not in {"colSz", "col"}:
+            continue
+        width = _hwpunit_to_pt(child.get("width") or child.get("w"))
+        gap = _hwpunit_to_pt(child.get("gap") or child.get("space"))
+        if width is not None:
+            widths_pt.append(width)
+        if gap is not None:
+            gaps_pt.append(gap)
+
+    return ColumnLayoutInfo(
+        count=max(count, 1),
+        gap_pt=same_gap_pt,
+        widths_pt=widths_pt,
+        gaps_pt=gaps_pt,
+        equal_width=equal_width,
+    )
+
+
+def _hwpx_paragraph_column_layout(paragraph_el: ET.Element) -> ColumnLayoutInfo | None:
+    col_prs = paragraph_el.findall(f"{_HP}run/{_HP}secPr/{_HP}colPr")
+    col_prs.extend(paragraph_el.findall(f"{_HP}run/{_HP}ctrl/{_HP}colPr"))
+    if not col_prs:
+        return None
+    return _hwpx_column_layout_from_col_pr(col_prs[-1])
+
+
+def _hwpx_section_column_layout(section_root: ET.Element) -> ColumnLayoutInfo | None:
+    sec_pr = section_root.find(f".//{_HP}secPr")
+    col_pr = sec_pr.find(f"{_HP}colPr") if sec_pr is not None else None
+    return _hwpx_column_layout_from_col_pr(col_pr) if col_pr is not None else None
 
 
 def _hwpx_paragraph_has_page_break_before(paragraph_el: ET.Element) -> bool:
@@ -498,6 +600,7 @@ def _build_docx_doc_ir(
         Paragraph=Paragraph,
         Table=Table,
     ):
+        current_layout = section_layouts[min(current_section_index, len(section_layouts) - 1)]
         if isinstance(block, Paragraph):
             if has_seen_content and _docx_paragraph_has_page_break_before(block):
                 current_page_number += 1
@@ -507,7 +610,7 @@ def _build_docx_doc_ir(
             _ensure_page_info(
                 pages,
                 page_number=current_page_number,
-                layout=section_layouts[min(current_section_index, len(section_layouts) - 1)],
+                layout=current_layout,
             )
             runs, images, content = _parse_docx_paragraph_content(
                 block,
@@ -519,6 +622,7 @@ def _build_docx_doc_ir(
             paragraph_ir = ParagraphIR(
                 unit_id=paragraph_id,
                 page_number=current_page_number,
+                column_layout=_copy_column_layout(current_layout.get("column_layout")),
                 content=content,
             )
             _assign_page_number_to_paragraph(paragraph_ir, current_page_number)
@@ -545,7 +649,7 @@ def _build_docx_doc_ir(
         _ensure_page_info(
             pages,
             page_number=current_page_number,
-            layout=section_layouts[min(current_section_index, len(section_layouts) - 1)],
+            layout=current_layout,
         )
         table_ir = _parse_docx_table(
             block,
@@ -562,6 +666,7 @@ def _build_docx_doc_ir(
         paragraph_ir = ParagraphIR(
             unit_id=paragraph_id,
             page_number=current_page_number,
+            column_layout=_copy_column_layout(current_layout.get("column_layout")),
             content=[table_ir],
         )
         _assign_page_number_to_paragraph(paragraph_ir, current_page_number)
@@ -603,8 +708,22 @@ def _find_hwpx_binary_path(binary_name_map: dict[str, str], binary_item_id: str 
     return binary_name_map.get(binary_item_id.lower())
 
 
-def _parse_hwpx_run_images(
-    run_el: ET.Element,
+def _hwpx_picture_display_size(pic_el: ET.Element) -> tuple[float | None, float | None]:
+    size_el = pic_el.find(f"{_HP}sz")
+    if size_el is not None:
+        width_pt = _hwpunit_to_pt(size_el.get("width"))
+        height_pt = _hwpunit_to_pt(size_el.get("height"))
+        if width_pt is not None or height_pt is not None:
+            return width_pt, height_pt
+
+    dim_el = pic_el.find(f"{_HP}imgDim")
+    if dim_el is None:
+        return None, None
+    return _hwpunit_to_pt(dim_el.get("dimwidth")), _hwpunit_to_pt(dim_el.get("dimheight"))
+
+
+def _parse_hwpx_picture_image(
+    pic_el: ET.Element,
     *,
     paragraph_id: str,
     image_counter: int,
@@ -612,55 +731,46 @@ def _parse_hwpx_run_images(
     binary_name_map: dict[str, str],
     assets: dict[str, ImageAsset],
     asset_lookup: dict[tuple[str, str], str],
-) -> tuple[list[ImageIR], int]:
-    images: list[ImageIR] = []
+) -> tuple[ImageIR | None, int]:
+    img_el = next(
+        (
+            element
+            for element in pic_el.iter()
+            if isinstance(element.tag, str)
+            and element.tag.rsplit("}", 1)[-1] == _HC_IMG_TAG
+            and element.get("binaryItemIDRef")
+        ),
+        None,
+    )
+    if img_el is None:
+        return None, image_counter
 
-    for child in list(run_el):
-        tag = child.tag
-        if tag != f"{_HP}pic":
-            continue
+    binary_path = _find_hwpx_binary_path(binary_name_map, img_el.get("binaryItemIDRef"))
+    if binary_path is None:
+        return None, image_counter
 
-        img_el = next(
-            (
-                element
-                for element in child.iter()
-                if isinstance(element.tag, str)
-                and element.tag.rsplit("}", 1)[-1] == _HC_IMG_TAG
-                and element.get("binaryItemIDRef")
-            ),
-            None,
-        )
-        if img_el is None:
-            continue
+    data = archive.read(binary_path)
+    filename = Path(binary_path).name
+    image_id = _register_image_asset(
+        assets,
+        asset_lookup,
+        data=data,
+        mime_type=_mime_type_for_filename(filename),
+        filename=filename,
+    )
+    display_width_pt, display_height_pt = _hwpx_picture_display_size(pic_el)
 
-        binary_path = _find_hwpx_binary_path(binary_name_map, img_el.get("binaryItemIDRef"))
-        if binary_path is None:
-            continue
+    image_counter += 1
+    return ImageIR(
+        unit_id=f"{paragraph_id}.img{image_counter}",
+        image_id=image_id,
+        display_width_pt=display_width_pt,
+        display_height_pt=display_height_pt,
+    ), image_counter
 
-        data = archive.read(binary_path)
-        filename = Path(binary_path).name
-        image_id = _register_image_asset(
-            assets,
-            asset_lookup,
-            data=data,
-            mime_type=_mime_type_for_filename(filename),
-            filename=filename,
-        )
-        dim_el = child.find(f"{_HP}imgDim")
-        display_width_pt = _hwpunit_to_pt(dim_el.get("dimwidth")) if dim_el is not None else None
-        display_height_pt = _hwpunit_to_pt(dim_el.get("dimheight")) if dim_el is not None else None
 
-        image_counter += 1
-        images.append(
-            ImageIR(
-                unit_id=f"{paragraph_id}.img{image_counter}",
-                image_id=image_id,
-                display_width_pt=display_width_pt,
-                display_height_pt=display_height_pt,
-            )
-        )
-
-    return images, image_counter
+def _hwpx_text_element_text(text_el: ET.Element) -> str:
+    return "".join(text_el.itertext())
 
 
 def _parse_hwpx_paragraph_content(
@@ -681,6 +791,7 @@ def _parse_hwpx_paragraph_content(
     content: list[object] = []
     image_counter = 0
     table_counter = 0
+    content_position = 0
 
     run_els = paragraph_el.findall(f"{_HP}run")
     if not run_els:
@@ -694,44 +805,88 @@ def _parse_hwpx_paragraph_content(
             content.append(run)
         return runs, images, tables, content
 
-    for run_index, run_el in enumerate(run_els, start=1):
-        text = _run_text(run_el)
-        run_images, image_counter = _parse_hwpx_run_images(
-            run_el,
-            paragraph_id=paragraph_id,
-            image_counter=image_counter,
-            archive=archive,
-            binary_name_map=binary_name_map,
-            assets=assets,
-            asset_lookup=asset_lookup,
-        )
-        run_tables: list[TableIR] = []
-        if include_tables:
-            for table_el in run_el.findall(f"{_HP}tbl"):
-                table_counter += 1
-                table_ir = _parse_hwpx_table(
-                    table_el,
-                    table_id_builder(table_counter),
-                    include_tables=include_tables,
-                    skip_empty=skip_empty,
+    for run_el in run_els:
+        pending_text_parts: list[str] = []
+        emitted_run_content = False
+        saw_run_level_content = False
+
+        def flush_pending_text() -> None:
+            nonlocal content_position, emitted_run_content
+            if not pending_text_parts:
+                return
+
+            text = "".join(pending_text_parts)
+            pending_text_parts.clear()
+            if not text and (skip_empty or saw_run_level_content):
+                return
+
+            content_position += 1
+            run = RunIR(
+                unit_id=f"{paragraph_id}.r{content_position}",
+                text=text,
+            )
+            runs.append(run)
+            content.append(run)
+            emitted_run_content = True
+
+        for child in list(run_el):
+            tag = child.tag
+            if tag == f"{_HP}t":
+                pending_text_parts.append(_hwpx_text_element_text(child))
+                continue
+
+            if tag not in {f"{_HP}pic", f"{_HP}tbl"}:
+                continue
+
+            flush_pending_text()
+            saw_run_level_content = True
+
+            if tag == f"{_HP}pic":
+                image_ir, image_counter = _parse_hwpx_picture_image(
+                    child,
+                    paragraph_id=paragraph_id,
+                    image_counter=image_counter,
                     archive=archive,
                     binary_name_map=binary_name_map,
                     assets=assets,
                     asset_lookup=asset_lookup,
                 )
-                run_tables.append(table_ir)
+                if image_ir is not None:
+                    content_position += 1
+                    images.append(image_ir)
+                    content.append(image_ir)
+                    emitted_run_content = True
+                continue
 
-        if text or (not skip_empty and not run_images and not run_tables):
+            if not include_tables:
+                continue
+
+            table_counter += 1
+            table_ir = _parse_hwpx_table(
+                child,
+                table_id_builder(table_counter),
+                include_tables=include_tables,
+                skip_empty=skip_empty,
+                archive=archive,
+                binary_name_map=binary_name_map,
+                assets=assets,
+                asset_lookup=asset_lookup,
+            )
+            content_position += 1
+            tables.append(table_ir)
+            content.append(table_ir)
+            emitted_run_content = True
+
+        flush_pending_text()
+
+        if not emitted_run_content and not skip_empty:
+            content_position += 1
             run = RunIR(
-                unit_id=f"{paragraph_id}.r{run_index}",
-                text=text,
+                unit_id=f"{paragraph_id}.r{content_position}",
+                text="",
             )
             runs.append(run)
             content.append(run)
-        images.extend(run_images)
-        content.extend(run_images)
-        tables.extend(run_tables)
-        content.extend(run_tables)
 
     return runs, images, tables, content
 
@@ -840,11 +995,16 @@ def _build_hwpx_doc_ir(
 
         for s_idx, section_root in enumerate(section_roots, start=1):
             section_layout = _hwpx_section_page_layout(section_root)
+            current_column_layout = _hwpx_section_column_layout(section_root)
             section_page_number = 1
             last_vertpos: int | None = None
             saw_paragraph = False
 
             for p_idx, paragraph_el in enumerate(section_root.findall(f"{_HP}p"), start=1):
+                paragraph_column_layout = _hwpx_paragraph_column_layout(paragraph_el)
+                if paragraph_column_layout is not None:
+                    current_column_layout = paragraph_column_layout
+
                 if saw_paragraph and _hwpx_paragraph_has_page_break_before(paragraph_el):
                     section_page_number += 1
                     last_vertpos = None
@@ -875,6 +1035,7 @@ def _build_hwpx_doc_ir(
                 paragraph_ir = ParagraphIR(
                     unit_id=paragraph_id,
                     page_number=absolute_page_number,
+                    column_layout=_copy_column_layout(current_column_layout),
                     content=content,
                 )
                 _assign_page_number_to_paragraph(paragraph_ir, absolute_page_number)

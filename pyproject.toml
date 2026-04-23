@@ -38,7 +38,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/document_processor", "src/hwpx"]
+packages = ["src/document_processor"]
 artifacts = [
     "src/document_processor/core/vendor/**/*.jar",
     # PDF local mode depends on the vendored ODL CLI JAR at runtime.

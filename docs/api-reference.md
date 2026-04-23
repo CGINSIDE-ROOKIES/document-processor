@@ -10,9 +10,11 @@ Import directly from the package root:
 from document_processor import (
     Annotation,
     ApplyTextEditsRequest,
+    CellTextEdit,
     DocIR,
     DocumentInput,
     GetDocumentContextRequest,
+    HwpxDocument,
     RenderReviewHtmlRequest,
     TextAnnotation,
     TextEdit,
@@ -76,9 +78,22 @@ Build a `DocIR` from a run-level mapping such as:
 
 This is useful for tests, fixtures, or synthetic documents.
 
-#### `DocIR.to_html(*, title=None) -> str`
+#### `DocIR.to_html(*, title=None, debug_layout=False) -> str`
 
 Render the document as styled HTML using the built-in exporter.
+
+Set `debug_layout=True` to add visual outlines and data labels for pages,
+tables, cells, and paragraphs. The debug view also measures rendered element
+sizes in the browser so extracted point values can be compared with actual HTML
+layout.
+
+Paragraph indents are clamped during HTML rendering so negative or hanging
+indents cannot start text outside the page/table-cell content edge. Valid
+hanging indents are preserved when the positive left indent is large enough.
+Table cell padding is rendered from `CellStyleInfo` when extracted from source
+cell margins such as HWPX `hp:cellMargin` or DOCX `w:tcMar`.
+Top-level consecutive paragraphs with the same multi-column `column_layout`
+are wrapped in a CSS multi-column group when rendered to HTML.
 
 ### `ParagraphIR`
 
@@ -89,6 +104,7 @@ Important fields:
 - `unit_id`
 - `text`
 - `page_number`
+- `column_layout`
 - `para_style`
 - `content`
 
@@ -130,6 +146,7 @@ Computed helper:
 
 - `ImageAsset`
 - `ImageIR`
+- `ColumnLayoutInfo`
 - `PageInfo`
 - `TableCellIR`
 - `CellStyleInfo`
@@ -137,6 +154,45 @@ Computed helper:
 - `RunStyleInfo`
 - `TableStyleInfo`
 - `StyleMap`
+
+#### `CellStyleInfo`
+
+Cell-level formatting for `TableCellIR.cell_style`.
+
+Important fields:
+
+- `background`
+- `vertical_align`
+- `horizontal_align`
+- `width_pt`
+- `height_pt`
+- `padding_top_pt`
+- `padding_right_pt`
+- `padding_bottom_pt`
+- `padding_left_pt`
+- `border_top`
+- `border_bottom`
+- `border_left`
+- `border_right`
+- `diagonal_tl_br`
+- `diagonal_tr_bl`
+- `rowspan`
+- `colspan`
+
+HWPX `hp:cellMargin` and DOCX `w:tcMar`/`w:tblCellMar` are represented as
+cell padding fields in points. Paragraph indents remain in `ParaStyleInfo`.
+
+#### `ColumnLayoutInfo`
+
+Active section/text-column layout for a paragraph.
+
+Important fields:
+
+- `count`
+- `gap_pt`
+- `widths_pt`
+- `gaps_pt`
+- `equal_width`
 
 ## Source/Input Models
 
@@ -184,7 +240,7 @@ Response fields:
 
 ### `list_editable_targets(request: ListEditableTargetsRequest) -> ListEditableTargetsResult`
 
-Enumerate paragraph and run targets that can be edited safely.
+Enumerate paragraph, run, and cell targets that can be edited safely.
 
 Request fields:
 
@@ -213,6 +269,7 @@ Validation checks include:
 - target kind matches
 - expected text matches exactly
 - paragraph target is not mixed content
+- cell target is not mixed content and preserves the existing paragraph count
 - native write-back type is supported when native source data is present
 
 ### `apply_text_edits(request: ApplyTextEditsRequest) -> ApplyTextEditsResult`
@@ -283,11 +340,15 @@ Response fields:
 
 Fields:
 
-- `target_kind: Literal["paragraph", "run"]`
+- `target_kind: Literal["paragraph", "run", "cell"]`
 - `target_unit_id: str`
 - `expected_text: str`
 - `new_text: str`
 - `reason: str = ""`
+
+Cell text edits replace the full text of a table cell. For multi-paragraph cells, `new_text`
+must contain the same number of newline-separated lines as the current cell text; the API
+does not create or delete paragraphs inside cells.
 
 ### `TextAnnotation`
 
@@ -345,11 +406,24 @@ Fields:
 - `new_text`
 - `reason`
 
-### `validate_edit_commands(doc: DocIR, edits: list[RunTextEdit | ParagraphTextEdit]) -> None`
+### `CellTextEdit`
+
+Low-level table-cell text edit DTO.
+
+Fields:
+
+- `cell_unit_id`
+- `old_text`
+- `new_text`
+- `reason`
+
+Cell edits preserve the existing cell paragraph count and reject nested tables/images.
+
+### `validate_edit_commands(doc: DocIR, edits: list[RunTextEdit | ParagraphTextEdit | CellTextEdit]) -> None`
 
 Raise `EditValidationError` if any low-level edit is invalid.
 
-### `apply_edits_to_doc_ir(doc: DocIR, edits: list[RunTextEdit | ParagraphTextEdit]) -> tuple[DocIR, ApplyEditsResult]`
+### `apply_edits_to_doc_ir(doc: DocIR, edits: list[RunTextEdit | ParagraphTextEdit | CellTextEdit]) -> tuple[DocIR, ApplyEditsResult]`
 
 Apply edits to a deep copy of the given `DocIR`.
 

@@ -16,6 +16,7 @@ if str(SRC_ROOT) not in sys.path:
 from document_processor import (
     CellStyleInfo,
     DocIR,
+    HwpxDocument,
     ImageIR,
     PageInfo,
     ParaStyleInfo,
@@ -157,8 +158,6 @@ class DocumentIRTests(unittest.TestCase):
         self.assertEqual(from_file_object.paragraphs[0].text, "Hello HWPX")
 
     def test_export_hwpx_structured_mapping_accepts_hwpx_document(self) -> None:
-        from document_processor.hwpx import HwpxDocument
-
         hwpx_bytes_io = BytesIO()
         with zipfile.ZipFile(hwpx_bytes_io, "w") as zf:
             zf.writestr(
@@ -278,6 +277,78 @@ class DocumentIRTests(unittest.TestCase):
         self.assertAlmostEqual(parsed.pages[0].margin_left_pt or 0.0, 72.0, places=1)
         self.assertEqual([paragraph.text for paragraph in parsed.paragraphs], ["Page 1", "Page 2"])
         self.assertEqual([paragraph.page_number for paragraph in parsed.paragraphs], [1, 2])
+
+    def test_from_file_docx_extracts_section_column_layouts(self) -> None:
+        from docx import Document
+        from docx.enum.section import WD_SECTION
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+
+        def set_section_columns(section, *, count: int, space_twips: int) -> None:
+            cols = section._sectPr.find(qn("w:cols"))
+            if cols is None:
+                cols = OxmlElement("w:cols")
+                section._sectPr.append(cols)
+            cols.set(qn("w:num"), str(count))
+            cols.set(qn("w:space"), str(space_twips))
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            docx_path = Path(tmp_dir) / "columns.docx"
+            doc = Document()
+            doc.add_paragraph("One column title")
+            three_col_section = doc.add_section(WD_SECTION.CONTINUOUS)
+            set_section_columns(three_col_section, count=3, space_twips=720)
+            doc.add_paragraph("Three column body")
+            doc.save(str(docx_path))
+
+            parsed = DocIR.from_file(docx_path, skip_empty=True)
+
+        self.assertEqual([paragraph.text for paragraph in parsed.paragraphs], ["One column title", "Three column body"])
+        self.assertEqual(parsed.paragraphs[0].column_layout.count, 1)
+        self.assertEqual(parsed.paragraphs[1].column_layout.count, 3)
+        self.assertAlmostEqual(parsed.paragraphs[1].column_layout.gap_pt or 0.0, 36.0, places=2)
+
+    def test_from_file_hwpx_extracts_paragraph_column_layouts(self) -> None:
+        hwpx_bytes_io = BytesIO()
+        with zipfile.ZipFile(hwpx_bytes_io, "w") as zf:
+            zf.writestr(
+                "Contents/header.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core" />
+""",
+            )
+            zf.writestr(
+                "Contents/section0.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p>
+    <hp:run>
+      <hp:ctrl><hp:colPr colCount="1" sameSz="1" sameGap="0" /></hp:ctrl>
+      <hp:t>One column title</hp:t>
+    </hp:run>
+  </hp:p>
+  <hp:p>
+    <hp:run>
+      <hp:ctrl><hp:colPr colCount="3" sameSz="1" sameGap="300" /></hp:ctrl>
+      <hp:t>Three column body start</hp:t>
+    </hp:run>
+  </hp:p>
+  <hp:p>
+    <hp:run><hp:t>Three column body continued</hp:t></hp:run>
+  </hp:p>
+</hs:sec>
+""",
+            )
+
+        parsed = DocIR.from_file(hwpx_bytes_io.getvalue(), doc_type="hwpx")
+
+        self.assertEqual([paragraph.text for paragraph in parsed.paragraphs], [
+            "One column title",
+            "Three column body start",
+            "Three column body continued",
+        ])
+        self.assertEqual([paragraph.column_layout.count for paragraph in parsed.paragraphs], [1, 3, 3])
+        self.assertAlmostEqual(parsed.paragraphs[1].column_layout.gap_pt or 0.0, 3.0, places=2)
 
     def test_from_file_hwp_file_object_materializes_temp_path(self) -> None:
         fake_hwp = b"fake-hwp"
@@ -474,6 +545,54 @@ class DocumentIRTests(unittest.TestCase):
             outer_cell_paragraph.tables[0].cells[0].paragraphs[0].runs[0].text,
             "Inner",
         )
+
+    def test_hwpx_tables_inside_one_run_preserve_child_order(self) -> None:
+        hwpx_bytes_io = BytesIO()
+        with zipfile.ZipFile(hwpx_bytes_io, "w") as zf:
+            zf.writestr(
+                "Contents/header.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core" />
+""",
+            )
+            zf.writestr(
+                "Contents/section0.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p>
+    <hp:run>
+      <hp:t>Before</hp:t>
+      <hp:tbl>
+        <hp:tr>
+          <hp:tc>
+            <hp:subList>
+              <hp:p><hp:run><hp:t>Cell</hp:t></hp:run></hp:p>
+            </hp:subList>
+            <hp:cellAddr colAddr="0" rowAddr="0"/>
+            <hp:cellSpan colSpan="1" rowSpan="1"/>
+          </hp:tc>
+        </hp:tr>
+      </hp:tbl>
+      <hp:t>After</hp:t>
+    </hp:run>
+  </hp:p>
+</hs:sec>
+""",
+            )
+
+        parsed = DocIR.from_file(hwpx_bytes_io.getvalue(), doc_type="hwpx")
+        paragraph_ir = parsed.paragraphs[0]
+
+        self.assertEqual(
+            [type(node).__name__ for node in paragraph_ir.content],
+            ["RunIR", "TableIR", "RunIR"],
+        )
+        self.assertEqual(
+            [(run.unit_id, run.text) for run in paragraph_ir.runs],
+            [("s1.p1.r1", "Before"), ("s1.p1.r3", "After")],
+        )
+        self.assertEqual(paragraph_ir.tables[0].unit_id, "s1.p1.r1.tbl1")
+        self.assertEqual(paragraph_ir.tables[0].cells[0].paragraphs[0].runs[0].text, "Cell")
 
     def test_hwpx_nested_tables_are_parsed(self) -> None:
         hwpx_bytes_io = BytesIO()

@@ -12,6 +12,7 @@ SRC_ROOT = THIS_DIR.parent / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from document_processor import DocIR, HwpxDocument
 from document_processor.core.style_extractor import extract_styles, extract_styles_docx, extract_styles_hwpx
 
 
@@ -110,8 +111,6 @@ class StyleExtractorTests(unittest.TestCase):
         self.assertAlmostEqual(rstyle.size_pt or 0.0, 12.0, places=3)
 
     def test_extract_hwpx_styles_from_hwpx_document(self) -> None:
-        from document_processor.hwpx import HwpxDocument
-
         header_xml = """<?xml version="1.0" encoding="UTF-8"?>
 <hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core">
   <hh:paraProperties itemCnt="1">
@@ -467,6 +466,7 @@ class StyleExtractorTests(unittest.TestCase):
             <hp:cellAddr colAddr="0" rowAddr="0"/>
             <hp:cellSpan colSpan="1" rowSpan="1"/>
             <hp:cellSz width="7200" height="3600"/>
+            <hp:cellMargin left="510" right="520" top="140" bottom="150"/>
           </hp:tc>
         </hp:tr>
       </hp:tbl>
@@ -485,6 +485,91 @@ class StyleExtractorTests(unittest.TestCase):
         self.assertAlmostEqual(table_style.height_pt or 0.0, 48.0, places=3)
         self.assertAlmostEqual(cell_style.width_pt or 0.0, 72.0, places=3)
         self.assertAlmostEqual(cell_style.height_pt or 0.0, 36.0, places=3)
+        self.assertAlmostEqual(cell_style.padding_left_pt or 0.0, 5.1, places=3)
+        self.assertAlmostEqual(cell_style.padding_right_pt or 0.0, 5.2, places=3)
+        self.assertAlmostEqual(cell_style.padding_top_pt or 0.0, 1.4, places=3)
+        self.assertAlmostEqual(cell_style.padding_bottom_pt or 0.0, 1.5, places=3)
+
+    def test_extract_hwpx_cell_margin_inherits_table_margin_sentinel(self) -> None:
+        hwpx_bytes_io = BytesIO()
+        with zipfile.ZipFile(hwpx_bytes_io, "w") as zf:
+            zf.writestr(
+                "Contents/header.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core" />
+""",
+            )
+            zf.writestr(
+                "Contents/section0.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p>
+    <hp:run>
+      <hp:tbl rowCnt="1" colCnt="1">
+        <hp:sz width="14400" height="4800" widthRelTo="ABSOLUTE" heightRelTo="ABSOLUTE" protect="0"/>
+        <hp:inMargin left="510" right="510" top="141" bottom="141"/>
+        <hp:tr>
+          <hp:tc>
+            <hp:subList><hp:p><hp:run><hp:t>Cell</hp:t></hp:run></hp:p></hp:subList>
+            <hp:cellAddr colAddr="0" rowAddr="0"/>
+            <hp:cellSpan colSpan="1" rowSpan="1"/>
+            <hp:cellSz width="7200" height="3600"/>
+            <hp:cellMargin left="4294967295" right="4294967295" top="4294967295" bottom="4294967295"/>
+          </hp:tc>
+        </hp:tr>
+      </hp:tbl>
+    </hp:run>
+  </hp:p>
+</hs:sec>
+""",
+            )
+        hwpx_bytes = hwpx_bytes_io.getvalue()
+
+        style_map = extract_styles_hwpx(hwpx_bytes)
+        cell_style = style_map.cells["s1.p1.r1.tbl1.tr1.tc1"]
+
+        self.assertAlmostEqual(cell_style.padding_left_pt or 0.0, 5.1, places=3)
+        self.assertAlmostEqual(cell_style.padding_right_pt or 0.0, 5.1, places=3)
+        self.assertAlmostEqual(cell_style.padding_top_pt or 0.0, 1.41, places=3)
+        self.assertAlmostEqual(cell_style.padding_bottom_pt or 0.0, 1.41, places=3)
+
+        html = DocIR.from_file(hwpx_bytes, doc_type="hwpx").to_html()
+        self.assertIn("padding:1.4pt 5.1pt 1.4pt 5.1pt", html)
+        self.assertNotIn("42949673", html)
+
+    def test_extract_docx_cell_margins(self) -> None:
+        from docx import Document
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            docx_path = Path(tmp_dir) / "cell_margins.docx"
+            doc = Document()
+            cell = doc.add_table(rows=1, cols=1).cell(0, 0)
+            cell.text = "Padded"
+
+            tc_pr = cell._tc.get_or_add_tcPr()
+            tc_mar = OxmlElement("w:tcMar")
+            for side, value in (
+                ("top", "40"),
+                ("right", "120"),
+                ("bottom", "60"),
+                ("left", "100"),
+            ):
+                side_el = OxmlElement(f"w:{side}")
+                side_el.set(qn("w:w"), value)
+                side_el.set(qn("w:type"), "dxa")
+                tc_mar.append(side_el)
+            tc_pr.append(tc_mar)
+            doc.save(str(docx_path))
+
+            style_map = extract_styles_docx(docx_path)
+
+        cell_style = style_map.cells["s1.p1.r1.tbl1.tr1.tc1"]
+        self.assertAlmostEqual(cell_style.padding_top_pt or 0.0, 2.0, places=3)
+        self.assertAlmostEqual(cell_style.padding_right_pt or 0.0, 6.0, places=3)
+        self.assertAlmostEqual(cell_style.padding_bottom_pt or 0.0, 3.0, places=3)
+        self.assertAlmostEqual(cell_style.padding_left_pt or 0.0, 5.0, places=3)
 
 
 if __name__ == "__main__":

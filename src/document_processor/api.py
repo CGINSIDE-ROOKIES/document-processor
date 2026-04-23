@@ -28,6 +28,7 @@ from .api_types import (
     ValidateTextEditsRequest,
 )
 from .edit_engine import (
+    CellTextEdit,
     EditValidationError,
     ParagraphTextEdit,
     RunTextEdit,
@@ -56,9 +57,15 @@ class _ResolvedDocument:
 
 def get_document_context(request: GetDocumentContextRequest) -> DocumentContextResult:
     resolved = _resolve_document_input(request.document)
+    doc_index = _build_doc_ir_index(resolved.doc)
     paragraphs = list(_iter_doc_ir_paragraphs(resolved.doc.paragraphs))
-    paragraph_indices = {paragraph.unit_id: index for index, paragraph in enumerate(paragraphs)}
+    paragraph_indices = {paragraph.unit_id: offset for offset, paragraph in enumerate(paragraphs)}
     run_to_paragraph = {run.unit_id: paragraph for paragraph in paragraphs for run in paragraph.runs}
+    cell_to_anchor_paragraph = {
+        cell.unit_id: cell.paragraphs[0]
+        for cell in doc_index.cells.values()
+        if cell.paragraphs
+    }
 
     selected_indices: set[int] = set()
     missing_unit_ids: list[str] = []
@@ -67,6 +74,8 @@ def get_document_context(request: GetDocumentContextRequest) -> DocumentContextR
             anchor_index = paragraph_indices[unit_id]
         elif unit_id in run_to_paragraph:
             anchor_index = paragraph_indices[run_to_paragraph[unit_id].unit_id]
+        elif unit_id in cell_to_anchor_paragraph:
+            anchor_index = paragraph_indices[cell_to_anchor_paragraph[unit_id].unit_id]
         else:
             missing_unit_ids.append(unit_id)
             continue
@@ -86,10 +95,12 @@ def get_document_context(request: GetDocumentContextRequest) -> DocumentContextR
 
 def list_editable_targets(request: ListEditableTargetsRequest) -> ListEditableTargetsResult:
     resolved = _resolve_document_input(request.document)
+    doc_index = _build_doc_ir_index(resolved.doc)
     paragraphs = list(_iter_doc_ir_paragraphs(resolved.doc.paragraphs))
     requested_ids = set(request.unit_ids)
     paragraph_ids = {paragraph.unit_id for paragraph in paragraphs}
     run_ids = {run.unit_id for paragraph in paragraphs for run in paragraph.runs}
+    cell_ids = set(doc_index.cells)
 
     targets = _collect_editable_targets(
         resolved.doc,
@@ -103,7 +114,7 @@ def list_editable_targets(request: ListEditableTargetsRequest) -> ListEditableTa
     missing_unit_ids = [
         unit_id
         for unit_id in request.unit_ids
-        if unit_id not in paragraph_ids and unit_id not in run_ids
+        if unit_id not in paragraph_ids and unit_id not in run_ids and unit_id not in cell_ids
     ]
     return ListEditableTargetsResult(
         source_path=resolved.source_path,
@@ -329,6 +340,15 @@ def _validate_single_text_edit(index, edit: TextEdit) -> list[EditValidationIssu
                         message=f"{edit.target_unit_id} is a run target, not a paragraph target.",
                     )
                 ]
+            if edit.target_unit_id in index.cells:
+                return [
+                    EditValidationIssue(
+                        code="target_kind_mismatch",
+                        target_kind=edit.target_kind,
+                        target_unit_id=edit.target_unit_id,
+                        message=f"{edit.target_unit_id} is a cell target, not a paragraph target.",
+                    )
+                ]
             return [
                 EditValidationIssue(
                     code="target_not_found",
@@ -361,6 +381,77 @@ def _validate_single_text_edit(index, edit: TextEdit) -> list[EditValidationIssu
             ]
         return []
 
+    if edit.target_kind == "cell":
+        cell = index.cells.get(edit.target_unit_id)
+        if cell is None:
+            if edit.target_unit_id in index.paragraphs:
+                return [
+                    EditValidationIssue(
+                        code="target_kind_mismatch",
+                        target_kind=edit.target_kind,
+                        target_unit_id=edit.target_unit_id,
+                        message=f"{edit.target_unit_id} is a paragraph target, not a cell target.",
+                    )
+                ]
+            if edit.target_unit_id in index.runs:
+                return [
+                    EditValidationIssue(
+                        code="target_kind_mismatch",
+                        target_kind=edit.target_kind,
+                        target_unit_id=edit.target_unit_id,
+                        message=f"{edit.target_unit_id} is a run target, not a cell target.",
+                    )
+                ]
+            return [
+                EditValidationIssue(
+                    code="target_not_found",
+                    target_kind=edit.target_kind,
+                    target_unit_id=edit.target_unit_id,
+                    message=f"Cell target does not exist: {edit.target_unit_id}.",
+                )
+            ]
+
+        writable, writable_reason = _cell_writable(cell)
+        if not writable:
+            return [
+                EditValidationIssue(
+                    code="mixed_content_not_supported",
+                    target_kind=edit.target_kind,
+                    target_unit_id=edit.target_unit_id,
+                    message=writable_reason or f"Cell target is not safely writable: {edit.target_unit_id}.",
+                    expected_text=edit.expected_text,
+                    current_text=cell.text,
+                )
+            ]
+        if cell.text != edit.expected_text:
+            return [
+                EditValidationIssue(
+                    code="text_mismatch",
+                    target_kind=edit.target_kind,
+                    target_unit_id=edit.target_unit_id,
+                    message=f"Cell text mismatch for {edit.target_unit_id}.",
+                    expected_text=edit.expected_text,
+                    current_text=cell.text,
+                )
+            ]
+        expected_paragraphs = len(cell.paragraphs)
+        new_paragraphs = len(edit.new_text.split("\n"))
+        if new_paragraphs != expected_paragraphs:
+            return [
+                EditValidationIssue(
+                    code="paragraph_count_mismatch",
+                    target_kind=edit.target_kind,
+                    target_unit_id=edit.target_unit_id,
+                    message=(
+                        f"Cell text replacement must preserve paragraph count for {edit.target_unit_id}: "
+                        f"expected {expected_paragraphs} line(s), got {new_paragraphs}."
+                    ),
+                    expected_text=edit.expected_text,
+                    current_text=cell.text,
+                )
+            ]
+        return []
+
     run = index.runs.get(edit.target_unit_id)
     if run is None:
         if edit.target_unit_id in index.paragraphs:
@@ -370,6 +461,15 @@ def _validate_single_text_edit(index, edit: TextEdit) -> list[EditValidationIssu
                     target_kind=edit.target_kind,
                     target_unit_id=edit.target_unit_id,
                     message=f"{edit.target_unit_id} is a paragraph target, not a run target.",
+                )
+            ]
+        if edit.target_unit_id in index.cells:
+            return [
+                EditValidationIssue(
+                    code="target_kind_mismatch",
+                    target_kind=edit.target_kind,
+                    target_unit_id=edit.target_unit_id,
+                    message=f"{edit.target_unit_id} is a cell target, not a run target.",
                 )
             ]
         return [
@@ -560,7 +660,32 @@ def _collect_editable_targets(
 ) -> list[EditableTarget]:
     results: list[EditableTarget] = []
     requested_parent_ids = exact_unit_ids or set()
+    index = _build_doc_ir_index(doc)
+    paragraph_to_cell = {
+        paragraph.unit_id: cell
+        for cell in index.cells.values()
+        for paragraph in cell.paragraphs
+    }
+    emitted_cell_ids: set[str] = set()
     for paragraph in _iter_doc_ir_paragraphs(doc.paragraphs):
+        parent_cell = paragraph_to_cell.get(paragraph.unit_id)
+        if parent_cell is not None and parent_cell.unit_id not in emitted_cell_ids:
+            cell_requested = exact_unit_ids is None or parent_cell.unit_id in exact_unit_ids
+            cell_writable, cell_writable_reason = _cell_writable(parent_cell)
+            if "cell" in target_kinds and cell_requested:
+                if not only_writable or cell_writable:
+                    results.append(
+                        EditableTarget(
+                            target_kind="cell",
+                            target_unit_id=parent_cell.unit_id,
+                            current_text=parent_cell.text,
+                            page_number=paragraph.page_number,
+                            writable=cell_writable,
+                            writable_reason=cell_writable_reason,
+                        )
+                    )
+            emitted_cell_ids.add(parent_cell.unit_id)
+
         paragraph_requested = exact_unit_ids is None or paragraph.unit_id in exact_unit_ids
         writable, writable_reason = _paragraph_writable(paragraph)
 
@@ -580,7 +705,10 @@ def _collect_editable_targets(
         if "run" in target_kinds:
             for run in paragraph.runs:
                 run_requested = exact_unit_ids is None or run.unit_id in exact_unit_ids
-                inherited_request = include_child_runs and paragraph.unit_id in requested_parent_ids
+                inherited_request = include_child_runs and (
+                    paragraph.unit_id in requested_parent_ids
+                    or (parent_cell is not None and parent_cell.unit_id in requested_parent_ids)
+                )
                 if run_requested or inherited_request:
                     results.append(
                         EditableTarget(
@@ -604,6 +732,16 @@ def _paragraph_writable(paragraph: ParagraphIR) -> tuple[bool, str | None]:
     return True, None
 
 
+def _cell_writable(cell) -> tuple[bool, str | None]:
+    if not cell.paragraphs:
+        return False, "Cell does not contain editable paragraphs."
+    if any(paragraph.has_non_run_content for paragraph in cell.paragraphs):
+        return False, "Cell contains nested tables or images."
+    if any(not paragraph.runs for paragraph in cell.paragraphs):
+        return False, "Cell contains a paragraph without editable runs."
+    return True, None
+
+
 def _resolve_requested_output_path(source: Path, request: ApplyTextEditsRequest) -> Path | None:
     if request.output_path is not None:
         return Path(request.output_path)
@@ -620,6 +758,13 @@ def _to_internal_edit(edit: TextEdit):
     if edit.target_kind == "paragraph":
         return ParagraphTextEdit(
             paragraph_unit_id=edit.target_unit_id,
+            old_text=edit.expected_text,
+            new_text=edit.new_text,
+            reason=edit.reason,
+        )
+    if edit.target_kind == "cell":
+        return CellTextEdit(
+            cell_unit_id=edit.target_unit_id,
             old_text=edit.expected_text,
             new_text=edit.new_text,
             reason=edit.reason,
