@@ -79,9 +79,11 @@ def _has_para_style(info: ParaStyleInfo) -> bool:
             info.right_indent_pt,
             info.first_line_indent_pt,
             info.hanging_indent_pt,
-            info.column_layout,
+            info.column_count,
+            info.column_gap_pt,
+            info.column_equal_width,
         )
-    )
+    ) or bool(info.column_widths_pt) or bool(info.column_gaps_pt)
 
 
 def _safe_int(value: str | None) -> int | None:
@@ -801,6 +803,29 @@ def _docx_default_cell_border(
     return None
 
 
+def _docx_table_direct_border_defaults(table) -> dict[str, str | None]:
+    from docx.oxml.ns import qn
+
+    tbl_pr = table._tbl.find(qn("w:tblPr"))
+    tbl_borders = tbl_pr.find(qn("w:tblBorders")) if tbl_pr is not None else None
+    if tbl_borders is None:
+        return {}
+
+    defaults: dict[str, str | None] = {}
+    for border_name, border_key in (
+        ("top", "top"),
+        ("bottom", "bottom"),
+        ("left", "left"),
+        ("right", "right"),
+        ("insideH", "inside_h"),
+        ("insideV", "inside_v"),
+    ):
+        border_css = _docx_border_css(tbl_borders, border_name)
+        if border_css is not None:
+            defaults[border_key] = border_css
+    return defaults
+
+
 def _docx_table_size(table) -> tuple[float | None, float | None]:
     from docx.oxml.ns import qn
 
@@ -990,6 +1015,7 @@ def extract_styles_docx(
             style_elements=style_elements,
             cache=border_defaults_cache,
         )
+        table_border_defaults.update(_docx_table_direct_border_defaults(table))
         table_cell_padding_defaults = _docx_table_cell_padding_defaults(
             table,
             table_style_id,

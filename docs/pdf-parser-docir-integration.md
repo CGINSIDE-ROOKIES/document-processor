@@ -3,8 +3,8 @@
 This package's LLM-facing API uses stable `node_id` values as edit and annotation
 targets. A PDF parser that builds `DocIR` should therefore generate `node_id`
 directly for every addressable paragraph, run, table, cell, and image node.
-Structured public calls should use `TextEdit` and `TextAnnotation` with those
-`node_id` values as `target_id`.
+Structured public calls should use `TextEdit`, `StructuralEdit`, and
+`TextAnnotation` with those `node_id` values as `target_id`.
 
 Core IR nodes no longer carry a separate structural ID field. Parser/native paths
 belong in `NativeAnchor`; public operations use `node_id`.
@@ -125,12 +125,16 @@ doc = DocIR(
 ## Edit, Annotation, And Re-map Flow
 
 1. The LLM reads through `read_document(...)` or `get_document_context(...)`.
-2. The LLM emits `TextEdit(target_id=<node_id>, expected_text=..., new_text=...)`.
-3. The API validates exact text against the current `DocIR`.
+2. The LLM emits `TextEdit(target_id=<node_id>, expected_text=..., new_text=...)`
+   for exact text replacement, or `StructuralEdit(target_id=<node_id>, operation=...)`
+   for insert/remove/table operations.
+3. The API validates the request against the current `DocIR`.
 4. The edit layer resolves `target_id` directly to the DocIR node for in-memory mutation.
-5. For annotations, the LLM emits `TextAnnotation(target_id=<node_id>, target_kind=..., selected_text=..., occurrence_index=...)`.
-6. The annotation API validates exact selected text and returns resolved offsets through `validate_text_annotations(...)` or `render_review_html(...)`.
-7. The PDF writer or external synchronizer uses `NativeAnchor.structural_path`,
+5. Existing node IDs remain stable. Inserted nodes receive new IDs, while
+   `NativeAnchor.structural_path` can be refreshed to the new parser/native path.
+6. For annotations, the LLM emits `TextAnnotation(target_id=<node_id>, target_kind=..., selected_text=..., occurrence_index=...)`.
+7. The annotation API validates exact selected text and returns resolved offsets through `validate_text_annotations(...)` or `render_review_html(...)`.
+8. The PDF writer or external synchronizer uses `NativeAnchor.structural_path`,
    `NativeAnchor.debug_path`, and `text_hash` to find the original extracted object or detect drift.
 
 For extensive edits, do not re-ID unchanged nodes. Preserve IDs for nodes whose source

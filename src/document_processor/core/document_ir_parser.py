@@ -25,7 +25,7 @@ from ..models import (
     _anchored_node_id,
     _make_native_anchor,
 )
-from ..style_types import ColumnLayoutInfo, ParaStyleInfo
+from ..style_types import ParaStyleInfo
 from .docx_structured_exporter import _iter_blocks, _iter_blocks_from_element, _load_docx_source
 from .hwp_converter import convert_hwp_to_hwpx_bytes
 from .hwpx_structured_exporter import _HP, _logical_table_cells, _paragraph_text, _run_text, _safe_int, _section_roots_from_bytes
@@ -113,15 +113,15 @@ def _page_layout(
     }
 
 
-def _copy_column_layout(column_layout: ColumnLayoutInfo | None) -> ColumnLayoutInfo | None:
-    return column_layout.model_copy(deep=True) if column_layout is not None else None
+def _copy_column_style(column_style: ParaStyleInfo | None) -> ParaStyleInfo | None:
+    return column_style.model_copy(deep=True) if column_style is not None else None
 
 
-def _para_style_with_column_layout(column_layout: ColumnLayoutInfo | None) -> ParaStyleInfo | None:
-    copied_column_layout = _copy_column_layout(column_layout)
-    if copied_column_layout is None:
+def _para_style_with_columns(column_style: ParaStyleInfo | None) -> ParaStyleInfo | None:
+    copied_column_style = _copy_column_style(column_style)
+    if copied_column_style is None:
         return None
-    return ParaStyleInfo(column_layout=copied_column_layout)
+    return copied_column_style
 
 
 def _ensure_page_info(
@@ -241,7 +241,7 @@ def _resolve_doc_metadata(
 def _docx_section_layouts(doc) -> list[dict[str, Any]]:
     from docx.oxml.ns import qn
 
-    def _docx_column_layout(sect_pr) -> ColumnLayoutInfo | None:
+    def _docx_column_style(sect_pr) -> ParaStyleInfo | None:
         cols = sect_pr.find(qn("w:cols")) if sect_pr is not None else None
         if cols is None:
             return None
@@ -263,12 +263,12 @@ def _docx_section_layouts(doc) -> list[dict[str, Any]]:
         equal_width_value = cols.get(qn("w:equalWidth"))
         equal_width = None if equal_width_value is None else equal_width_value not in {"0", "false", "False"}
 
-        return ColumnLayoutInfo(
-            count=max(count, 1),
-            gap_pt=gap_pt,
-            widths_pt=widths_pt,
-            gaps_pt=gaps_pt,
-            equal_width=equal_width,
+        return ParaStyleInfo(
+            column_count=max(count, 1),
+            column_gap_pt=gap_pt,
+            column_widths_pt=widths_pt,
+            column_gaps_pt=gaps_pt,
+            column_equal_width=equal_width,
         )
 
     return [
@@ -281,10 +281,10 @@ def _docx_section_layouts(doc) -> list[dict[str, Any]]:
                 margin_top_pt=_emu_to_pt(int(section.top_margin)) if section.top_margin is not None else None,
                 margin_bottom_pt=_emu_to_pt(int(section.bottom_margin)) if section.bottom_margin is not None else None,
             ),
-            "column_layout": _docx_column_layout(section._sectPr),
+            "column_style": _docx_column_style(section._sectPr),
         }
         for section in doc.sections
-    ] or [{**_page_layout(width_pt=None, height_pt=None), "column_layout": None}]
+    ] or [{**_page_layout(width_pt=None, height_pt=None), "column_style": None}]
 
 
 def _docx_paragraph_has_page_break_before(paragraph) -> bool:
@@ -345,7 +345,7 @@ def _hwpx_section_page_layout(section_root: ET.Element) -> dict[str, float | Non
     )
 
 
-def _hwpx_column_layout_from_col_pr(col_pr: ET.Element) -> ColumnLayoutInfo:
+def _hwpx_column_style_from_col_pr(col_pr: ET.Element) -> ParaStyleInfo:
     count = _safe_int(col_pr.get("colCount")) or 1
     same_gap_pt = _hwpunit_to_pt(col_pr.get("sameGap"))
     same_sz = col_pr.get("sameSz")
@@ -364,27 +364,27 @@ def _hwpx_column_layout_from_col_pr(col_pr: ET.Element) -> ColumnLayoutInfo:
         if gap is not None:
             gaps_pt.append(gap)
 
-    return ColumnLayoutInfo(
-        count=max(count, 1),
-        gap_pt=same_gap_pt,
-        widths_pt=widths_pt,
-        gaps_pt=gaps_pt,
-        equal_width=equal_width,
+    return ParaStyleInfo(
+        column_count=max(count, 1),
+        column_gap_pt=same_gap_pt,
+        column_widths_pt=widths_pt,
+        column_gaps_pt=gaps_pt,
+        column_equal_width=equal_width,
     )
 
 
-def _hwpx_paragraph_column_layout(paragraph_el: ET.Element) -> ColumnLayoutInfo | None:
+def _hwpx_paragraph_column_style(paragraph_el: ET.Element) -> ParaStyleInfo | None:
     col_prs = paragraph_el.findall(f"{_HP}run/{_HP}secPr/{_HP}colPr")
     col_prs.extend(paragraph_el.findall(f"{_HP}run/{_HP}ctrl/{_HP}colPr"))
     if not col_prs:
         return None
-    return _hwpx_column_layout_from_col_pr(col_prs[-1])
+    return _hwpx_column_style_from_col_pr(col_prs[-1])
 
 
-def _hwpx_section_column_layout(section_root: ET.Element) -> ColumnLayoutInfo | None:
+def _hwpx_section_column_style(section_root: ET.Element) -> ParaStyleInfo | None:
     sec_pr = section_root.find(f".//{_HP}secPr")
     col_pr = sec_pr.find(f"{_HP}colPr") if sec_pr is not None else None
-    return _hwpx_column_layout_from_col_pr(col_pr) if col_pr is not None else None
+    return _hwpx_column_style_from_col_pr(col_pr) if col_pr is not None else None
 
 
 def _hwpx_paragraph_has_page_break_before(paragraph_el: ET.Element) -> bool:
@@ -717,7 +717,7 @@ def _build_docx_doc_ir(
                     part_name="word/document.xml",
                 ),
                 page_number=current_page_number,
-                para_style=_para_style_with_column_layout(current_layout.get("column_layout")),
+                para_style=_para_style_with_columns(current_layout.get("column_style")),
                 content=content,
             )
             _assign_page_number_to_paragraph(paragraph_ir, current_page_number)
@@ -766,7 +766,7 @@ def _build_docx_doc_ir(
                 part_name="word/document.xml",
             ),
             page_number=current_page_number,
-            para_style=_para_style_with_column_layout(current_layout.get("column_layout")),
+            para_style=_para_style_with_columns(current_layout.get("column_style")),
             content=[table_ir],
         )
         _assign_page_number_to_paragraph(paragraph_ir, current_page_number)
@@ -1148,15 +1148,15 @@ def _build_hwpx_doc_ir(
 
         for s_idx, section_root in enumerate(section_roots, start=1):
             section_layout = _hwpx_section_page_layout(section_root)
-            current_column_layout = _hwpx_section_column_layout(section_root)
+            current_column_style = _hwpx_section_column_style(section_root)
             section_page_number = 1
             last_vertpos: int | None = None
             saw_paragraph = False
 
             for p_idx, paragraph_el in enumerate(section_root.findall(f"{_HP}p"), start=1):
-                paragraph_column_layout = _hwpx_paragraph_column_layout(paragraph_el)
-                if paragraph_column_layout is not None:
-                    current_column_layout = paragraph_column_layout
+                paragraph_column_style = _hwpx_paragraph_column_style(paragraph_el)
+                if paragraph_column_style is not None:
+                    current_column_style = paragraph_column_style
 
                 if saw_paragraph and _hwpx_paragraph_has_page_break_before(paragraph_el):
                     section_page_number += 1
@@ -1193,7 +1193,7 @@ def _build_hwpx_doc_ir(
                         part_name=f"Contents/section{s_idx - 1}.xml",
                     ),
                     page_number=absolute_page_number,
-                    para_style=_para_style_with_column_layout(current_column_layout),
+                    para_style=_para_style_with_columns(current_column_style),
                     content=content,
                 )
                 _assign_page_number_to_paragraph(paragraph_ir, absolute_page_number)

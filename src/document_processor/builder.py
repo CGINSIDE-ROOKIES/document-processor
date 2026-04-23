@@ -89,12 +89,28 @@ def _merge_para_style(
 ) -> "ParaStyleInfo | None":
     if incoming_style is None:
         return existing_style
-    if existing_style is None or incoming_style.column_layout is not None:
+    if existing_style is None or _has_column_style(incoming_style):
         return incoming_style
 
     merged_style = incoming_style.model_copy(deep=True)
-    merged_style.column_layout = existing_style.column_layout
+    merged_style.column_count = existing_style.column_count
+    merged_style.column_gap_pt = existing_style.column_gap_pt
+    merged_style.column_widths_pt = list(existing_style.column_widths_pt)
+    merged_style.column_gaps_pt = list(existing_style.column_gaps_pt)
+    merged_style.column_equal_width = existing_style.column_equal_width
     return merged_style
+
+
+def _has_column_style(style: "ParaStyleInfo") -> bool:
+    return any(
+        (
+            style.column_count is not None,
+            style.column_gap_pt is not None,
+            bool(style.column_widths_pt),
+            bool(style.column_gaps_pt),
+            style.column_equal_width is not None,
+        )
+    )
 
 
 def _is_token(token: str, prefix: str) -> bool:

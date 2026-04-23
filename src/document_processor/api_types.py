@@ -1,21 +1,39 @@
 from __future__ import annotations
 
-from pathlib import PurePath
-from typing import Literal
+from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
 
 from .io_utils import SourceDocType
 from .models import DocIR, NativeAnchor
 
-TargetKind = Literal["paragraph", "run", "cell"]
+TargetKind = Literal["paragraph", "run", "cell", "table"]
+TextTargetKind = Literal["paragraph", "run", "cell"]
 AnnotationTargetKind = Literal["paragraph", "run"]
+StructuralOperationKind = Literal[
+    "insert_paragraph",
+    "remove_paragraph",
+    "insert_run",
+    "remove_run",
+    "insert_table",
+    "remove_table",
+    "set_cell_text",
+    "insert_table_row",
+    "remove_table_row",
+    "insert_table_column",
+    "remove_table_column",
+]
+InsertPosition = Literal["before", "after", "start", "end"]
 EditValidationCode = Literal[
     "target_not_found",
     "target_kind_mismatch",
     "text_mismatch",
     "mixed_content_not_supported",
     "paragraph_count_mismatch",
+    "invalid_operation",
+    "invalid_position",
+    "invalid_table_shape",
+    "index_out_of_bounds",
     "unsupported_source_doc_type",
     "output_path_conflicts_with_source",
     "native_source_required",
@@ -60,11 +78,55 @@ class DocumentInput(BaseModel):
 
 
 class TextEdit(BaseModel):
-    target_kind: TargetKind = Field(description="Whether this edit targets a paragraph, run, or table cell.")
+    edit_type: Literal["text"] = Field(default="text", description="Discriminator for mixed edit batches.")
+    target_kind: TextTargetKind = Field(description="Whether this edit targets a paragraph, run, or table cell.")
     target_id: str = Field(description="Stable opaque node id from the parsed document.")
     expected_text: str = Field(description="Exact current text that must match before the edit is applied.")
     new_text: str = Field(description="Replacement text for the target.")
     reason: str = Field(default="", description="Short rationale for the change.")
+
+
+class StructuralEdit(BaseModel):
+    edit_type: Literal["structural"] = Field(default="structural", description="Discriminator for mixed edit batches.")
+    operation: StructuralOperationKind = Field(description="Structural edit operation to apply.")
+    target_id: str = Field(description="Stable node_id used as the operation anchor.")
+    position: InsertPosition = Field(
+        default="after",
+        description=(
+            "Insertion position. Paragraph/table operations use before/after; "
+            "run operations can use before/after for run targets or start/end for paragraph targets."
+        ),
+    )
+    expected_text: str | None = Field(
+        default=None,
+        description="Optional current text guard for remove and set operations.",
+    )
+    text: str | None = Field(
+        default=None,
+        description="Text for inserted paragraphs/runs or replacement cell text.",
+    )
+    rows: list[list[str]] | None = Field(
+        default=None,
+        description="Rectangular text matrix for insert_table.",
+    )
+    values: list[str] | None = Field(
+        default=None,
+        description="Texts for inserted table rows or columns.",
+    )
+    row_index: int | None = Field(
+        default=None,
+        ge=1,
+        description="Optional 1-based table row index when target_id is a table.",
+    )
+    column_index: int | None = Field(
+        default=None,
+        ge=1,
+        description="Optional 1-based table column index when target_id is a table.",
+    )
+    reason: str = Field(default="", description="Short rationale for the change.")
+
+
+DocumentEdit: TypeAlias = Annotated[TextEdit | StructuralEdit, Field(discriminator="edit_type")]
 
 
 class TextAnnotation(BaseModel):
@@ -107,6 +169,7 @@ class EditValidationIssue(BaseModel):
     code: EditValidationCode
     target_kind: TargetKind | None = None
     target_id: str | None = None
+    operation: StructuralOperationKind | None = None
     message: str
     expected_text: str | None = None
     current_text: str | None = None
@@ -117,7 +180,7 @@ class EditValidationResult(BaseModel):
     issues: list[EditValidationIssue] = Field(default_factory=list)
 
 
-class ApplyTextEditsResult(BaseModel):
+class ApplyDocumentEditsResult(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
 
     ok: bool = True
@@ -128,8 +191,11 @@ class ApplyTextEditsResult(BaseModel):
     output_bytes: bytes | None = None
     updated_doc_ir: DocIR | None = None
     edits_applied: int = 0
-    modified_target_ids: list[str] = Field(default_factory=list, description="Stable target ids modified by the edit batch.")
-    modified_run_ids: list[str] = Field(default_factory=list, description="Stable run ids modified by the edit batch.")
+    operations_applied: int = 0
+    modified_target_ids: list[str] = Field(default_factory=list)
+    created_target_ids: list[str] = Field(default_factory=list)
+    removed_target_ids: list[str] = Field(default_factory=list)
+    modified_run_ids: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     validation: EditValidationResult = Field(default_factory=EditValidationResult)
 
@@ -188,43 +254,12 @@ class DocumentParagraphContext(BaseModel):
     runs: list[DocumentRunContext] = Field(default_factory=list)
 
 
-class DocumentBoundRequest(BaseModel):
-    document: DocumentInput | None = Field(default=None, description="Document source for this request.")
-    source_path: str | None = Field(
-        default=None,
-        description="Deprecated convenience field for path-backed calls.",
-    )
-
-    @model_validator(mode="after")
-    def _coerce_document(self) -> "DocumentBoundRequest":
-        if self.document is not None and self.source_path is not None:
-            raise ValueError("Specify either document or source_path, not both.")
-        if self.document is None:
-            if self.source_path is None:
-                raise ValueError("Provide either document or source_path.")
-            self.document = DocumentInput(source_path=self.source_path)
-        return self
-
-
-class GetDocumentContextRequest(DocumentBoundRequest):
-    target_ids: list[str] = Field(default_factory=list, description="Stable paragraph, run, or cell node ids to inspect.")
-    before: int = Field(default=1, ge=0, description="How many surrounding paragraphs to include before each target.")
-    after: int = Field(default=1, ge=0, description="How many surrounding paragraphs to include after each target.")
-    include_runs: bool = Field(default=True, description="Whether to include exact run texts for returned paragraphs.")
-
-
 class DocumentContextResult(BaseModel):
     source_path: str | None = None
     source_doc_type: str | None = None
     source_name: str | None = None
     paragraphs: list[DocumentParagraphContext] = Field(default_factory=list)
     missing_target_ids: list[str] = Field(default_factory=list)
-
-
-class ReadDocumentRequest(DocumentBoundRequest):
-    start: int = Field(default=0, ge=0, description="Zero-based paragraph offset to start reading from.")
-    limit: int = Field(default=50, ge=1, le=500, description="Maximum number of paragraphs to return.")
-    include_runs: bool = Field(default=True, description="Whether to include exact run texts for returned paragraphs.")
 
 
 class ReadDocumentResult(BaseModel):
@@ -238,17 +273,6 @@ class ReadDocumentResult(BaseModel):
     paragraphs: list[DocumentParagraphContext] = Field(default_factory=list)
 
 
-class ListEditableTargetsRequest(DocumentBoundRequest):
-    target_ids: list[str] = Field(default_factory=list, description="Optional stable node ids to filter by.")
-    target_kinds: list[TargetKind] = Field(default_factory=lambda: ["paragraph", "cell", "run"])
-    include_child_runs: bool = Field(
-        default=False,
-        description="When a paragraph or cell id is requested, also return its run targets.",
-    )
-    only_writable: bool = Field(default=True)
-    max_targets: int | None = Field(default=200, ge=1)
-
-
 class ListEditableTargetsResult(BaseModel):
     source_path: str | None = None
     source_doc_type: str | None = None
@@ -257,79 +281,30 @@ class ListEditableTargetsResult(BaseModel):
     missing_target_ids: list[str] = Field(default_factory=list)
 
 
-class ValidateTextEditsRequest(DocumentBoundRequest):
-    edits: list[TextEdit]
-
-
-class ApplyTextEditsRequest(DocumentBoundRequest):
-    edits: list[TextEdit]
-    dry_run: bool = Field(default=False, description="Validate and preview the DocIR edit without writing native output.")
-    output_path: str | None = Field(default=None, description="Optional output path for the edited native file.")
-    output_filename: str | None = Field(
-        default=None,
-        description=(
-            "Optional basename written next to the source document or used as the returned filename "
-            "for bytes-backed calls."
-        ),
-    )
-    return_doc_ir: bool = Field(
-        default=False,
-        description="Whether to parse and include the updated DocIR in the response after apply.",
-    )
-
-    @model_validator(mode="after")
-    def _validate_output_target(self) -> "ApplyTextEditsRequest":
-        if self.output_path is not None and self.output_filename is not None:
-            raise ValueError("Specify either output_path or output_filename, not both.")
-        if self.output_filename is None:
-            return self
-
-        filename = self.output_filename.strip()
-        if not filename:
-            raise ValueError("output_filename must not be empty.")
-
-        pure = PurePath(filename)
-        if pure.is_absolute() or pure.name != filename or filename in {".", ".."}:
-            raise ValueError("output_filename must be a filename only, without directory segments.")
-        return self
-
-
-class RenderReviewHtmlRequest(DocumentBoundRequest):
-    annotations: list[TextAnnotation]
-    title: str = Field(default="Review")
-
-
-class ValidateTextAnnotationsRequest(DocumentBoundRequest):
-    annotations: list[TextAnnotation]
-
-
 __all__ = [
     "AnnotationTargetKind",
     "AnnotationValidationCode",
     "AnnotationValidationIssue",
     "AnnotationValidationResult",
-    "ApplyTextEditsRequest",
-    "ApplyTextEditsResult",
-    "DocumentBoundRequest",
+    "ApplyDocumentEditsResult",
     "DocumentContextResult",
+    "DocumentEdit",
     "DocumentInput",
     "DocumentParagraphContext",
     "DocumentRunContext",
-    "ReadDocumentRequest",
     "ReadDocumentResult",
     "EditableTarget",
     "EditValidationCode",
     "EditValidationIssue",
     "EditValidationResult",
-    "GetDocumentContextRequest",
-    "ListEditableTargetsRequest",
     "ListEditableTargetsResult",
-    "RenderReviewHtmlRequest",
     "ResolvedTextAnnotation",
     "ReviewHtmlResult",
     "TargetKind",
+    "TextTargetKind",
     "TextAnnotation",
     "TextEdit",
-    "ValidateTextEditsRequest",
-    "ValidateTextAnnotationsRequest",
+    "StructuralEdit",
+    "StructuralOperationKind",
+    "InsertPosition",
 ]

@@ -7,16 +7,12 @@ import unittest
 import zipfile
 
 from document_processor import (
-    ApplyTextEditsRequest,
     DocumentInput,
     DocIR,
-    GetDocumentContextRequest,
-    ListEditableTargetsRequest,
-    ReadDocumentRequest,
-    RenderReviewHtmlRequest,
+    StructuralEdit,
     TextAnnotation,
     TextEdit,
-    apply_text_edits,
+    apply_document_edits,
     get_document_context,
     list_editable_targets,
     read_document,
@@ -117,6 +113,41 @@ class EditorApiTests(unittest.TestCase):
         return hwpx_bytes.getvalue()
 
     @staticmethod
+    def _build_hwpx_table_after_intro_with_control_bytes() -> bytes:
+        hwpx_bytes = BytesIO()
+        with zipfile.ZipFile(hwpx_bytes, "w") as archive:
+            archive.writestr(
+                "Contents/header.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core" />
+""",
+            )
+            archive.writestr(
+                "Contents/section0.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p><hp:run><hp:t>Intro</hp:t></hp:run></hp:p>
+  <hp:p>
+    <hp:run>
+      <hp:tbl>
+        <hp:tr>
+          <hp:tc>
+            <hp:subList>
+              <hp:p><hp:run><hp:t>Go </hp:t><hp:ctrl><hp:t>HIDDEN</hp:t></hp:ctrl><hp:t>Visible</hp:t></hp:run></hp:p>
+            </hp:subList>
+            <hp:cellAddr colAddr="0" rowAddr="0"/>
+            <hp:cellSpan colSpan="1" rowSpan="1"/>
+          </hp:tc>
+        </hp:tr>
+      </hp:tbl>
+    </hp:run>
+  </hp:p>
+</hs:sec>
+""",
+            )
+        return hwpx_bytes.getvalue()
+
+    @staticmethod
     def _build_namespaced_hwpx_bytes() -> bytes:
         hwpx_bytes = BytesIO()
         with zipfile.ZipFile(hwpx_bytes, "w") as archive:
@@ -139,15 +170,13 @@ class EditorApiTests(unittest.TestCase):
         target_id = doc.paragraphs[0].runs[1].node_id
 
         result = get_document_context(
-            GetDocumentContextRequest(
-                document=DocumentInput(
-                    source_bytes=source_bytes,
-                    source_name="sample.docx",
-                ),
-                target_ids=[target_id],
-                before=0,
-                after=1,
-            )
+            document=DocumentInput(
+                source_bytes=source_bytes,
+                source_name="sample.docx",
+            ),
+            target_ids=[target_id],
+            before=0,
+            after=1,
         )
 
         self.assertEqual(result.source_name, "sample.docx")
@@ -172,11 +201,9 @@ class EditorApiTests(unittest.TestCase):
         )
 
         result = read_document(
-            ReadDocumentRequest(
-                document=DocumentInput(doc_ir=doc),
-                start=1,
-                limit=1,
-            )
+            document=DocumentInput(doc_ir=doc),
+            start=1,
+            limit=1,
         )
 
         self.assertEqual(result.total_paragraphs, 3)
@@ -187,27 +214,25 @@ class EditorApiTests(unittest.TestCase):
         self.assertEqual(result.paragraphs[0].runs[0].start, 0)
         self.assertEqual(result.paragraphs[0].runs[0].end, len("Second"))
 
-    def test_apply_text_edits_returns_output_bytes_for_bytes_backed_source(self) -> None:
+    def test_apply_document_edits_returns_output_bytes_for_text_edit_bytes_source(self) -> None:
         source_bytes = self._build_sample_docx_bytes()
         doc = DocIR.from_file(source_bytes, doc_type="docx")
 
-        result = apply_text_edits(
-            ApplyTextEditsRequest(
-                document=DocumentInput(
-                    source_bytes=source_bytes,
-                    source_name="sample.docx",
-                ),
-                edits=[
-                    TextEdit(
-                        target_kind="paragraph",
-                        target_id=doc.paragraphs[0].node_id,
-                        expected_text="Hello World",
-                        new_text="Hello Legal World",
-                        reason="Expand wording",
-                    )
-                ],
-                return_doc_ir=True,
-            )
+        result = apply_document_edits(
+            document=DocumentInput(
+                source_bytes=source_bytes,
+                source_name="sample.docx",
+            ),
+            edits=[
+                TextEdit(
+                    target_kind="paragraph",
+                    target_id=doc.paragraphs[0].node_id,
+                    expected_text="Hello World",
+                    new_text="Hello Legal World",
+                    reason="Expand wording",
+                )
+            ],
+            return_doc_ir=True,
         )
 
         self.assertTrue(result.ok)
@@ -218,7 +243,7 @@ class EditorApiTests(unittest.TestCase):
         self.assertEqual(DocIR.from_file(result.output_bytes).paragraphs[0].text, "Hello Legal World")
         self.assertEqual(result.updated_doc_ir.paragraphs[0].text, "Hello Legal World")
 
-    def test_apply_text_edits_with_doc_ir_only_returns_updated_doc_ir(self) -> None:
+    def test_apply_document_edits_with_doc_ir_only_returns_updated_doc_ir_for_text_edit(self) -> None:
         doc = DocIR.from_mapping(
             {
                 "s1.p1.r1": "Hello ",
@@ -227,19 +252,17 @@ class EditorApiTests(unittest.TestCase):
             source_doc_type="docx",
         )
 
-        result = apply_text_edits(
-            ApplyTextEditsRequest(
-                document=DocumentInput(doc_ir=doc),
-                edits=[
-                    TextEdit(
-                        target_kind="paragraph",
-                        target_id=doc.paragraphs[0].node_id,
-                        expected_text="Hello World",
-                        new_text="Hello Contract World",
-                        reason="Expand wording",
-                    )
-                ],
-            )
+        result = apply_document_edits(
+            document=DocumentInput(doc_ir=doc),
+            edits=[
+                TextEdit(
+                    target_kind="paragraph",
+                    target_id=doc.paragraphs[0].node_id,
+                    expected_text="Hello World",
+                    new_text="Hello Contract World",
+                    reason="Expand wording",
+                )
+            ],
         )
 
         self.assertTrue(result.ok)
@@ -248,7 +271,7 @@ class EditorApiTests(unittest.TestCase):
         self.assertIsNotNone(result.updated_doc_ir)
         self.assertEqual(result.updated_doc_ir.paragraphs[0].text, "Hello Contract World")
 
-    def test_apply_text_edits_accepts_stable_target_id(self) -> None:
+    def test_apply_document_edits_accepts_stable_target_id_for_text_edit(self) -> None:
         doc = DocIR.from_mapping(
             {
                 "s1.p1.r1": "Hello ",
@@ -258,18 +281,16 @@ class EditorApiTests(unittest.TestCase):
         )
         target_id = doc.paragraphs[0].node_id
 
-        result = apply_text_edits(
-            ApplyTextEditsRequest(
-                document=DocumentInput(doc_ir=doc),
-                edits=[
-                    TextEdit(
-                        target_kind="paragraph",
-                        target_id=target_id,
-                        expected_text="Hello World",
-                        new_text="Hello Stable World",
-                    )
-                ],
-            )
+        result = apply_document_edits(
+            document=DocumentInput(doc_ir=doc),
+            edits=[
+                TextEdit(
+                    target_kind="paragraph",
+                    target_id=target_id,
+                    expected_text="Hello World",
+                    new_text="Hello Stable World",
+                )
+            ],
         )
 
         self.assertTrue(result.ok)
@@ -277,23 +298,21 @@ class EditorApiTests(unittest.TestCase):
         self.assertEqual(result.updated_doc_ir.paragraphs[0].text, "Hello Stable World")
         self.assertEqual(result.updated_doc_ir.paragraphs[0].node_id, target_id)
 
-    def test_apply_text_edits_dry_run_returns_preview_without_native_output(self) -> None:
+    def test_apply_document_edits_dry_run_returns_text_preview_without_native_output(self) -> None:
         doc = DocIR.from_mapping({"s1.p1.r1": "Hello"}, source_doc_type="docx")
 
-        result = apply_text_edits(
-            ApplyTextEditsRequest(
-                document=DocumentInput(doc_ir=doc),
-                edits=[
-                    TextEdit(
-                        target_kind="run",
-                        target_id=doc.paragraphs[0].runs[0].node_id,
-                        expected_text="Hello",
-                        new_text="Preview",
-                    )
-                ],
-                dry_run=True,
-                return_doc_ir=True,
-            )
+        result = apply_document_edits(
+            document=DocumentInput(doc_ir=doc),
+            edits=[
+                TextEdit(
+                    target_kind="run",
+                    target_id=doc.paragraphs[0].runs[0].node_id,
+                    expected_text="Hello",
+                    new_text="Preview",
+                )
+            ],
+            dry_run=True,
+            return_doc_ir=True,
         )
 
         self.assertTrue(result.ok)
@@ -303,7 +322,7 @@ class EditorApiTests(unittest.TestCase):
         self.assertEqual(result.updated_doc_ir.paragraphs[0].text, "Preview")
         self.assertEqual(doc.paragraphs[0].text, "Hello")
 
-    def test_validate_text_edits_rejects_missing_target_id(self) -> None:
+    def test_apply_document_edits_rejects_missing_text_target_id(self) -> None:
         doc = DocIR.from_mapping(
             {
                 "s1.p1.r1": "Hello",
@@ -312,18 +331,16 @@ class EditorApiTests(unittest.TestCase):
             source_doc_type="docx",
         )
 
-        result = apply_text_edits(
-            ApplyTextEditsRequest(
-                document=DocumentInput(doc_ir=doc),
-                edits=[
-                    TextEdit(
-                        target_kind="paragraph",
-                        target_id="missing",
-                        expected_text="Hello",
-                        new_text="Changed",
-                    )
-                ],
-            )
+        result = apply_document_edits(
+            document=DocumentInput(doc_ir=doc),
+            edits=[
+                TextEdit(
+                    target_kind="paragraph",
+                    target_id="missing",
+                    expected_text="Hello",
+                    new_text="Changed",
+                )
+            ],
         )
 
         self.assertFalse(result.ok)
@@ -339,10 +356,8 @@ class EditorApiTests(unittest.TestCase):
         )
 
         result = list_editable_targets(
-            ListEditableTargetsRequest(
-                document=DocumentInput(doc_ir=doc),
-                target_kinds=["cell"],
-            )
+            document=DocumentInput(doc_ir=doc),
+            target_kinds=["cell"],
         )
 
         self.assertEqual(
@@ -357,16 +372,14 @@ class EditorApiTests(unittest.TestCase):
         doc = DocIR.from_mapping({"s1.p1.r1": "Hello"})
 
         result = list_editable_targets(
-            ListEditableTargetsRequest(
-                document=DocumentInput(doc_ir=doc),
-                target_ids=["missing"],
-            )
+            document=DocumentInput(doc_ir=doc),
+            target_ids=["missing"],
         )
 
         self.assertEqual(result.targets, [])
         self.assertEqual(result.missing_target_ids, ["missing"])
 
-    def test_apply_text_edits_can_replace_doc_ir_cell_text(self) -> None:
+    def test_apply_document_edits_can_replace_doc_ir_cell_text(self) -> None:
         doc = DocIR.from_mapping(
             {
                 "s1.p1.r1.tbl1.tr1.tc1.p1.r1": "Left",
@@ -375,18 +388,16 @@ class EditorApiTests(unittest.TestCase):
             source_doc_type="docx",
         )
 
-        result = apply_text_edits(
-            ApplyTextEditsRequest(
-                document=DocumentInput(doc_ir=doc),
-                edits=[
-                    TextEdit(
-                        target_kind="cell",
-                        target_id=doc.paragraphs[0].tables[0].cells[0].node_id,
-                        expected_text="Left",
-                        new_text="Changed",
-                    )
-                ],
-            )
+        result = apply_document_edits(
+            document=DocumentInput(doc_ir=doc),
+            edits=[
+                TextEdit(
+                    target_kind="cell",
+                    target_id=doc.paragraphs[0].tables[0].cells[0].node_id,
+                    expected_text="Left",
+                    new_text="Changed",
+                )
+            ],
         )
 
         self.assertTrue(result.ok)
@@ -398,25 +409,23 @@ class EditorApiTests(unittest.TestCase):
         self.assertEqual(table.cells[0].text, "Changed")
         self.assertEqual(result.updated_doc_ir.paragraphs[0].text, "Changed\nRight")
 
-    def test_apply_text_edits_replaces_docx_cell_text(self) -> None:
+    def test_apply_document_edits_replaces_docx_cell_text(self) -> None:
         source_bytes = self._build_sample_table_docx_bytes()
         doc = DocIR.from_file(source_bytes, doc_type="docx")
-        result = apply_text_edits(
-            ApplyTextEditsRequest(
-                document=DocumentInput(
-                    source_bytes=source_bytes,
-                    source_name="table.docx",
-                ),
-                edits=[
-                    TextEdit(
-                        target_kind="cell",
-                        target_id=doc.paragraphs[0].tables[0].cells[0].node_id,
-                        expected_text="Left",
-                        new_text="Changed",
-                    )
-                ],
-                return_doc_ir=True,
-            )
+        result = apply_document_edits(
+            document=DocumentInput(
+                source_bytes=source_bytes,
+                source_name="table.docx",
+            ),
+            edits=[
+                TextEdit(
+                    target_kind="cell",
+                    target_id=doc.paragraphs[0].tables[0].cells[0].node_id,
+                    expected_text="Left",
+                    new_text="Changed",
+                )
+            ],
+            return_doc_ir=True,
         )
 
         self.assertTrue(result.ok)
@@ -424,25 +433,23 @@ class EditorApiTests(unittest.TestCase):
         self.assertEqual(DocIR.from_file(result.output_bytes).paragraphs[0].tables[0].cells[0].text, "Changed")
         self.assertEqual(result.updated_doc_ir.paragraphs[0].tables[0].cells[0].text, "Changed")
 
-    def test_apply_text_edits_replaces_hwpx_cell_text(self) -> None:
+    def test_apply_document_edits_replaces_hwpx_cell_text(self) -> None:
         source_bytes = self._build_sample_table_hwpx_bytes()
         doc = DocIR.from_file(source_bytes, doc_type="hwpx")
-        result = apply_text_edits(
-            ApplyTextEditsRequest(
-                document=DocumentInput(
-                    source_bytes=source_bytes,
-                    source_name="table.hwpx",
-                ),
-                edits=[
-                    TextEdit(
-                        target_kind="cell",
-                        target_id=doc.paragraphs[0].tables[0].cells[0].node_id,
-                        expected_text="Left",
-                        new_text="Changed",
-                    )
-                ],
-                return_doc_ir=True,
-            )
+        result = apply_document_edits(
+            document=DocumentInput(
+                source_bytes=source_bytes,
+                source_name="table.hwpx",
+            ),
+            edits=[
+                TextEdit(
+                    target_kind="cell",
+                    target_id=doc.paragraphs[0].tables[0].cells[0].node_id,
+                    expected_text="Left",
+                    new_text="Changed",
+                )
+            ],
+            return_doc_ir=True,
         )
 
         self.assertTrue(result.ok)
@@ -450,28 +457,26 @@ class EditorApiTests(unittest.TestCase):
         self.assertEqual(DocIR.from_file(result.output_bytes, doc_type="hwpx").paragraphs[0].tables[0].cells[0].text, "Changed")
         self.assertEqual(result.updated_doc_ir.paragraphs[0].tables[0].cells[0].text, "Changed")
 
-    def test_apply_text_edits_normalizes_hwpx_output_suffix_for_path_backed_writeback(self) -> None:
+    def test_apply_document_edits_normalizes_hwpx_output_suffix_for_path_backed_writeback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             source = Path(tmp_dir) / "sample.hwpx"
             requested_output = Path(tmp_dir) / "sample_edited.docx"
             source.write_bytes(self._build_sample_hwpx_bytes())
             doc = DocIR.from_file(source, doc_type="hwpx")
 
-            result = apply_text_edits(
-                ApplyTextEditsRequest(
-                    document=DocumentInput(source_path=str(source)),
-                    edits=[
-                        TextEdit(
-                            target_kind="run",
-                            target_id=doc.paragraphs[0].runs[1].node_id,
-                            expected_text="World",
-                            new_text="HWPX",
-                            reason="Rename token",
-                        )
-                    ],
-                    output_path=str(requested_output),
-                    return_doc_ir=True,
-                )
+            result = apply_document_edits(
+                document=DocumentInput(source_path=str(source)),
+                edits=[
+                    TextEdit(
+                        target_kind="run",
+                        target_id=doc.paragraphs[0].runs[1].node_id,
+                        expected_text="World",
+                        new_text="HWPX",
+                        reason="Rename token",
+                    )
+                ],
+                output_path=str(requested_output),
+                return_doc_ir=True,
             )
 
             self.assertTrue(result.ok)
@@ -480,27 +485,25 @@ class EditorApiTests(unittest.TestCase):
             self.assertTrue(any("adjusted output path" in warning for warning in result.warnings))
             self.assertEqual(result.updated_doc_ir.paragraphs[0].text, "Hello HWPX")
 
-    def test_apply_text_edits_preserves_hwpx_namespace_prefixes_and_declaration(self) -> None:
+    def test_apply_document_edits_preserves_hwpx_namespace_prefixes_and_declaration(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             source = Path(tmp_dir) / "sample.hwpx"
             output = Path(tmp_dir) / "sample_edited.hwpx"
             source.write_bytes(self._build_namespaced_hwpx_bytes())
             doc = DocIR.from_file(source, doc_type="hwpx")
 
-            result = apply_text_edits(
-                ApplyTextEditsRequest(
-                    document=DocumentInput(source_path=str(source)),
-                    edits=[
-                        TextEdit(
-                            target_kind="run",
-                            target_id=doc.paragraphs[0].runs[1].node_id,
-                            expected_text="World",
-                            new_text="HWPX",
-                            reason="Rename token",
-                        )
-                    ],
-                    output_path=str(output),
-                )
+            result = apply_document_edits(
+                document=DocumentInput(source_path=str(source)),
+                edits=[
+                    TextEdit(
+                        target_kind="run",
+                        target_id=doc.paragraphs[0].runs[1].node_id,
+                        expected_text="World",
+                        new_text="HWPX",
+                        reason="Rename token",
+                    )
+                ],
+                output_path=str(output),
             )
 
             self.assertTrue(result.ok)
@@ -513,21 +516,345 @@ class EditorApiTests(unittest.TestCase):
             self.assertNotIn(b"xmlns:ns", section_xml)
             self.assertIn(b"HWPX", section_xml)
 
+    def test_apply_document_edits_updates_doc_ir_structure_with_stable_ids(self) -> None:
+        doc = DocIR.from_mapping(
+            {
+                "s1.p1.r1": "First",
+                "s1.p2.r1": "Second",
+                "s1.p3.r1.tbl1.tr1.tc1.p1.r1": "Left",
+                "s1.p3.r1.tbl1.tr1.tc2.p1.r1": "Right",
+            },
+            source_doc_type="docx",
+        )
+        second_id = doc.paragraphs[1].node_id
+        cell_id = doc.paragraphs[2].tables[0].cells[0].node_id
+
+        result = apply_document_edits(
+            document=DocumentInput(doc_ir=doc),
+            edits=[
+                StructuralEdit(
+                    operation="insert_paragraph",
+                    target_id=doc.paragraphs[0].node_id,
+                    position="after",
+                    text="Inserted",
+                ),
+                StructuralEdit(
+                    operation="insert_run",
+                    target_id=second_id,
+                    position="end",
+                    text="!",
+                ),
+                StructuralEdit(
+                    operation="set_cell_text",
+                    target_id=cell_id,
+                    expected_text="Left",
+                    text="Line one\nLine two",
+                ),
+                StructuralEdit(
+                    operation="insert_table_row",
+                    target_id=cell_id,
+                    position="after",
+                    values=["Bottom left", "Bottom right"],
+                ),
+            ],
+            return_doc_ir=True,
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.operations_applied, 4)
+        self.assertIsNotNone(result.updated_doc_ir)
+        self.assertEqual([p.text for p in result.updated_doc_ir.paragraphs[:3]], ["First", "Inserted", "Second!"])
+        self.assertEqual(result.updated_doc_ir.paragraphs[2].node_id, second_id)
+        self.assertEqual(result.updated_doc_ir.paragraphs[2].native_anchor.structural_path, "s1.p3")
+        table = result.updated_doc_ir.paragraphs[3].tables[0]
+        self.assertEqual(table.row_count, 2)
+        self.assertEqual(table.cells[0].text, "Line one\nLine two")
+        self.assertTrue(result.created_target_ids)
+
+    def test_apply_document_edits_writes_docx_paragraph_table_and_cells(self) -> None:
+        source_bytes = self._build_sample_docx_bytes()
+        doc = DocIR.from_file(source_bytes, doc_type="docx")
+
+        result = apply_document_edits(
+            document=DocumentInput(
+                source_bytes=source_bytes,
+                source_name="sample.docx",
+            ),
+            edits=[
+                StructuralEdit(
+                    operation="insert_paragraph",
+                    target_id=doc.paragraphs[0].node_id,
+                    position="before",
+                    text="Preface",
+                ),
+                StructuralEdit(
+                    operation="insert_table",
+                    target_id=doc.paragraphs[1].node_id,
+                    position="after",
+                    rows=[["A", "B"], ["C", "D"]],
+                ),
+            ],
+            return_doc_ir=True,
+        )
+
+        self.assertTrue(result.ok, result.validation.issues)
+        self.assertEqual(result.output_filename, "sample_edited.docx")
+        self.assertIsNotNone(result.output_bytes)
+        parsed = DocIR.from_file(result.output_bytes, doc_type="docx")
+        self.assertEqual(parsed.paragraphs[0].text, "Preface")
+        self.assertEqual(parsed.paragraphs[-1].tables[0].cells[3].text, "D")
+        self.assertIsNotNone(result.updated_doc_ir)
+        self.assertEqual(result.updated_doc_ir.paragraphs[1].node_id, doc.paragraphs[0].node_id)
+
+    def test_apply_document_edits_writes_visible_docx_table_defaults(self) -> None:
+        source_bytes = self._build_sample_docx_bytes()
+        doc = DocIR.from_file(source_bytes, doc_type="docx")
+
+        result = apply_document_edits(
+            document=DocumentInput(
+                source_bytes=source_bytes,
+                source_name="sample.docx",
+            ),
+            edits=[
+                StructuralEdit(
+                    operation="insert_table",
+                    target_id=doc.paragraphs[0].node_id,
+                    position="after",
+                    rows=[["A", "B"], ["C", "D"]],
+                ),
+            ],
+        )
+
+        self.assertTrue(result.ok, result.validation.issues)
+        self.assertIsNotNone(result.output_bytes)
+        with zipfile.ZipFile(BytesIO(result.output_bytes)) as archive:
+            document_xml = archive.read("word/document.xml").decode("utf-8")
+
+        self.assertIn("<w:tblBorders>", document_xml)
+        self.assertIn("<w:tblLayout w:type=\"fixed\"/>", document_xml)
+        self.assertRegex(document_xml, r"<w:gridCol w:w=\"[1-9][0-9]*\"/>")
+        self.assertRegex(document_xml, r"<w:tcW w:type=\"dxa\" w:w=\"[1-9][0-9]*\"/>")
+
+        parsed = DocIR.from_file(result.output_bytes, doc_type="docx")
+        table = parsed.paragraphs[1].tables[0]
+        self.assertIsNotNone(table.table_style)
+        self.assertGreater(table.table_style.width_pt or 0, 0)
+        self.assertEqual(table.cells[0].cell_style.border_top, "1px solid #000000")
+        self.assertGreater(table.cells[0].cell_style.width_pt or 0, 0)
+
+    def test_apply_document_edits_mixes_structural_and_text_edits_in_order(self) -> None:
+        source_bytes = self._build_sample_docx_bytes()
+        doc = DocIR.from_file(source_bytes, doc_type="docx")
+        second_id = doc.paragraphs[1].node_id
+
+        result = apply_document_edits(
+            document=DocumentInput(
+                source_bytes=source_bytes,
+                source_name="sample.docx",
+            ),
+            edits=[
+                StructuralEdit(
+                    operation="insert_paragraph",
+                    target_id=doc.paragraphs[0].node_id,
+                    position="before",
+                    text="Preface",
+                ),
+                TextEdit(
+                    target_kind="paragraph",
+                    target_id=second_id,
+                    expected_text="Second paragraph",
+                    new_text="Updated second paragraph",
+                ),
+            ],
+            return_doc_ir=True,
+        )
+
+        self.assertTrue(result.ok, result.validation.issues)
+        parsed = DocIR.from_file(result.output_bytes, doc_type="docx")
+        self.assertEqual([paragraph.text for paragraph in parsed.paragraphs[:3]], ["Preface", "Hello World", "Updated second paragraph"])
+        self.assertEqual(result.updated_doc_ir.paragraphs[2].node_id, second_id)
+        self.assertEqual(result.updated_doc_ir.paragraphs[2].native_anchor.structural_path, "s1.p3")
+
+    def test_apply_document_edits_writes_docx_table_row_column_and_cell_text(self) -> None:
+        source_bytes = self._build_sample_table_docx_bytes()
+        doc = DocIR.from_file(source_bytes, doc_type="docx")
+        table = doc.paragraphs[0].tables[0]
+        left_cell_id = table.cells[0].node_id
+
+        result = apply_document_edits(
+            document=DocumentInput(
+                source_bytes=source_bytes,
+                source_name="table.docx",
+            ),
+            edits=[
+                StructuralEdit(
+                    operation="set_cell_text",
+                    target_id=left_cell_id,
+                    expected_text="Left",
+                    text="Changed",
+                ),
+                StructuralEdit(
+                    operation="insert_table_row",
+                    target_id=left_cell_id,
+                    position="after",
+                    values=["Bottom left", "Bottom right"],
+                ),
+                StructuralEdit(
+                    operation="insert_table_column",
+                    target_id=left_cell_id,
+                    position="after",
+                    values=["Middle top", "Middle bottom"],
+                ),
+            ],
+            return_doc_ir=True,
+        )
+
+        self.assertTrue(result.ok, result.validation.issues)
+        parsed = DocIR.from_file(result.output_bytes, doc_type="docx")
+        parsed_table = parsed.paragraphs[0].tables[0]
+        self.assertEqual(parsed_table.row_count, 2)
+        self.assertEqual(parsed_table.col_count, 3)
+        self.assertEqual(parsed_table.cells[0].text, "Changed")
+        self.assertEqual(parsed_table.cells[1].text, "Middle top")
+        self.assertEqual(parsed_table.cells[-1].text, "Bottom right")
+
+    def test_apply_document_edits_writes_hwpx_paragraph_and_table_changes(self) -> None:
+        source_bytes = self._build_sample_table_hwpx_bytes()
+        doc = DocIR.from_file(source_bytes, doc_type="hwpx")
+        table = doc.paragraphs[0].tables[0]
+        left_cell_id = table.cells[0].node_id
+
+        result = apply_document_edits(
+            document=DocumentInput(
+                source_bytes=source_bytes,
+                source_name="table.hwpx",
+            ),
+            edits=[
+                StructuralEdit(
+                    operation="insert_paragraph",
+                    target_id=doc.paragraphs[0].node_id,
+                    position="after",
+                    text="After table",
+                ),
+                StructuralEdit(
+                    operation="set_cell_text",
+                    target_id=left_cell_id,
+                    expected_text="Left",
+                    text="Changed",
+                ),
+                StructuralEdit(
+                    operation="insert_table_row",
+                    target_id=left_cell_id,
+                    position="after",
+                    values=["Bottom left", "Bottom right"],
+                ),
+            ],
+            return_doc_ir=True,
+        )
+
+        self.assertTrue(result.ok, result.validation.issues)
+        parsed = DocIR.from_file(result.output_bytes, doc_type="hwpx")
+        self.assertEqual(parsed.paragraphs[0].tables[0].row_count, 2)
+        self.assertEqual(parsed.paragraphs[0].tables[0].cells[0].text, "Changed")
+        self.assertEqual(parsed.paragraphs[1].text, "After table")
+
+    def test_apply_document_edits_writes_inline_visible_hwpx_table_defaults(self) -> None:
+        source_bytes = self._build_sample_hwpx_bytes()
+        doc = DocIR.from_file(source_bytes, doc_type="hwpx")
+
+        result = apply_document_edits(
+            document=DocumentInput(
+                source_bytes=source_bytes,
+                source_name="sample.hwpx",
+            ),
+            edits=[
+                StructuralEdit(
+                    operation="insert_table",
+                    target_id=doc.paragraphs[0].node_id,
+                    position="after",
+                    rows=[["A", "B"], ["C", "D"]],
+                ),
+            ],
+        )
+
+        self.assertTrue(result.ok, result.validation.issues)
+        self.assertIsNotNone(result.output_bytes)
+        with zipfile.ZipFile(BytesIO(result.output_bytes)) as archive:
+            header_xml = archive.read("Contents/header.xml").decode("utf-8")
+            section_xml = archive.read("Contents/section0.xml").decode("utf-8")
+
+        self.assertIn("type=\"SOLID\"", header_xml)
+        self.assertIn("textWrap=\"TOP_AND_BOTTOM\"", section_xml)
+        self.assertIn("treatAsChar=\"1\"", section_xml)
+        self.assertRegex(section_xml, r"borderFillIDRef=\"[1-9][0-9]*\"")
+        self.assertRegex(section_xml, r"<hp:cellSz width=\"[1-9][0-9]*\" height=\"[1-9][0-9]*\" ?/>")
+        self.assertIn("<hp:cellMargin", section_xml)
+
+        parsed = DocIR.from_file(result.output_bytes, doc_type="hwpx")
+        table = parsed.paragraphs[1].tables[0]
+        self.assertIsNotNone(table.table_style)
+        self.assertGreater(table.table_style.width_pt or 0, 0)
+        self.assertEqual(table.cells[0].cell_style.border_top, "1px solid #000000")
+        self.assertGreater(table.cells[0].cell_style.width_pt or 0, 0)
+
+    def test_apply_document_edits_writes_hwpx_cell_after_prior_inserts_and_ignores_control_text(self) -> None:
+        source_bytes = self._build_hwpx_table_after_intro_with_control_bytes()
+        doc = DocIR.from_file(source_bytes, doc_type="hwpx")
+        intro_id = doc.paragraphs[0].node_id
+        original_cell = doc.paragraphs[1].tables[0].cells[0]
+
+        self.assertEqual(original_cell.text, "Go Visible")
+
+        result = apply_document_edits(
+            document=DocumentInput(
+                source_bytes=source_bytes,
+                source_name="table.hwpx",
+            ),
+            edits=[
+                StructuralEdit(
+                    operation="insert_table",
+                    target_id=intro_id,
+                    position="after",
+                    rows=[["Inserted table"]],
+                ),
+                StructuralEdit(
+                    operation="insert_paragraph",
+                    target_id=intro_id,
+                    position="after",
+                    text="Inserted paragraph",
+                ),
+                StructuralEdit(
+                    operation="set_cell_text",
+                    target_id=original_cell.node_id,
+                    expected_text="Go Visible",
+                    text="Changed",
+                ),
+            ],
+            return_doc_ir=True,
+        )
+
+        self.assertTrue(result.ok, result.validation.issues)
+        parsed = DocIR.from_file(result.output_bytes, doc_type="hwpx")
+        self.assertEqual([paragraph.text for paragraph in parsed.paragraphs], ["Intro", "Inserted paragraph", "Inserted table", "Changed"])
+        self.assertNotIn("HIDDEN", "".join(paragraph.text for paragraph in parsed.paragraphs))
+        self.assertIsNotNone(result.updated_doc_ir)
+        updated_cell = result.updated_doc_ir.paragraphs[3].tables[0].cells[0]
+        self.assertEqual(updated_cell.node_id, original_cell.node_id)
+        self.assertEqual(updated_cell.native_anchor.structural_path, "s1.p4.r1.tbl1.tr1.tc1")
+
     def test_render_review_html_accepts_doc_ir_input(self) -> None:
         doc = DocIR.from_mapping({"s1.p1.r1": "Hello"})
 
         result = render_review_html(
-            RenderReviewHtmlRequest(
-                document=DocumentInput(doc_ir=doc),
-                annotations=[
-                    TextAnnotation(
-                        target_kind="run",
-                        target_id=doc.paragraphs[0].runs[0].node_id,
-                        selected_text="Hello",
-                        label="Greeting",
-                    )
-                ],
-            )
+            document=DocumentInput(doc_ir=doc),
+            annotations=[
+                TextAnnotation(
+                    target_kind="run",
+                    target_id=doc.paragraphs[0].runs[0].node_id,
+                    selected_text="Hello",
+                    label="Greeting",
+                )
+            ],
         )
 
         self.assertTrue(result.ok)
@@ -539,17 +866,15 @@ class EditorApiTests(unittest.TestCase):
         run_id = doc.paragraphs[0].runs[0].node_id
 
         result = render_review_html(
-            RenderReviewHtmlRequest(
-                document=DocumentInput(doc_ir=doc),
-                annotations=[
-                    TextAnnotation(
-                        target_kind="run",
-                        target_id=run_id,
-                        selected_text="Hello",
-                        label="Greeting",
-                    )
-                ],
-            )
+            document=DocumentInput(doc_ir=doc),
+            annotations=[
+                TextAnnotation(
+                    target_kind="run",
+                    target_id=run_id,
+                    selected_text="Hello",
+                    label="Greeting",
+                )
+            ],
         )
 
         self.assertTrue(result.ok)
@@ -559,17 +884,15 @@ class EditorApiTests(unittest.TestCase):
         doc = DocIR.from_mapping({"s1.p1.r1": "Hello Hello"})
 
         result = render_review_html(
-            RenderReviewHtmlRequest(
-                document=DocumentInput(doc_ir=doc),
-                annotations=[
-                    TextAnnotation(
-                        target_kind="run",
-                        target_id=doc.paragraphs[0].runs[0].node_id,
-                        selected_text="Hello",
-                        label="Ambiguous",
-                    )
-                ],
-            )
+            document=DocumentInput(doc_ir=doc),
+            annotations=[
+                TextAnnotation(
+                    target_kind="run",
+                    target_id=doc.paragraphs[0].runs[0].node_id,
+                    selected_text="Hello",
+                    label="Ambiguous",
+                )
+            ],
         )
 
         self.assertFalse(result.ok)

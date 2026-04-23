@@ -19,16 +19,6 @@ class RunStyleInfo(BaseModel):
     size_pt: float | None = None
 
 
-class ColumnLayoutInfo(BaseModel):
-    """Active text-column layout for paragraph rendering."""
-
-    count: int = 1
-    gap_pt: float | None = None
-    widths_pt: list[float] = Field(default_factory=list)
-    gaps_pt: list[float] = Field(default_factory=list)
-    equal_width: bool | None = None
-
-
 class ParaStyleInfo(BaseModel):
     """Paragraph-level formatting."""
 
@@ -37,7 +27,11 @@ class ParaStyleInfo(BaseModel):
     right_indent_pt: float | None = None
     first_line_indent_pt: float | None = None
     hanging_indent_pt: float | None = None
-    column_layout: ColumnLayoutInfo | None = None
+    column_count: int | None = None
+    column_gap_pt: float | None = None
+    column_widths_pt: list[float] = Field(default_factory=list)
+    column_gaps_pt: list[float] = Field(default_factory=list)
+    column_equal_width: bool | None = None
 
 
 class CellStyleInfo(BaseModel):
@@ -81,7 +75,6 @@ class StyleMap(BaseModel):
 
 
 __all__ = [
-    "ColumnLayoutInfo",
     "RunStyleInfo",
     "ParaStyleInfo",
     "CellStyleInfo",

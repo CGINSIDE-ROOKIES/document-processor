@@ -7,7 +7,7 @@ from html import escape
 import re
 
 from .models import DocIR, ImageIR, PageInfo, ParagraphContentNode, ParagraphIR, RunIR, TableCellIR, TableIR, _node_debug_path
-from .style_types import CellStyleInfo, ColumnLayoutInfo, ParaStyleInfo, RunStyleInfo
+from .style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo
 
 
 def _non_negative_pt(value: float | None) -> float | None:
@@ -20,30 +20,30 @@ def _pt_label(value: float | None) -> str:
     return "auto" if value is None else f"{value:.1f}pt"
 
 
-def _column_layout_key(layout: ColumnLayoutInfo | None) -> tuple[object, ...] | None:
-    if layout is None or layout.count <= 1:
+def _column_style_key(style: ParaStyleInfo | None) -> tuple[object, ...] | None:
+    if style is None or (style.column_count or 1) <= 1:
         return None
     return (
-        layout.count,
-        round(layout.gap_pt, 3) if layout.gap_pt is not None else None,
-        tuple(round(width, 3) for width in layout.widths_pt),
-        tuple(round(gap, 3) for gap in layout.gaps_pt),
-        layout.equal_width,
+        style.column_count,
+        round(style.column_gap_pt, 3) if style.column_gap_pt is not None else None,
+        tuple(round(width, 3) for width in style.column_widths_pt),
+        tuple(round(gap, 3) for gap in style.column_gaps_pt),
+        style.column_equal_width,
     )
 
 
-def _paragraph_column_layout(paragraph: ParagraphIR) -> ColumnLayoutInfo | None:
-    return paragraph.para_style.column_layout if paragraph.para_style is not None else None
+def _paragraph_column_style(paragraph: ParagraphIR) -> ParaStyleInfo | None:
+    return paragraph.para_style if _column_style_key(paragraph.para_style) is not None else None
 
 
-def _column_group_css(layout: ColumnLayoutInfo) -> str:
+def _column_group_css(style: ParaStyleInfo) -> str:
     parts = [
-        f"column-count:{max(layout.count, 1)}",
-        f"-webkit-column-count:{max(layout.count, 1)}",
+        f"column-count:{max(style.column_count or 1, 1)}",
+        f"-webkit-column-count:{max(style.column_count or 1, 1)}",
         "column-fill:balance",
         "break-inside:auto",
     ]
-    gap_pt = _non_negative_pt(layout.gap_pt)
+    gap_pt = _non_negative_pt(style.column_gap_pt)
     if gap_pt is not None:
         parts.append(f"column-gap:{gap_pt:.1f}pt")
         parts.append(f"-webkit-column-gap:{gap_pt:.1f}pt")
@@ -579,9 +579,9 @@ def _render_paragraph(doc_ir: DocIR, paragraph: ParagraphIR, *, debug_layout: bo
     )
 
 
-def _column_group_debug_label(layout: ColumnLayoutInfo, paragraphs: list[ParagraphIR]) -> str:
+def _column_group_debug_label(style: ParaStyleInfo, paragraphs: list[ParagraphIR]) -> str:
     debug_paths = ", ".join(_node_debug_path(paragraph) for paragraph in paragraphs)
-    return f"columns x{layout.count}: gap {_pt_label(_non_negative_pt(layout.gap_pt))}; {debug_paths}"
+    return f"columns x{style.column_count or 1}: gap {_pt_label(_non_negative_pt(style.column_gap_pt))}; {debug_paths}"
 
 
 def _render_column_group(
@@ -590,19 +590,19 @@ def _render_column_group(
     *,
     debug_layout: bool = False,
 ) -> str:
-    if not paragraphs or _paragraph_column_layout(paragraphs[0]) is None:
+    if not paragraphs or _paragraph_column_style(paragraphs[0]) is None:
         return ""
 
-    layout = _paragraph_column_layout(paragraphs[0])
-    if layout is None:
+    column_style = _paragraph_column_style(paragraphs[0])
+    if column_style is None:
         return ""
     attrs = [
         'class="document-column-group"',
-        f'data-column-count="{max(layout.count, 1)}"',
-        f'style="{_column_group_css(layout)}"',
+        f'data-column-count="{max(column_style.column_count or 1, 1)}"',
+        f'style="{_column_group_css(column_style)}"',
     ]
     if debug_layout:
-        attrs.append(f'data-debug-label="{escape(_column_group_debug_label(layout, paragraphs), quote=True)}"')
+        attrs.append(f'data-debug-label="{escape(_column_group_debug_label(column_style, paragraphs), quote=True)}"')
 
     content_html = "\n\n".join(
         _render_paragraph(doc_ir, paragraph, debug_layout=debug_layout)
@@ -629,7 +629,7 @@ def _render_paragraph_sequence(
         current_column_key = None
 
     for paragraph in paragraphs:
-        column_key = _column_layout_key(_paragraph_column_layout(paragraph))
+        column_key = _column_style_key(paragraph.para_style)
         if column_key is None:
             flush_column_group()
             parts.append(_render_paragraph(doc_ir, paragraph, debug_layout=debug_layout))

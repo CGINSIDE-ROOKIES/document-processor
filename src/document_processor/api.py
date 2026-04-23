@@ -7,36 +7,34 @@ from .annotations import _Annotation, _render_annotated_html
 from .api_types import (
     AnnotationValidationIssue,
     AnnotationValidationResult,
-    ApplyTextEditsRequest,
-    ApplyTextEditsResult,
+    ApplyDocumentEditsResult,
     DocumentContextResult,
+    DocumentEdit,
     DocumentInput,
     DocumentParagraphContext,
     DocumentRunContext,
     EditableTarget,
     EditValidationIssue,
     EditValidationResult,
-    GetDocumentContextRequest,
-    ListEditableTargetsRequest,
     ListEditableTargetsResult,
-    ReadDocumentRequest,
     ReadDocumentResult,
-    RenderReviewHtmlRequest,
     ResolvedTextAnnotation,
     ReviewHtmlResult,
+    StructuralEdit,
     TargetKind,
     TextAnnotation,
     TextEdit,
-    ValidateTextAnnotationsRequest,
-    ValidateTextEditsRequest,
 )
 from .edit_engine import (
     EditValidationError,
+    _EditEngineResult,
+    _apply_document_edits_to_source,
     _apply_text_edits_to_source,
     _build_doc_ir_index,
     _iter_doc_ir_paragraphs,
 )
-from .models import DocIR, NativeAnchor, ParagraphIR, RunIR, TableCellIR, TableIR
+from .io_utils import SourceDocType, infer_doc_type
+from .models import DocIR, NativeAnchor, ParagraphIR, RunIR, TableCellIR, TableIR, _anchored_node_id
 
 _WRITEBACK_SOURCE_TYPES = {"docx", "hwpx", "hwp"}
 
@@ -80,26 +78,57 @@ class _ResolvedTextAnnotation:
     identity: _TargetIdentity
 
 
-def read_document(request: ReadDocumentRequest) -> ReadDocumentResult:
-    resolved = _resolve_document_input(request.document)
+@dataclass(frozen=True)
+class _ResolvedStructuralEdit:
+    operation: StructuralEdit
+    identity: _TargetIdentity
+
+
+def read_document(
+    *,
+    document: DocumentInput | None = None,
+    source_path: str | None = None,
+    start: int = 0,
+    limit: int = 50,
+    include_runs: bool = True,
+) -> ReadDocumentResult:
+    if start < 0:
+        raise ValueError("start must be greater than or equal to 0.")
+    if limit < 1 or limit > 500:
+        raise ValueError("limit must be between 1 and 500.")
+
+    resolved = _resolve_document_args(document=document, source_path=source_path)
     paragraphs = list(_iter_doc_ir_paragraphs(resolved.doc.paragraphs))
-    end = min(len(paragraphs), request.start + request.limit)
-    selected = paragraphs[request.start:end]
+    end = min(len(paragraphs), start + limit)
+    selected = paragraphs[start:end]
     next_start = end if end < len(paragraphs) else None
     return ReadDocumentResult(
         source_path=resolved.source_path,
         source_doc_type=resolved.source_doc_type,
         source_name=resolved.source_name,
-        start=request.start,
-        limit=request.limit,
+        start=start,
+        limit=limit,
         total_paragraphs=len(paragraphs),
         next_start=next_start,
-        paragraphs=[_paragraph_context(paragraph, include_runs=request.include_runs) for paragraph in selected],
+        paragraphs=[_paragraph_context(paragraph, include_runs=include_runs) for paragraph in selected],
     )
 
 
-def get_document_context(request: GetDocumentContextRequest) -> DocumentContextResult:
-    resolved = _resolve_document_input(request.document)
+def get_document_context(
+    *,
+    document: DocumentInput | None = None,
+    source_path: str | None = None,
+    target_ids: list[str] | None = None,
+    before: int = 1,
+    after: int = 1,
+    include_runs: bool = True,
+) -> DocumentContextResult:
+    if before < 0:
+        raise ValueError("before must be greater than or equal to 0.")
+    if after < 0:
+        raise ValueError("after must be greater than or equal to 0.")
+
+    resolved = _resolve_document_args(document=document, source_path=source_path)
     identity_index = _build_target_identity_index(resolved.doc)
     paragraphs = list(_iter_doc_ir_paragraphs(resolved.doc.paragraphs))
     paragraph_indices = {paragraph.node_id: offset for offset, paragraph in enumerate(paragraphs)}
@@ -109,10 +138,15 @@ def get_document_context(request: GetDocumentContextRequest) -> DocumentContextR
         for cell in _iter_doc_ir_cells(resolved.doc.paragraphs)
         if cell.node_id is not None and cell.paragraphs and cell.paragraphs[0].node_id is not None
     }
+    table_to_anchor_paragraph = {
+        table.node_id: table.cells[0].paragraphs[0]
+        for table in _iter_doc_ir_tables(resolved.doc.paragraphs)
+        if table.node_id is not None and table.cells and table.cells[0].paragraphs
+    }
 
     selected_indices: set[int] = set()
     missing_target_ids: list[str] = []
-    for target_id in request.target_ids:
+    for target_id in target_ids or []:
         identity = identity_index.by_identifier.get(target_id)
         if identity is None:
             missing_target_ids.append(target_id)
@@ -124,11 +158,13 @@ def get_document_context(request: GetDocumentContextRequest) -> DocumentContextR
             anchor_index = paragraph_indices[run_to_paragraph[node_id].node_id]
         elif node_id in cell_to_anchor_paragraph:
             anchor_index = paragraph_indices[cell_to_anchor_paragraph[node_id].node_id]
+        elif node_id in table_to_anchor_paragraph:
+            anchor_index = paragraph_indices[table_to_anchor_paragraph[node_id].node_id]
         else:
             missing_target_ids.append(target_id)
             continue
-        start = max(0, anchor_index - request.before)
-        end = min(len(paragraphs), anchor_index + request.after + 1)
+        start = max(0, anchor_index - before)
+        end = min(len(paragraphs), anchor_index + after + 1)
         selected_indices.update(range(start, end))
 
     ordered_indices = sorted(selected_indices)
@@ -136,7 +172,7 @@ def get_document_context(request: GetDocumentContextRequest) -> DocumentContextR
         source_path=resolved.source_path,
         source_doc_type=resolved.source_doc_type,
         source_name=resolved.source_name,
-        paragraphs=[_paragraph_context(paragraphs[index], include_runs=request.include_runs) for index in ordered_indices],
+        paragraphs=[_paragraph_context(paragraphs[index], include_runs=include_runs) for index in ordered_indices],
         missing_target_ids=missing_target_ids,
     )
 
@@ -155,27 +191,49 @@ def _iter_doc_ir_table_cells(table: TableIR):
                 yield from _iter_doc_ir_table_cells(nested_table)
 
 
-def list_editable_targets(request: ListEditableTargetsRequest) -> ListEditableTargetsResult:
-    resolved = _resolve_document_input(request.document)
+def _iter_doc_ir_tables(paragraphs: list[ParagraphIR]):
+    for paragraph in paragraphs:
+        for table in paragraph.tables:
+            yield table
+            for cell in table.cells:
+                yield from _iter_doc_ir_tables(cell.paragraphs)
+
+
+def list_editable_targets(
+    *,
+    document: DocumentInput | None = None,
+    source_path: str | None = None,
+    target_ids: list[str] | None = None,
+    target_kinds: list[TargetKind] | None = None,
+    include_child_runs: bool = False,
+    only_writable: bool = True,
+    max_targets: int | None = 200,
+) -> ListEditableTargetsResult:
+    if max_targets is not None and max_targets < 1:
+        raise ValueError("max_targets must be greater than or equal to 1.")
+
+    resolved = _resolve_document_args(document=document, source_path=source_path)
     identity_index = _build_target_identity_index(resolved.doc)
+    requested_ids = target_ids or []
+    requested_kinds = target_kinds or ["paragraph", "cell", "run"]
     requested_target_ids = {
         identity.node_id
-        for identifier in request.target_ids
+        for identifier in requested_ids
         if (identity := identity_index.by_identifier.get(identifier)) is not None
     }
 
     targets = _collect_editable_targets(
         resolved.doc,
-        target_kinds=request.target_kinds,
-        only_writable=request.only_writable,
-        exact_target_ids=requested_target_ids if request.target_ids else None,
-        include_child_runs=request.include_child_runs,
-        max_targets=request.max_targets,
+        target_kinds=requested_kinds,
+        only_writable=only_writable,
+        exact_target_ids=requested_target_ids if requested_ids else None,
+        include_child_runs=include_child_runs,
+        max_targets=max_targets,
     )
 
     missing_target_ids = [
         target_id
-        for target_id in request.target_ids
+        for target_id in requested_ids
         if target_id not in identity_index.by_identifier
     ]
     return ListEditableTargetsResult(
@@ -187,20 +245,39 @@ def list_editable_targets(request: ListEditableTargetsRequest) -> ListEditableTa
     )
 
 
-def validate_text_edits(request: ValidateTextEditsRequest) -> EditValidationResult:
-    resolved = _resolve_document_input(request.document)
-    return _validate_text_edits_for_doc(
+def validate_document_edits(
+    *,
+    document: DocumentInput | None = None,
+    source_path: str | None = None,
+    edits: list[DocumentEdit],
+) -> EditValidationResult:
+    resolved = _resolve_document_args(document=document, source_path=source_path)
+    return _validate_document_edits_for_doc(
         resolved.doc,
-        request.edits,
+        edits,
         include_writeback_support=resolved.has_native_source,
     )
 
 
-def apply_text_edits(request: ApplyTextEditsRequest) -> ApplyTextEditsResult:
-    resolved = _resolve_document_input(request.document)
-    validation = _validate_apply_request(resolved, request)
+def apply_document_edits(
+    *,
+    document: DocumentInput | None = None,
+    source_path: str | None = None,
+    edits: list[DocumentEdit],
+    dry_run: bool = False,
+    output_path: str | None = None,
+    output_filename: str | None = None,
+    return_doc_ir: bool = False,
+) -> ApplyDocumentEditsResult:
+    resolved = _resolve_document_args(document=document, source_path=source_path)
+    validation = _validate_document_apply_request(
+        resolved,
+        edits,
+        output_path=output_path,
+        output_filename=output_filename,
+    )
     if not validation.ok:
-        return ApplyTextEditsResult(
+        return ApplyDocumentEditsResult(
             ok=False,
             source_doc_type=resolved.source_doc_type,
             source_name=resolved.source_name,
@@ -208,87 +285,86 @@ def apply_text_edits(request: ApplyTextEditsRequest) -> ApplyTextEditsResult:
         )
 
     try:
-        resolved_edits, _issues = _resolve_text_edits_for_doc(resolved.doc, request.edits)
-        if request.dry_run:
-            preview_result = None
-            if request.return_doc_ir:
-                preview_result = _apply_text_edits_to_source(
-                    resolved.doc,
-                    [_to_canonical_text_edit(resolved_edit) for resolved_edit in resolved_edits],
-                    doc_type=resolved.source_doc_type or "auto",
-                    source_name=resolved.source_name,
-                )
-            return ApplyTextEditsResult(
+        preview_result = _apply_mixed_edits_to_doc_ir(
+            resolved.doc,
+            edits,
+            doc_type=resolved.source_doc_type or "auto",
+            source_name=resolved.source_name,
+        )
+        if dry_run:
+            return ApplyDocumentEditsResult(
                 ok=True,
                 source_doc_type=resolved.source_doc_type,
                 source_name=resolved.source_name,
-                updated_doc_ir=preview_result.updated_doc_ir if preview_result is not None else None,
+                updated_doc_ir=preview_result.updated_doc_ir if return_doc_ir else None,
                 edits_applied=0,
+                operations_applied=0,
+                modified_target_ids=preview_result.modified_target_ids,
+                created_target_ids=preview_result.created_target_ids,
+                removed_target_ids=preview_result.removed_target_ids,
+                modified_run_ids=preview_result.modified_run_ids,
+                warnings=preview_result.warnings,
                 validation=validation,
             )
 
-        resolved_output_path = _resolved_native_output_path(resolved, request)
-        resolved_output_filename = (
-            request.output_filename if resolved.native_source_path is None else None
-        )
-        internal_result = _apply_text_edits_to_source(
-            _native_apply_source(resolved),
-            [_to_canonical_text_edit(resolved_edit) for resolved_edit in resolved_edits],
-            doc_type=resolved.source_doc_type or "auto",
-            source_name=resolved.source_name,
-            output_path=resolved_output_path,
-            output_filename=resolved_output_filename,
-        )
+        if resolved.has_native_source:
+            internal_result = _apply_mixed_edits_to_native_source(
+                resolved,
+                edits,
+                output_path=output_path,
+                output_filename=output_filename,
+                doc_type=resolved.source_doc_type or "auto",
+                source_name=resolved.source_name,
+            )
+        else:
+            internal_result = preview_result
     except EditValidationError as exc:
-        return ApplyTextEditsResult(
+        return ApplyDocumentEditsResult(
             ok=False,
             source_doc_type=resolved.source_doc_type,
             source_name=resolved.source_name,
             validation=EditValidationResult(
                 ok=False,
-                issues=[
-                    EditValidationIssue(
-                        code="output_path_conflicts_with_source",
-                        message=str(exc),
-                    )
-                ],
+                issues=[_issue_from_edit_exception(exc)],
             ),
         )
 
-    updated_doc_ir = internal_result.updated_doc_ir
-    if request.return_doc_ir and updated_doc_ir is None:
-        if internal_result.output_bytes is not None:
-            updated_doc_ir = DocIR.from_file(internal_result.output_bytes)
-        elif internal_result.output_path is not None:
-            updated_doc_ir = DocIR.from_file(Path(internal_result.output_path))
-
-    return ApplyTextEditsResult(
+    return ApplyDocumentEditsResult(
         ok=True,
         source_doc_type=internal_result.source_doc_type or resolved.source_doc_type,
         source_name=resolved.source_name,
         output_path=internal_result.output_path,
         output_filename=internal_result.output_filename,
         output_bytes=internal_result.output_bytes,
-        updated_doc_ir=updated_doc_ir,
-        edits_applied=internal_result.edits_applied,
-        modified_target_ids=internal_result.modified_target_ids,
-        modified_run_ids=internal_result.modified_run_ids,
-        warnings=internal_result.warnings,
+        updated_doc_ir=preview_result.updated_doc_ir if (return_doc_ir or not resolved.has_native_source) else None,
+        edits_applied=preview_result.edits_applied,
+        operations_applied=internal_result.operations_applied or preview_result.operations_applied,
+        modified_target_ids=preview_result.modified_target_ids,
+        created_target_ids=preview_result.created_target_ids,
+        removed_target_ids=preview_result.removed_target_ids,
+        modified_run_ids=preview_result.modified_run_ids,
+        warnings=[*preview_result.warnings, *internal_result.warnings],
         validation=validation,
     )
 
 
-def render_review_html(request: RenderReviewHtmlRequest) -> ReviewHtmlResult:
-    resolved = _resolve_document_input(request.document)
-    validation, resolved_annotations = _validate_text_annotations_for_doc(resolved.doc, request.annotations)
+def render_review_html(
+    *,
+    document: DocumentInput | None = None,
+    source_path: str | None = None,
+    annotations: list[TextAnnotation],
+    title: str = "Review",
+) -> ReviewHtmlResult:
+    resolved = _resolve_document_args(document=document, source_path=source_path)
+    validation, resolved_annotations = _validate_text_annotations_for_doc(resolved.doc, annotations)
     if not validation.ok:
         return ReviewHtmlResult(ok=False, validation=validation)
 
-    resolved_annotation_edits, _issues = _resolve_text_annotations_for_doc(resolved.doc, request.annotations)
+    resolved_annotation_edits, _issues = _resolve_text_annotations_for_doc(resolved.doc, annotations)
     html = _render_annotated_html(
         resolved.doc,
         [_to_render_annotation(resolved_annotation) for resolved_annotation in resolved_annotation_edits],
-        title=request.title,
+        title=title,
     )
     return ReviewHtmlResult(
         ok=True,
@@ -298,10 +374,29 @@ def render_review_html(request: RenderReviewHtmlRequest) -> ReviewHtmlResult:
     )
 
 
-def validate_text_annotations(request: ValidateTextAnnotationsRequest) -> AnnotationValidationResult:
-    resolved = _resolve_document_input(request.document)
-    validation, _resolved_annotations = _validate_text_annotations_for_doc(resolved.doc, request.annotations)
+def validate_text_annotations(
+    *,
+    document: DocumentInput | None = None,
+    source_path: str | None = None,
+    annotations: list[TextAnnotation],
+) -> AnnotationValidationResult:
+    resolved = _resolve_document_args(document=document, source_path=source_path)
+    validation, _resolved_annotations = _validate_text_annotations_for_doc(resolved.doc, annotations)
     return validation
+
+
+def _resolve_document_args(
+    *,
+    document: DocumentInput | None,
+    source_path: str | None,
+) -> _ResolvedDocument:
+    if document is not None and source_path is not None:
+        raise ValueError("Specify either document or source_path, not both.")
+    if document is None:
+        if source_path is None:
+            raise ValueError("Provide document or source_path.")
+        document = DocumentInput(source_path=source_path)
+    return _resolve_document_input(document)
 
 
 def _resolve_document_input(document_input: DocumentInput) -> _ResolvedDocument:
@@ -383,6 +478,12 @@ def _build_target_identity_index(doc: DocIR) -> _TargetIdentityIndex:
         _register_target_identity(by_identifier, identity)
 
     def register_table(table: TableIR) -> None:
+        identity = _TargetIdentity(
+            kind="table",
+            node_id=table.node_id,
+            native_anchor=table.native_anchor,
+        )
+        _register_target_identity(by_identifier, identity)
         for cell in table.cells:
             register_cell(cell)
 
@@ -451,28 +552,46 @@ def _resolve_text_annotations_for_doc(
     return resolved, issues
 
 
-def _resolved_native_output_path(
-    resolved: _ResolvedDocument,
-    request: ApplyTextEditsRequest,
-) -> str | Path | None:
-    if request.output_path is not None:
-        return request.output_path
-    if request.output_filename is None or resolved.native_source_path is None:
-        return None
-    return Path(resolved.native_source_path).with_name(request.output_filename)
+def _resolve_structural_edits_for_doc(
+    doc: DocIR,
+    operations: list[StructuralEdit],
+) -> tuple[list[_ResolvedStructuralEdit], list[EditValidationIssue]]:
+    identity_index = _build_target_identity_index(doc)
+    resolved: list[_ResolvedStructuralEdit] = []
+    issues: list[EditValidationIssue] = []
+    for operation in operations:
+        identity = identity_index.by_identifier.get(operation.target_id)
+        if identity is None:
+            issues.append(
+                EditValidationIssue(
+                    code="target_not_found",
+                    target_id=operation.target_id,
+                    operation=operation.operation,
+                    message=f"Target does not exist: {operation.target_id}.",
+                    expected_text=operation.expected_text,
+                )
+            )
+            continue
+        resolved.append(_ResolvedStructuralEdit(operation=operation, identity=identity))
+    return resolved, issues
 
 
-def _validate_apply_request(
+def _validate_document_apply_request(
     resolved: _ResolvedDocument,
-    request: ApplyTextEditsRequest,
+    edits: list[DocumentEdit],
+    *,
+    output_path: str | None,
+    output_filename: str | None,
 ) -> EditValidationResult:
-    issues = _validate_text_edits_for_doc(
+    issues = _validate_document_edits_for_doc(
         resolved.doc,
-        request.edits,
+        edits,
         include_writeback_support=resolved.has_native_source,
     ).issues
 
-    if not resolved.has_native_source and (request.output_path is not None or request.output_filename is not None):
+    issues.extend(_validate_output_options(output_path=output_path, output_filename=output_filename))
+
+    if not resolved.has_native_source and (output_path is not None or output_filename is not None):
         issues.append(
             EditValidationIssue(
                 code="native_source_required",
@@ -485,11 +604,188 @@ def _validate_apply_request(
             _validate_apply_output_request(
                 Path(resolved.native_source_path),
                 resolved.source_doc_type,
-                request,
+                output_path=output_path,
+                output_filename=output_filename,
             ).issues
         )
 
     return EditValidationResult(ok=not issues, issues=issues)
+
+
+def _issue_to_exception(issue: EditValidationIssue) -> EditValidationError:
+    return EditValidationError(
+        issue.message,
+        code=issue.code,
+        target_kind=issue.target_kind,
+        target_id=issue.target_id,
+        operation=issue.operation,
+        expected_text=issue.expected_text,
+        current_text=issue.current_text,
+    )
+
+
+def _extend_unique(values: list[str], additions: list[str]) -> None:
+    for value in additions:
+        if value not in values:
+            values.append(value)
+
+
+def _merge_engine_result(target: _EditEngineResult, step: _EditEngineResult) -> None:
+    target.edits_applied += step.edits_applied
+    target.operations_applied += step.operations_applied
+    _extend_unique(target.modified_target_ids, step.modified_target_ids)
+    _extend_unique(target.created_target_ids, step.created_target_ids)
+    _extend_unique(target.removed_target_ids, step.removed_target_ids)
+    _extend_unique(target.modified_run_ids, step.modified_run_ids)
+    _extend_unique(target.warnings, step.warnings)
+
+
+def _canonical_text_edit_for_doc(doc: DocIR, edit: TextEdit, *, native: bool) -> TextEdit:
+    resolved_edits, issues = _resolve_text_edits_for_doc(doc, [edit])
+    if issues:
+        raise _issue_to_exception(issues[0])
+    return _to_canonical_text_edit(resolved_edits[0], native=native)
+
+
+def _canonical_structural_edit_for_doc(doc: DocIR, edit: StructuralEdit, *, native: bool) -> StructuralEdit:
+    resolved_operations, issues = _resolve_structural_edits_for_doc(doc, [edit])
+    if issues:
+        raise _issue_to_exception(issues[0])
+    return _to_canonical_structural_edit(resolved_operations[0], native=native)
+
+
+def _apply_mixed_edits_to_doc_ir(
+    doc: DocIR,
+    edits: list[DocumentEdit],
+    *,
+    doc_type: SourceDocType = "auto",
+    source_name: str | None = None,
+) -> _EditEngineResult:
+    current_doc = doc.model_copy(deep=True)
+    current_doc.ensure_node_identity()
+    result = _EditEngineResult(source_doc_type=current_doc.source_doc_type or (None if doc_type == "auto" else doc_type))
+
+    for edit in edits:
+        if isinstance(edit, TextEdit):
+            canonical_edit = _canonical_text_edit_for_doc(current_doc, edit, native=False)
+            step = _apply_text_edits_to_source(
+                current_doc,
+                [canonical_edit],
+                doc_type=current_doc.source_doc_type or doc_type,
+                source_name=source_name,
+            )
+        else:
+            canonical_edit = _canonical_structural_edit_for_doc(current_doc, edit, native=False)
+            step = _apply_document_edits_to_source(
+                current_doc,
+                [canonical_edit],
+                doc_type=current_doc.source_doc_type or doc_type,
+                source_name=source_name,
+            )
+        if step.updated_doc_ir is None:
+            raise EditValidationError("Edit preview did not return updated DocIR.")
+        _merge_engine_result(result, step)
+        current_doc = step.updated_doc_ir
+
+    result.updated_doc_ir = current_doc
+    return result
+
+
+def _apply_mixed_edits_to_native_source(
+    resolved: _ResolvedDocument,
+    edits: list[DocumentEdit],
+    *,
+    output_path: str | None,
+    output_filename: str | None,
+    doc_type: SourceDocType = "auto",
+    source_name: str | None = None,
+) -> _EditEngineResult:
+    if resolved.native_source_path is not None:
+        source_path = Path(resolved.native_source_path)
+        current_bytes = source_path.read_bytes()
+        current_source_name = source_path.name
+    elif resolved.native_source_bytes is not None:
+        current_bytes = resolved.native_source_bytes
+        current_source_name = source_name or resolved.source_name
+    else:
+        return _apply_mixed_edits_to_doc_ir(resolved.doc, edits, doc_type=doc_type, source_name=source_name)
+
+    current_doc_type: SourceDocType = resolved.source_doc_type or doc_type
+    mapping_doc = resolved.doc.model_copy(deep=True)
+    mapping_doc.ensure_node_identity()
+    result = _EditEngineResult(source_doc_type=resolved.source_doc_type)
+
+    for edit in edits:
+        if isinstance(edit, TextEdit):
+            native_edit = _canonical_text_edit_for_doc(mapping_doc, edit, native=True)
+            step = _apply_text_edits_to_source(
+                current_bytes,
+                [native_edit],
+                doc_type=current_doc_type,
+                source_name=current_source_name,
+            )
+            preview = _apply_text_edits_to_source(
+                mapping_doc,
+                [_canonical_text_edit_for_doc(mapping_doc, edit, native=False)],
+                doc_type=mapping_doc.source_doc_type or current_doc_type,
+                source_name=current_source_name,
+            )
+        else:
+            native_edit = _canonical_structural_edit_for_doc(mapping_doc, edit, native=True)
+            step = _apply_document_edits_to_source(
+                current_bytes,
+                [native_edit],
+                doc_type=current_doc_type,
+                source_name=current_source_name,
+            )
+            preview = _apply_document_edits_to_source(
+                mapping_doc,
+                [_canonical_structural_edit_for_doc(mapping_doc, edit, native=False)],
+                doc_type=mapping_doc.source_doc_type or current_doc_type,
+                source_name=current_source_name,
+            )
+
+        if step.output_bytes is None:
+            raise EditValidationError("Native edit did not return output bytes.")
+        if preview.updated_doc_ir is None:
+            raise EditValidationError("Edit preview did not return updated DocIR.")
+        _merge_engine_result(result, step)
+        current_bytes = step.output_bytes
+        current_doc_type = infer_doc_type(current_bytes, "auto")
+        current_source_name = step.output_filename or _default_output_filename(
+            source_name=current_source_name,
+            source_doc_type=current_doc_type,
+        )
+        mapping_doc = preview.updated_doc_ir
+
+    if resolved.native_source_path is not None:
+        requested_final_path = _requested_output_path_for_native_source(
+            Path(resolved.native_source_path),
+            output_path=output_path,
+            output_filename=output_filename,
+        )
+        final_path = _normalize_output_path_for_source_doc_type(requested_final_path, resolved.source_doc_type)
+        if requested_final_path.suffix.lower() != final_path.suffix.lower():
+            if resolved.source_doc_type == "hwp":
+                result.warnings.append(f"HWP sources are written back as HWPX; adjusted output path to {final_path}.")
+            else:
+                result.warnings.append(
+                    f"{str(resolved.source_doc_type).upper()} write-back keeps the native {final_path.suffix} format; "
+                    f"adjusted output path to {final_path}."
+                )
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+        final_path.write_bytes(current_bytes)
+        result.output_path = str(final_path)
+        result.output_filename = final_path.name
+    else:
+        result.output_bytes = current_bytes
+        result.output_filename = output_filename or _default_output_filename(
+            source_name=resolved.source_name,
+            source_doc_type=current_doc_type,
+        )
+
+    result.source_doc_type = current_doc_type
+    return result
 
 
 def _validate_text_edits_for_doc(
@@ -516,6 +812,41 @@ def _validate_text_edits_for_doc(
 
     for resolved_edit in resolved_edits:
         issues.extend(_validate_single_text_edit(index, resolved_edit))
+
+    return EditValidationResult(ok=not issues, issues=issues)
+
+
+def _validate_document_edits_for_doc(
+    doc: DocIR,
+    edits: list[DocumentEdit],
+    *,
+    include_writeback_support: bool,
+) -> EditValidationResult:
+    issues: list[EditValidationIssue] = []
+
+    if include_writeback_support and doc.source_doc_type not in _WRITEBACK_SOURCE_TYPES:
+        issues.append(
+            EditValidationIssue(
+                code="unsupported_source_doc_type",
+                message=(
+                    "Native write-back is currently supported only for docx, hwp, and hwpx; "
+                    f"got {doc.source_doc_type!r}."
+                ),
+            )
+        )
+
+    if issues:
+        return EditValidationResult(ok=False, issues=issues)
+
+    try:
+        _apply_mixed_edits_to_doc_ir(
+            doc,
+            doc_type=doc.source_doc_type or "auto",
+            source_name=doc.source_path,
+            edits=edits,
+        )
+    except EditValidationError as exc:
+        issues.append(_issue_from_edit_exception(exc))
 
     return EditValidationResult(ok=not issues, issues=issues)
 
@@ -693,13 +1024,16 @@ def _validate_single_text_edit(index, resolved_edit: _ResolvedTextEdit) -> list[
 def _validate_apply_output_request(
     source: Path,
     source_doc_type: str | None,
-    request: ApplyTextEditsRequest,
+    *,
+    output_path: str | None,
+    output_filename: str | None,
 ) -> EditValidationResult:
-    output_path = _resolve_requested_output_path(source, request)
-    if output_path is None:
-        return EditValidationResult()
-
-    final_output_path = _normalize_output_path_for_source_doc_type(output_path, source_doc_type)
+    final_output_path = _final_output_path_for_native_source(
+        source,
+        source_doc_type,
+        output_path=output_path,
+        output_filename=output_filename,
+    )
 
     if _same_path(source, final_output_path):
         return EditValidationResult(
@@ -718,12 +1052,98 @@ def _validate_apply_output_request(
     return EditValidationResult()
 
 
+def _validate_output_options(*, output_path: str | None, output_filename: str | None) -> list[EditValidationIssue]:
+    issues: list[EditValidationIssue] = []
+    if output_path is not None and output_filename is not None:
+        issues.append(
+            EditValidationIssue(
+                code="invalid_operation",
+                message="Specify either output_path or output_filename, not both.",
+            )
+        )
+    if output_filename is not None:
+        filename = output_filename.strip()
+        if not filename:
+            issues.append(
+                EditValidationIssue(
+                    code="invalid_operation",
+                    message="output_filename must not be empty.",
+                )
+            )
+        else:
+            pure = Path(filename)
+            if pure.is_absolute() or pure.name != filename or filename in {".", ".."}:
+                issues.append(
+                    EditValidationIssue(
+                        code="invalid_operation",
+                        message="output_filename must be a filename only, without directory segments.",
+                    )
+                )
+    return issues
+
+
+def _issue_from_edit_exception(exc: EditValidationError) -> EditValidationIssue:
+    return EditValidationIssue(
+        code=getattr(exc, "code", "invalid_operation"),
+        target_kind=getattr(exc, "target_kind", None),
+        target_id=getattr(exc, "target_id", None),
+        operation=getattr(exc, "operation", None),
+        message=str(exc),
+        expected_text=getattr(exc, "expected_text", None),
+        current_text=getattr(exc, "current_text", None),
+    )
+
+
 def _normalize_output_path_for_source_doc_type(output_path: Path, source_doc_type: str | None) -> Path:
     if source_doc_type == "docx" and output_path.suffix.lower() != ".docx":
         return output_path.with_suffix(".docx")
     if source_doc_type in {"hwpx", "hwp"} and output_path.suffix.lower() != ".hwpx":
         return output_path.with_suffix(".hwpx")
     return output_path
+
+
+def _output_suffix_for_source_doc_type(source_doc_type: str | None) -> str:
+    if source_doc_type == "docx":
+        return ".docx"
+    if source_doc_type in {"hwpx", "hwp"}:
+        return ".hwpx"
+    return ".bin"
+
+
+def _default_output_filename(*, source_name: str | None, source_doc_type: str | None) -> str:
+    suffix = _output_suffix_for_source_doc_type(source_doc_type)
+    if source_name:
+        source_path = Path(source_name)
+        return f"{source_path.stem}_edited{suffix}"
+    return f"document_edited{suffix}"
+
+
+def _final_output_path_for_native_source(
+    source: Path,
+    source_doc_type: str | None,
+    *,
+    output_path: str | None,
+    output_filename: str | None,
+) -> Path:
+    target = _requested_output_path_for_native_source(
+        source,
+        output_path=output_path,
+        output_filename=output_filename,
+    )
+    return _normalize_output_path_for_source_doc_type(target, source_doc_type)
+
+
+def _requested_output_path_for_native_source(
+    source: Path,
+    *,
+    output_path: str | None,
+    output_filename: str | None,
+) -> Path:
+    if output_path is not None:
+        return Path(output_path)
+    if output_filename is not None:
+        return source.with_name(output_filename)
+    return source.with_name(_default_output_filename(source_name=source.name, source_doc_type=infer_doc_type(source, "auto")))
 
 
 def _validate_text_annotations_for_doc(
@@ -944,6 +1364,22 @@ def _collect_editable_targets(
                         )
                     )
 
+        if "table" in target_kinds:
+            for table in paragraph.tables:
+                table_requested = exact_target_ids is None or table.node_id in exact_target_ids
+                if table_requested:
+                    results.append(
+                        EditableTarget(
+                            target_kind="table",
+                            target_id=table.node_id,
+                            parent_paragraph_id=paragraph.node_id,
+                            current_text=table.markdown,
+                            page_number=paragraph.page_number,
+                            native_anchor=table.native_anchor,
+                            writable=True,
+                        )
+                    )
+
         if max_targets is not None and len(results) >= max_targets:
             return results[:max_targets]
     return results
@@ -971,21 +1407,26 @@ def _paragraph_has_non_run_content(paragraph) -> bool:
     return bool(paragraph.tables or paragraph.images)
 
 
-def _resolve_requested_output_path(source: Path, request: ApplyTextEditsRequest) -> Path | None:
-    if request.output_path is not None:
-        return Path(request.output_path)
-    if request.output_filename is not None:
-        return source.with_name(request.output_filename)
-    return None
-
-
 def _same_path(left: Path, right: Path) -> bool:
     return left.expanduser().resolve(strict=False) == right.expanduser().resolve(strict=False)
 
 
-def _to_canonical_text_edit(resolved_edit: _ResolvedTextEdit) -> TextEdit:
+def _native_identifier_for_identity(identity: _TargetIdentity) -> str:
+    if identity.native_anchor is not None and identity.native_anchor.structural_path:
+        return _anchored_node_id(identity.kind, identity.native_anchor.structural_path)
+    return identity.node_id
+
+
+def _to_canonical_text_edit(resolved_edit: _ResolvedTextEdit, *, native: bool) -> TextEdit:
     edit = resolved_edit.edit
-    return edit.model_copy(update={"target_id": resolved_edit.identity.node_id})
+    target_id = _native_identifier_for_identity(resolved_edit.identity) if native else resolved_edit.identity.node_id
+    return edit.model_copy(update={"target_id": target_id})
+
+
+def _to_canonical_structural_edit(resolved_operation: _ResolvedStructuralEdit, *, native: bool) -> StructuralEdit:
+    operation = resolved_operation.operation
+    target_id = _native_identifier_for_identity(resolved_operation.identity) if native else resolved_operation.identity.node_id
+    return operation.model_copy(update={"target_id": target_id})
 
 
 def _to_render_annotation(resolved_annotation: _ResolvedTextAnnotation) -> _Annotation:
@@ -1060,33 +1501,28 @@ def _find_text_occurrences(text: str, selected_text: str) -> list[int]:
 __all__ = [
     "AnnotationValidationIssue",
     "AnnotationValidationResult",
-    "ApplyTextEditsRequest",
-    "ApplyTextEditsResult",
+    "ApplyDocumentEditsResult",
     "DocumentContextResult",
+    "DocumentEdit",
     "DocumentInput",
     "DocumentParagraphContext",
     "DocumentRunContext",
     "EditableTarget",
     "EditValidationIssue",
     "EditValidationResult",
-    "GetDocumentContextRequest",
-    "ListEditableTargetsRequest",
     "ListEditableTargetsResult",
-    "ReadDocumentRequest",
     "ReadDocumentResult",
-    "RenderReviewHtmlRequest",
     "ResolvedTextAnnotation",
     "ReviewHtmlResult",
+    "StructuralEdit",
     "TargetKind",
     "TextAnnotation",
     "TextEdit",
-    "ValidateTextAnnotationsRequest",
-    "ValidateTextEditsRequest",
-    "apply_text_edits",
+    "apply_document_edits",
     "get_document_context",
     "list_editable_targets",
     "read_document",
     "render_review_html",
+    "validate_document_edits",
     "validate_text_annotations",
-    "validate_text_edits",
 ]

@@ -134,7 +134,6 @@ are exposed as `CellStyleInfo.padding_*_pt` and rendered as cell padding.
 from document_processor import (
     DocIR,
     DocumentInput,
-    RenderReviewHtmlRequest,
     TextAnnotation,
     render_review_html,
 )
@@ -143,20 +142,18 @@ doc = DocIR.from_mapping({"s1.p1.r1": "Hello ", "s1.p1.r2": "World"})
 paragraph_id = doc.paragraphs[0].node_id
 
 review = render_review_html(
-    RenderReviewHtmlRequest(
-        document=DocumentInput(doc_ir=doc),
-        annotations=[
-            TextAnnotation(
-                target_kind="paragraph",
-                target_id=paragraph_id,
-                selected_text="World",
-                label="Focus",
-                color="#FFEE88",
-                note="Review this phrase",
-            )
-        ],
-        title="Annotated Review",
-    )
+    document=DocumentInput(doc_ir=doc),
+    annotations=[
+        TextAnnotation(
+            target_kind="paragraph",
+            target_id=paragraph_id,
+            selected_text="World",
+            label="Focus",
+            color="#FFEE88",
+            note="Review this phrase",
+        )
+    ],
+    title="Annotated Review",
 )
 html = review.html
 ```
@@ -169,18 +166,16 @@ doc = DocIR.from_mapping({"s1.p1.r1": "Beta Beta Beta"})
 run_id = doc.paragraphs[0].runs[0].node_id
 
 review = render_review_html(
-    RenderReviewHtmlRequest(
-        document=DocumentInput(doc_ir=doc),
-        annotations=[
-            TextAnnotation(
-                target_kind="run",
-                target_id=run_id,
-                selected_text="Beta",
-                occurrence_index=1,
-                label="Second match",
-            )
-        ],
-    )
+    document=DocumentInput(doc_ir=doc),
+    annotations=[
+        TextAnnotation(
+            target_kind="run",
+            target_id=run_id,
+            selected_text="Beta",
+            occurrence_index=1,
+            label="Second match",
+        )
+    ],
 )
 html = review.html
 ```
@@ -193,39 +188,33 @@ The high-level edit API works with `DocumentInput`.
 
 ```python
 from document_processor import (
-    ApplyTextEditsRequest,
     DocumentInput,
-    ReadDocumentRequest,
     TextEdit,
-    apply_text_edits,
+    apply_document_edits,
     read_document,
 )
 
 preview = read_document(
-    ReadDocumentRequest(
-        document=DocumentInput(source_path="/path/to/contract.docx"),
-        start=0,
-        limit=5,
-        include_runs=True,
-    )
+    document=DocumentInput(source_path="/path/to/contract.docx"),
+    start=0,
+    limit=5,
+    include_runs=True,
 )
 first_paragraph_id = preview.paragraphs[0].node_id
 
-result = apply_text_edits(
-    ApplyTextEditsRequest(
-        document=DocumentInput(source_path="/path/to/contract.docx"),
-        edits=[
-            TextEdit(
-                target_kind="paragraph",
-                target_id=first_paragraph_id,
-                expected_text="Hello World",
-                new_text="Hello Legal World",
-                reason="Expand wording",
-            )
-        ],
-        output_filename="contract_reviewed.docx",
-        return_doc_ir=True,
-    )
+result = apply_document_edits(
+    document=DocumentInput(source_path="/path/to/contract.docx"),
+    edits=[
+        TextEdit(
+            target_kind="paragraph",
+            target_id=first_paragraph_id,
+            expected_text="Hello World",
+            new_text="Hello Legal World",
+            reason="Expand wording",
+        )
+    ],
+    output_filename="contract_reviewed.docx",
+    return_doc_ir=True,
 )
 
 print(result.ok)
@@ -240,12 +229,10 @@ print(result.updated_doc_ir.paragraphs[0].text)
 from pathlib import Path
 
 from document_processor import (
-    ApplyTextEditsRequest,
     DocumentInput,
     DocIR,
-    ReadDocumentRequest,
     TextEdit,
-    apply_text_edits,
+    apply_document_edits,
     read_document,
 )
 
@@ -255,31 +242,27 @@ document = DocumentInput(
     source_name="contract.docx",
 )
 preview = read_document(
-    ReadDocumentRequest(
-        document=document,
-        start=0,
-        limit=1,
-        include_runs=False,
-    )
+    document=document,
+    start=0,
+    limit=1,
+    include_runs=False,
 )
 
-result = apply_text_edits(
-    ApplyTextEditsRequest(
-        document=document,
-        edits=[
-            TextEdit(
-                target_kind="paragraph",
-                target_id=preview.paragraphs[0].node_id,
-                expected_text="Hello World",
-                new_text="Hello Contract World",
-                reason="Clarify wording",
-            )
-        ],
-        return_doc_ir=True,
-    )
+result = apply_document_edits(
+    document=document,
+    edits=[
+        TextEdit(
+            target_kind="paragraph",
+            target_id=preview.paragraphs[0].node_id,
+            expected_text="Hello World",
+            new_text="Hello Contract World",
+            reason="Clarify wording",
+        )
+    ],
+    return_doc_ir=True,
 )
 
-edited_doc = DocIR.from_file(result.output_bytes)
+edited_doc = DocIR.from_file(result.output_bytes, doc_type="docx")
 print(result.output_filename)
 print(edited_doc.paragraphs[0].text)
 ```
@@ -290,11 +273,10 @@ Use this when you want in-memory updates without native file output.
 
 ```python
 from document_processor import (
-    ApplyTextEditsRequest,
     DocumentInput,
     DocIR,
     TextEdit,
-    apply_text_edits,
+    apply_document_edits,
 )
 
 doc = DocIR.from_mapping(
@@ -307,18 +289,16 @@ doc = DocIR.from_mapping(
 )
 first_paragraph_id = doc.paragraphs[0].node_id
 
-result = apply_text_edits(
-    ApplyTextEditsRequest(
-        document=DocumentInput(doc_ir=doc),
-        edits=[
-            TextEdit(
-                target_kind="paragraph",
-                target_id=first_paragraph_id,
-                expected_text="Hello World",
-                new_text="Hello Contract World",
-            )
-        ],
-    )
+result = apply_document_edits(
+    document=DocumentInput(doc_ir=doc),
+    edits=[
+        TextEdit(
+            target_kind="paragraph",
+            target_id=first_paragraph_id,
+            expected_text="Hello World",
+            new_text="Hello Contract World",
+        )
+    ],
 )
 
 print(result.updated_doc_ir.paragraphs[0].text)
@@ -334,40 +314,98 @@ deleting native document paragraphs during a cell edit.
 
 ```python
 from document_processor import (
-    ApplyTextEditsRequest,
     DocumentInput,
-    ListEditableTargetsRequest,
     TextEdit,
-    apply_text_edits,
+    apply_document_edits,
     list_editable_targets,
 )
 
 document = DocumentInput(source_path="/path/to/contract.docx")
 cells = list_editable_targets(
-    ListEditableTargetsRequest(
-        document=document,
-        target_kinds=["cell"],
-        max_targets=10,
-    )
+    document=document,
+    target_kinds=["cell"],
+    max_targets=10,
 )
 first_cell_id = cells.targets[0].target_id
 
-result = apply_text_edits(
-    ApplyTextEditsRequest(
-        document=document,
-        edits=[
-            TextEdit(
-                target_kind="cell",
-                target_id=first_cell_id,
-                expected_text="Old cell text",
-                new_text="Updated cell text",
-            )
-        ],
-    )
+result = apply_document_edits(
+    document=document,
+    edits=[
+        TextEdit(
+            target_kind="cell",
+            target_id=first_cell_id,
+            expected_text="Old cell text",
+            new_text="Updated cell text",
+        )
+    ],
 )
 
 print(result.modified_target_ids)
 ```
+
+### Structural edits
+
+Use `StructuralEdit` for insert/remove operations and table shape changes. These
+operations still target stable `node_id` values.
+
+Inserted tables are not bare XML shells. Native DOCX/HWPX write-back gives new
+tables a visible black grid, cell padding, and non-zero geometry. HWPX tables
+are written as inline objects (`treatAsChar="1"` / 글자처럼 취급). Inserted rows
+and columns inherit the nearest row/cell properties where the source table has
+them.
+
+```python
+from document_processor import (
+    DocumentInput,
+    StructuralEdit,
+    apply_document_edits,
+    list_editable_targets,
+)
+
+document = DocumentInput(source_path="/path/to/contract.docx")
+targets = list_editable_targets(
+    document=document,
+    target_kinds=["paragraph", "table", "cell"],
+    only_writable=False,
+)
+
+paragraph_id = next(t.target_id for t in targets.targets if t.target_kind == "paragraph")
+cell_id = next(t.target_id for t in targets.targets if t.target_kind == "cell")
+
+result = apply_document_edits(
+    document=document,
+    edits=[
+        StructuralEdit(
+            operation="insert_paragraph",
+            target_id=paragraph_id,
+            position="after",
+            text="Inserted review note.",
+        ),
+        StructuralEdit(
+            operation="set_cell_text",
+            target_id=cell_id,
+            expected_text="Old cell text",
+            text="Line one\nLine two",
+        ),
+        StructuralEdit(
+            operation="insert_table_row",
+            target_id=cell_id,
+            position="after",
+            values=["New left", "New right"],
+        ),
+    ],
+    output_filename="contract_structural_edit.docx",
+    return_doc_ir=True,
+)
+
+print(result.output_path)
+print(result.created_target_ids)
+print(result.updated_doc_ir.paragraphs[0].native_anchor.structural_path)
+```
+
+For native write-back, existing `node_id` values remain stable in the returned
+`updated_doc_ir`; `native_anchor.structural_path` is refreshed to the new
+physical path after inserts/removes.
 
 ## 6. Inspect Context Before Editing
 
@@ -376,18 +414,15 @@ Use this before emitting exact-match edits.
 ```python
 from document_processor import (
     DocumentInput,
-    GetDocumentContextRequest,
     get_document_context,
 )
 
 context = get_document_context(
-    GetDocumentContextRequest(
-        document=DocumentInput(source_path="/path/to/contract.docx"),
-        target_ids=["r_3f1ff7241702452b"],
-        before=1,
-        after=1,
-        include_runs=True,
-    )
+    document=DocumentInput(source_path="/path/to/contract.docx"),
+    target_ids=["r_3f1ff7241702452b"],
+    before=1,
+    after=1,
+    include_runs=True,
 )
 
 for paragraph in context.paragraphs:
@@ -401,16 +436,13 @@ for paragraph in context.paragraphs:
 ```python
 from document_processor import (
     DocumentInput,
-    ListEditableTargetsRequest,
     list_editable_targets,
 )
 
 targets = list_editable_targets(
-    ListEditableTargetsRequest(
-        document=DocumentInput(source_path="/path/to/contract.docx"),
-        target_kinds=["cell", "run"],
-        include_child_runs=True,
-    )
+    document=DocumentInput(source_path="/path/to/contract.docx"),
+    target_kinds=["cell", "run"],
+    include_child_runs=True,
 )
 
 for target in targets.targets:
@@ -423,22 +455,19 @@ for target in targets.targets:
 from document_processor import (
     DocumentInput,
     TextEdit,
-    ValidateTextEditsRequest,
-    validate_text_edits,
+    validate_document_edits,
 )
 
-validation = validate_text_edits(
-    ValidateTextEditsRequest(
-        document=DocumentInput(source_path="/path/to/contract.docx"),
-        edits=[
-            TextEdit(
-                target_kind="run",
-                target_id="r_3f1ff7241702452b",
-                expected_text="wrong text",
-                new_text="updated text",
-            )
-        ],
-    )
+validation = validate_document_edits(
+    document=DocumentInput(source_path="/path/to/contract.docx"),
+    edits=[
+        TextEdit(
+            target_kind="run",
+            target_id="r_3f1ff7241702452b",
+            expected_text="wrong text",
+            new_text="updated text",
+        )
+    ],
 )
 
 print(validation.ok)
@@ -451,60 +480,55 @@ for issue in validation.issues:
 ```python
 from document_processor import (
     DocumentInput,
-    RenderReviewHtmlRequest,
     TextAnnotation,
     render_review_html,
 )
 
 review = render_review_html(
-    RenderReviewHtmlRequest(
-        document=DocumentInput(source_path="/path/to/contract.docx"),
-        annotations=[
-            TextAnnotation(
-                target_kind="paragraph",
-                target_id="p_15cb9ef0efc99b82",
-                selected_text="계약기간",
-                label="Key clause",
-                color="#FFD966",
-                note="Human review requested",
-            )
-        ],
-        title="Contract Review",
-    )
+    document=DocumentInput(source_path="/path/to/contract.docx"),
+    annotations=[
+        TextAnnotation(
+            target_kind="paragraph",
+            target_id="p_15cb9ef0efc99b82",
+            selected_text="계약기간",
+            label="Key clause",
+            color="#FFD966",
+            note="Human review requested",
+        )
+    ],
+    title="Contract Review",
 )
 
 with open("review.html", "w", encoding="utf-8") as handle:
     handle.write(review.html)
 ```
 
-## 10. Edit Through Structured Requests
+## 10. Edit Through Structured DTOs
 
-Edits should go through `TextEdit`, `ValidateTextEditsRequest`,
-`ApplyTextEditsRequest`, `validate_text_edits`, and `apply_text_edits`.
-This keeps LLM tool calls on one schema and avoids exposing internal native
-write-back plumbing.
+Exact text replacements should use `TextEdit`. Structural changes should use
+`StructuralEdit`. Both go through `validate_document_edits` and
+`apply_document_edits` with flattened keyword arguments. This keeps LLM tool
+calls on structured edit DTOs and avoids exposing internal native write-back
+plumbing.
 
 ```python
 from document_processor import (
-    ApplyTextEditsRequest,
     DocumentInput,
     TextEdit,
-    apply_text_edits,
+    apply_document_edits,
 )
 
-result = apply_text_edits(
-    ApplyTextEditsRequest(
-        document=DocumentInput(source_path="/path/to/contract.hwpx"),
-        edits=[
-            TextEdit(
-                target_kind="run",
-                target_id="r_10b2809a0c03f6e1",
-                expected_text="World",
-                new_text="HWPX",
-            )
-        ],
-        return_doc_ir=True,
-    )
+result = apply_document_edits(
+    document=DocumentInput(source_path="/path/to/contract.hwpx"),
+    edits=[
+        TextEdit(
+            target_kind="run",
+            target_id="r_10b2809a0c03f6e1",
+            expected_text="World",
+            new_text="HWPX",
+        )
+    ],
+    return_doc_ir=True,
 )
 
 print(result.output_path)
@@ -547,8 +571,7 @@ print(doc.paragraphs[0].meta)
 - External PDF parsers should build `DocIR` with stable `node_id` values as described in
   [PDF Parser DocIR Integration](pdf-parser-docir-integration.md).
 - Native write-back is same-format only for `docx`, `hwpx`, and `hwp -> hwpx`.
-- Paragraph edits are rejected when the paragraph contains tables or images.
-- Table structure edits are out of scope.
+- Exact text paragraph edits are rejected when the paragraph contains tables or images.
 - Annotation selection is exact-text based; use `occurrence_index` when the same substring repeats in a target.
 
 ## Suggested Workflow
@@ -557,7 +580,8 @@ For LLM or review tooling:
 
 1. Read source through `read_document(...)` or parse source into `DocIR`.
 2. Use returned `node_id` values, `get_document_context(...)`, or `list_editable_targets(...)`.
-3. Emit exact `TextEdit` objects.
-4. Call `validate_text_edits(...)`.
-5. Call `apply_text_edits(...)`.
+3. Emit exact `TextEdit` objects for text replacements or `StructuralEdit`
+   objects for insert/remove/table operations.
+4. Call `validate_document_edits(...)`.
+5. Call `apply_document_edits(...)`.
 6. Call `render_review_html(...)` for human review.
