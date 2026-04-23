@@ -278,7 +278,7 @@ def _apply_dotted_splits(
             if cell_idx == idx
             for y in ys
         })
-        if not cell_y_splits_union or not unit_separators:
+        if not cell_y_splits_union:
             continue
         _presplit_merged_leaves(cell, cell_y_splits_union, unit_separators)
 
@@ -410,15 +410,42 @@ def _is_unit_marker(ch: str) -> bool:
     return bool(cat) and (cat[0] == "S" or cat[0] == "P" or cat == "No")
 
 
-def _split_content_into_units(content: str, separators: set[str]) -> list[str]:
-    """Split content at ``<whitespace><separator>`` boundaries.
+def _split_content_into_units(
+    content: str,
+    separators: set[str],
+    *,
+    target_count: int,
+) -> list[str] | None:
+    """Return exactly ``target_count`` logical units, or ``None``.
 
-    The very first character of the content — the leaf's own leading bullet —
-    is never treated as a split point; only mid-text separators produce unit
-    boundaries.
+    Primary strategy: split at ``<whitespace><separator>`` boundaries using
+    the document's learned bullet separators. This preserves semantic units
+    like ``"④ ..." / "§ ..."``.
+
+    Fallback strategy: when the bullet split does not produce the expected
+    count, split at whitespace — but only accept the result if every
+    resulting token looks like a short code-like identifier (digits or
+    non-letters, ≤ 15 chars). This recovers rows that ODL merged into a
+    single leaf as a space-separated list of codes (e.g., ``"66 68 69390"``
+    in a table's "표준산업분류" column) while leaving Korean or English prose
+    unsplit.
     """
-    if not content or not separators:
-        return [content] if content else []
+    if not content:
+        return None
+    if separators:
+        bullet_units = _split_by_bullet_separators(content, separators)
+        if len(bullet_units) == target_count:
+            return bullet_units
+    ws_units = content.split()
+    if (
+        len(ws_units) == target_count
+        and all(_is_simple_token(u) for u in ws_units)
+    ):
+        return ws_units
+    return None
+
+
+def _split_by_bullet_separators(content: str, separators: set[str]) -> list[str]:
     units: list[str] = []
     start = 0
     i = 1
@@ -429,6 +456,20 @@ def _split_content_into_units(content: str, separators: set[str]) -> list[str]:
         i += 1
     units.append(content[start:].strip())
     return [u for u in units if u]
+
+
+def _is_simple_token(token: str) -> bool:
+    """Short, code-like token: digits, symbols, or mixed — never pure
+    alphabetic prose. Keeps whitespace-fallback from mis-splitting Korean or
+    English phrases that happen to have matching word counts.
+    """
+    if not token or len(token) > 15:
+        return False
+    has_digit = any(ch.isdigit() for ch in token)
+    has_alpha = any(ch.isalpha() for ch in token)
+    # Accept: any token containing a digit, or a token with no letters at all
+    # (pure punctuation / symbol markers).
+    return has_digit or not has_alpha
 
 
 def _presplit_merged_leaves(
@@ -443,7 +484,7 @@ def _presplit_merged_leaves(
     """
 
     def process(parent: dict[str, Any]) -> None:
-        for key in _CHILD_KEYS:
+        for key in _PRESPLIT_CHILD_KEYS:
             items = parent.get(key)
             if not isinstance(items, list):
                 continue
@@ -487,8 +528,10 @@ def _try_split_merged_leaf(
     )
     if not interior_ys:
         return None
-    units = _split_content_into_units(content, separators)
-    if len(units) != len(interior_ys) + 1:
+    units = _split_content_into_units(
+        content, separators, target_count=len(interior_ys) + 1
+    )
+    if units is None:
         return None
 
     y_cuts = [bbox.bottom_pt, *interior_ys, bbox.top_pt]
@@ -706,6 +749,10 @@ def _distribute_children(
 
 _LEAF_TEXT_TYPES = frozenset({"span", "text chunk", "run"})
 _CHILD_KEYS = ("kids", "spans", "runs", "list items")
+# Cells carry their content in parallel ``kids``/``paragraphs`` lists; both
+# must be rewritten in lockstep so downstream distribution sees the same
+# split structure on either key.
+_PRESPLIT_CHILD_KEYS = _CHILD_KEYS + ("paragraphs",)
 
 
 def _node_restricted_to(

@@ -410,6 +410,149 @@ class DottedRuleSplitTests(unittest.TestCase):
         )
 
 
+    def test_whitespace_fallback_splits_code_like_tokens(self) -> None:
+        # Mirrors p44: the left column of a code/description table has a
+        # merged leaf with several short numeric codes separated by spaces
+        # ("66 68 69390") and bbox spanning three rows. No bullet chars are
+        # present, so the bullet-based split can't match — the fallback
+        # strategy must recognise it as a space-separated list of codes and
+        # distribute them to three sub-bands.
+        merged_codes_leaf = {
+            "type": "paragraph",
+            "page number": 1,
+            "bounding box": [15.0, 15.0, 50.0, 85.0],
+            "content": "66 68 69390",
+        }
+        # Three description paragraphs that dictate the row structure.
+        desc_leaves = [
+            _paragraph("Real estate", left=55.0, bottom=70.0, right=105.0, top=82.0),
+            _paragraph("Rental services", left=55.0, bottom=45.0, right=105.0, top=57.0),
+            _paragraph("Legal services", left=55.0, bottom=20.0, right=105.0, top=32.0),
+        ]
+        table = {
+            "type": "table",
+            "page number": 1,
+            "bounding box": [10.0, 10.0, 110.0, 90.0],
+            "number of rows": 1,
+            "number of columns": 2,
+            "grid row boundaries": [90.0, 10.0],
+            "grid column boundaries": [10.0, 52.0, 110.0],
+            "rows": [
+                {
+                    "type": "table row",
+                    "row number": 1,
+                    "cells": [
+                        {
+                            "type": "table cell",
+                            "page number": 1,
+                            "row number": 1,
+                            "column number": 1,
+                            "row span": 1,
+                            "column span": 1,
+                            "bounding box": [10.0, 10.0, 52.0, 90.0],
+                            "kids": [merged_codes_leaf],
+                            "paragraphs": [merged_codes_leaf],
+                        },
+                        {
+                            "type": "table cell",
+                            "page number": 1,
+                            "row number": 1,
+                            "column number": 2,
+                            "row span": 1,
+                            "column span": 1,
+                            "bounding box": [52.0, 10.0, 110.0, 90.0],
+                            "kids": list(desc_leaves),
+                            "paragraphs": list(desc_leaves),
+                        },
+                    ],
+                }
+            ],
+        }
+        rules = [
+            _dotted_primitive(
+                orientation="horizontal",
+                left=10.0, bottom=63.5, right=110.0, top=64.5,
+            ),
+            _dotted_primitive(
+                orientation="horizontal",
+                left=10.0, bottom=38.5, right=110.0, top=39.5,
+            ),
+        ]
+        _apply_dotted_splits(table, dotted_h=rules, dotted_v=[])
+        self.assertEqual(table["number of rows"], 3)
+        cells_by_pos = {
+            (c["row number"], c["column number"]): c
+            for row in table["rows"] for c in row["cells"]
+        }
+        # Each code lands in its own row, aligned with the matching description.
+        self.assertEqual(cells_by_pos[(1, 1)]["paragraphs"][0]["content"], "66")
+        self.assertEqual(cells_by_pos[(2, 1)]["paragraphs"][0]["content"], "68")
+        self.assertEqual(cells_by_pos[(3, 1)]["paragraphs"][0]["content"], "69390")
+
+    def test_whitespace_fallback_rejects_korean_prose(self) -> None:
+        # A Korean phrase happens to have exactly as many whitespace-
+        # separated tokens as there are sub-bands. The fallback must NOT
+        # split it because the tokens are pure Korean letters, not codes.
+        prose_leaf = {
+            "type": "paragraph",
+            "page number": 1,
+            "bounding box": [15.0, 15.0, 105.0, 85.0],
+            "content": "도박기계 사행성 오락기구",
+        }
+        table = {
+            "type": "table",
+            "page number": 1,
+            "bounding box": [10.0, 10.0, 110.0, 90.0],
+            "number of rows": 1,
+            "number of columns": 1,
+            "grid row boundaries": [90.0, 10.0],
+            "grid column boundaries": [10.0, 110.0],
+            "rows": [
+                {
+                    "type": "table row",
+                    "row number": 1,
+                    "cells": [
+                        {
+                            "type": "table cell",
+                            "page number": 1,
+                            "row number": 1,
+                            "column number": 1,
+                            "row span": 1,
+                            "column span": 1,
+                            "bounding box": [10.0, 10.0, 110.0, 90.0],
+                            "kids": [prose_leaf],
+                            "paragraphs": [prose_leaf],
+                        }
+                    ],
+                }
+            ],
+        }
+        rules = [
+            _dotted_primitive(
+                orientation="horizontal",
+                left=10.0, bottom=63.5, right=110.0, top=64.5,
+            ),
+            _dotted_primitive(
+                orientation="horizontal",
+                left=10.0, bottom=38.5, right=110.0, top=39.5,
+            ),
+        ]
+        _apply_dotted_splits(table, dotted_h=rules, dotted_v=[])
+        # After split detection, the row count would still become 3 (from
+        # the detected rules), but the prose leaf must NOT be pre-split —
+        # it stays as one leaf assigned to whichever sub-band its center
+        # lands in, leaving the others empty.
+        self.assertEqual(table["number of rows"], 3)
+        all_contents = [
+            k.get("content", "")
+            for row in table["rows"] for c in row["cells"]
+            for k in (c.get("paragraphs") or [])
+        ]
+        # The full phrase must still appear intact somewhere — i.e., the
+        # fallback didn't tokenize it.
+        self.assertIn("도박기계 사행성 오락기구", all_contents)
+
+
 class DottedRuleSplitAdapterIntegrationTests(unittest.TestCase):
     """End-to-end: preprocessed raw table flows through adapter correctly."""
 
