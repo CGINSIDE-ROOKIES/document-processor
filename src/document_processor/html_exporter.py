@@ -6,8 +6,8 @@ import base64
 from html import escape
 import re
 
-from .models import ColumnLayoutInfo, DocIR, ImageIR, PageInfo, ParagraphContentNode, ParagraphIR, RunIR, TableCellIR, TableIR
-from .style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo
+from .models import DocIR, ImageIR, PageInfo, ParagraphContentNode, ParagraphIR, RunIR, TableCellIR, TableIR, _node_debug_path
+from .style_types import CellStyleInfo, ColumnLayoutInfo, ParaStyleInfo, RunStyleInfo
 
 
 def _non_negative_pt(value: float | None) -> float | None:
@@ -30,6 +30,10 @@ def _column_layout_key(layout: ColumnLayoutInfo | None) -> tuple[object, ...] | 
         tuple(round(gap, 3) for gap in layout.gaps_pt),
         layout.equal_width,
     )
+
+
+def _paragraph_column_layout(paragraph: ParagraphIR) -> ColumnLayoutInfo | None:
+    return paragraph.para_style.column_layout if paragraph.para_style is not None else None
 
 
 def _column_group_css(layout: ColumnLayoutInfo) -> str:
@@ -158,23 +162,24 @@ def _flush_paragraph(
     run_fragments: list[str],
     para_style: ParaStyleInfo | None,
     *,
-    unit_id: str | None = None,
+    node_id: str | None = None,
+    debug_path: str | None = None,
     debug_layout: bool = False,
 ) -> str:
     content = "".join(run_fragments)
     if not content.strip():
         content = "&nbsp;"
     attrs = [f'style="{_paragraph_css(para_style)}"']
-    if debug_layout and unit_id:
-        attrs.append(f'data-unit-id="{escape(unit_id, quote=True)}"')
-        attrs.append(f'data-debug-label="{escape(_paragraph_debug_label(unit_id, para_style), quote=True)}"')
+    if debug_layout and node_id:
+        attrs.append(f'data-node-id="{escape(node_id, quote=True)}"')
+        attrs.append(f'data-debug-label="{escape(_paragraph_debug_label(debug_path or node_id, para_style), quote=True)}"')
     return f"<p {' '.join(attrs)}>{content}</p>"
 
 
-def _paragraph_debug_label(unit_id: str, style: ParaStyleInfo | None) -> str:
+def _paragraph_debug_label(debug_path: str, style: ParaStyleInfo | None) -> str:
     left_indent, right_indent, first_line_indent = _paragraph_indent_values(style)
     return (
-        f"p {unit_id}: left {_pt_label(left_indent)}, "
+        f"p {debug_path}: left {_pt_label(left_indent)}, "
         f"first {_pt_label(first_line_indent)}, right {_pt_label(right_indent)}"
     )
 
@@ -435,7 +440,8 @@ def _render_paragraph_like(
                     _flush_paragraph(
                         inline_fragments,
                         para_style,
-                        unit_id=paragraph.unit_id,
+                        node_id=paragraph.node_id,
+                        debug_path=_node_debug_path(paragraph),
                         debug_layout=debug_layout,
                     )
                 )
@@ -447,7 +453,8 @@ def _render_paragraph_like(
             _flush_paragraph(
                 inline_fragments,
                 para_style,
-                unit_id=paragraph.unit_id,
+                node_id=paragraph.node_id,
+                debug_path=_node_debug_path(paragraph),
                 debug_layout=debug_layout,
             )
         )
@@ -456,7 +463,8 @@ def _render_paragraph_like(
             _flush_paragraph(
                 [],
                 para_style,
-                unit_id=paragraph.unit_id,
+                node_id=paragraph.node_id,
+                debug_path=_node_debug_path(paragraph),
                 debug_layout=debug_layout,
             )
         )
@@ -478,13 +486,13 @@ def _cell_debug_label(cell: TableCellIR) -> str:
     style = cell.cell_style
     width_pt = _non_negative_pt(style.width_pt) if style is not None else None
     height_pt = _non_negative_pt(style.height_pt) if style is not None else None
-    return f"cell {cell.unit_id}: {_pt_label(width_pt)} x {_pt_label(height_pt)}"
+    return f"cell {_node_debug_path(cell)}: {_pt_label(width_pt)} x {_pt_label(height_pt)}"
 
 
 def _render_cell(doc_ir: DocIR, cell: TableCellIR, *, debug_layout: bool = False) -> str:
     attrs = [f'style="{_cell_css(cell.cell_style)}"']
     if debug_layout:
-        attrs.append(f'data-unit-id="{escape(cell.unit_id, quote=True)}"')
+        attrs.append(f'data-node-id="{escape(cell.node_id or "", quote=True)}"')
         attrs.append(f'data-debug-label="{escape(_cell_debug_label(cell), quote=True)}"')
     if cell.cell_style is not None:
         if cell.cell_style.colspan > 1:
@@ -507,7 +515,7 @@ def _table_debug_label(table: TableIR) -> str:
     style = table.table_style
     width_pt = _non_negative_pt(style.width_pt) if style is not None else None
     height_pt = _non_negative_pt(style.height_pt) if style is not None else None
-    return f"table {table.unit_id}: {_pt_label(width_pt)} x {_pt_label(height_pt)}"
+    return f"table {_node_debug_path(table)}: {_pt_label(width_pt)} x {_pt_label(height_pt)}"
 
 
 def _render_table(
@@ -519,7 +527,7 @@ def _render_table(
 ) -> str:
     attrs = [f'style="{_table_css(table, para_style)}"']
     if debug_layout:
-        attrs.append(f'data-unit-id="{escape(table.unit_id, quote=True)}"')
+        attrs.append(f'data-node-id="{escape(table.node_id or "", quote=True)}"')
         attrs.append(f'data-debug-label="{escape(_table_debug_label(table), quote=True)}"')
     if not table.cells:
         return f"<table {' '.join(attrs)}></table>"
@@ -572,8 +580,8 @@ def _render_paragraph(doc_ir: DocIR, paragraph: ParagraphIR, *, debug_layout: bo
 
 
 def _column_group_debug_label(layout: ColumnLayoutInfo, paragraphs: list[ParagraphIR]) -> str:
-    unit_ids = ", ".join(paragraph.unit_id for paragraph in paragraphs)
-    return f"columns x{layout.count}: gap {_pt_label(_non_negative_pt(layout.gap_pt))}; {unit_ids}"
+    debug_paths = ", ".join(_node_debug_path(paragraph) for paragraph in paragraphs)
+    return f"columns x{layout.count}: gap {_pt_label(_non_negative_pt(layout.gap_pt))}; {debug_paths}"
 
 
 def _render_column_group(
@@ -582,10 +590,12 @@ def _render_column_group(
     *,
     debug_layout: bool = False,
 ) -> str:
-    if not paragraphs or paragraphs[0].column_layout is None:
+    if not paragraphs or _paragraph_column_layout(paragraphs[0]) is None:
         return ""
 
-    layout = paragraphs[0].column_layout
+    layout = _paragraph_column_layout(paragraphs[0])
+    if layout is None:
+        return ""
     attrs = [
         'class="document-column-group"',
         f'data-column-count="{max(layout.count, 1)}"',
@@ -619,7 +629,7 @@ def _render_paragraph_sequence(
         current_column_key = None
 
     for paragraph in paragraphs:
-        column_key = _column_layout_key(paragraph.column_layout)
+        column_key = _column_layout_key(_paragraph_column_layout(paragraph))
         if column_key is None:
             flush_column_group()
             parts.append(_render_paragraph(doc_ir, paragraph, debug_layout=debug_layout))

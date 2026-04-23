@@ -12,12 +12,14 @@ from document_processor import (
     DocIR,
     GetDocumentContextRequest,
     ListEditableTargetsRequest,
+    ReadDocumentRequest,
     RenderReviewHtmlRequest,
     TextAnnotation,
     TextEdit,
     apply_text_edits,
     get_document_context,
     list_editable_targets,
+    read_document,
     render_review_html,
 )
 
@@ -132,33 +134,73 @@ class EditorApiTests(unittest.TestCase):
         return hwpx_bytes.getvalue()
 
     def test_get_document_context_accepts_bytes_backed_input(self) -> None:
+        source_bytes = self._build_sample_docx_bytes()
+        doc = DocIR.from_file(source_bytes, doc_type="docx")
+        target_id = doc.paragraphs[0].runs[1].node_id
+
         result = get_document_context(
             GetDocumentContextRequest(
                 document=DocumentInput(
-                    source_bytes=self._build_sample_docx_bytes(),
+                    source_bytes=source_bytes,
                     source_name="sample.docx",
                 ),
-                unit_ids=["s1.p1.r2"],
+                target_ids=[target_id],
                 before=0,
                 after=1,
             )
         )
 
         self.assertEqual(result.source_name, "sample.docx")
-        self.assertEqual([paragraph.unit_id for paragraph in result.paragraphs], ["s1.p1", "s1.p2"])
+        self.assertEqual([paragraph.node_id for paragraph in result.paragraphs], [doc.paragraphs[0].node_id, doc.paragraphs[1].node_id])
+        self.assertTrue(result.paragraphs[0].node_id.startswith("p_"))
         self.assertEqual(result.paragraphs[0].runs[1].text, "World")
+        self.assertTrue(result.paragraphs[0].runs[1].node_id.startswith("r_"))
+        self.assertEqual(result.paragraphs[0].text, "Hello World")
+        self.assertEqual(
+            [(run.text, run.start, run.end) for run in result.paragraphs[0].runs],
+            [("Hello ", 0, 6), ("World", 6, 11)],
+        )
+
+    def test_read_document_returns_bounded_stable_ids(self) -> None:
+        doc = DocIR.from_mapping(
+            {
+                "s1.p1.r1": "First",
+                "s1.p2.r1": "Second",
+                "s1.p3.r1": "Third",
+            },
+            source_doc_type="docx",
+        )
+
+        result = read_document(
+            ReadDocumentRequest(
+                document=DocumentInput(doc_ir=doc),
+                start=1,
+                limit=1,
+            )
+        )
+
+        self.assertEqual(result.total_paragraphs, 3)
+        self.assertEqual(result.next_start, 2)
+        self.assertEqual(result.paragraphs[0].text, "Second")
+        self.assertEqual(result.paragraphs[0].node_id, doc.paragraphs[1].node_id)
+        self.assertEqual(result.paragraphs[0].native_anchor.debug_path, "s1.p2")
+        self.assertEqual(result.paragraphs[0].runs[0].start, 0)
+        self.assertEqual(result.paragraphs[0].runs[0].end, len("Second"))
 
     def test_apply_text_edits_returns_output_bytes_for_bytes_backed_source(self) -> None:
+        source_bytes = self._build_sample_docx_bytes()
+        doc = DocIR.from_file(source_bytes, doc_type="docx")
+
         result = apply_text_edits(
             ApplyTextEditsRequest(
                 document=DocumentInput(
-                    source_bytes=self._build_sample_docx_bytes(),
+                    source_bytes=source_bytes,
                     source_name="sample.docx",
                 ),
                 edits=[
                     TextEdit(
                         target_kind="paragraph",
-                        target_unit_id="s1.p1",
+                        target_id=doc.paragraphs[0].node_id,
                         expected_text="Hello World",
                         new_text="Hello Legal World",
                         reason="Expand wording",
@@ -191,7 +233,7 @@ class EditorApiTests(unittest.TestCase):
                 edits=[
                     TextEdit(
                         target_kind="paragraph",
-                        target_unit_id="s1.p1",
+                        target_id=doc.paragraphs[0].node_id,
                         expected_text="Hello World",
                         new_text="Hello Contract World",
                         reason="Expand wording",
@@ -205,6 +247,87 @@ class EditorApiTests(unittest.TestCase):
         self.assertIsNone(result.output_bytes)
         self.assertIsNotNone(result.updated_doc_ir)
         self.assertEqual(result.updated_doc_ir.paragraphs[0].text, "Hello Contract World")
+
+    def test_apply_text_edits_accepts_stable_target_id(self) -> None:
+        doc = DocIR.from_mapping(
+            {
+                "s1.p1.r1": "Hello ",
+                "s1.p1.r2": "World",
+            },
+            source_doc_type="docx",
+        )
+        target_id = doc.paragraphs[0].node_id
+
+        result = apply_text_edits(
+            ApplyTextEditsRequest(
+                document=DocumentInput(doc_ir=doc),
+                edits=[
+                    TextEdit(
+                        target_kind="paragraph",
+                        target_id=target_id,
+                        expected_text="Hello World",
+                        new_text="Hello Stable World",
+                    )
+                ],
+            )
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.modified_target_ids, [target_id])
+        self.assertEqual(result.updated_doc_ir.paragraphs[0].text, "Hello Stable World")
+        self.assertEqual(result.updated_doc_ir.paragraphs[0].node_id, target_id)
+
+    def test_apply_text_edits_dry_run_returns_preview_without_native_output(self) -> None:
+        doc = DocIR.from_mapping({"s1.p1.r1": "Hello"}, source_doc_type="docx")
+
+        result = apply_text_edits(
+            ApplyTextEditsRequest(
+                document=DocumentInput(doc_ir=doc),
+                edits=[
+                    TextEdit(
+                        target_kind="run",
+                        target_id=doc.paragraphs[0].runs[0].node_id,
+                        expected_text="Hello",
+                        new_text="Preview",
+                    )
+                ],
+                dry_run=True,
+                return_doc_ir=True,
+            )
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.edits_applied, 0)
+        self.assertIsNone(result.output_path)
+        self.assertIsNone(result.output_bytes)
+        self.assertEqual(result.updated_doc_ir.paragraphs[0].text, "Preview")
+        self.assertEqual(doc.paragraphs[0].text, "Hello")
+
+    def test_validate_text_edits_rejects_missing_target_id(self) -> None:
+        doc = DocIR.from_mapping(
+            {
+                "s1.p1.r1": "Hello",
+                "s1.p2.r1": "Other",
+            },
+            source_doc_type="docx",
+        )
+
+        result = apply_text_edits(
+            ApplyTextEditsRequest(
+                document=DocumentInput(doc_ir=doc),
+                edits=[
+                    TextEdit(
+                        target_kind="paragraph",
+                        target_id="missing",
+                        expected_text="Hello",
+                        new_text="Changed",
+                    )
+                ],
+            )
+        )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.validation.issues[0].code, "target_not_found")
 
     def test_list_editable_targets_includes_cell_targets(self) -> None:
         doc = DocIR.from_mapping(
@@ -223,12 +346,25 @@ class EditorApiTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            [(target.target_kind, target.target_unit_id, target.current_text) for target in result.targets],
+            [(target.target_kind, target.native_anchor.debug_path, target.current_text) for target in result.targets],
             [
                 ("cell", "s1.p1.r1.tbl1.tr1.tc1", "Left"),
                 ("cell", "s1.p1.r1.tbl1.tr1.tc2", "Right"),
             ],
         )
+
+    def test_list_editable_targets_does_not_return_all_targets_for_missing_filter(self) -> None:
+        doc = DocIR.from_mapping({"s1.p1.r1": "Hello"})
+
+        result = list_editable_targets(
+            ListEditableTargetsRequest(
+                document=DocumentInput(doc_ir=doc),
+                target_ids=["missing"],
+            )
+        )
+
+        self.assertEqual(result.targets, [])
+        self.assertEqual(result.missing_target_ids, ["missing"])
 
     def test_apply_text_edits_can_replace_doc_ir_cell_text(self) -> None:
         doc = DocIR.from_mapping(
@@ -245,7 +381,7 @@ class EditorApiTests(unittest.TestCase):
                 edits=[
                     TextEdit(
                         target_kind="cell",
-                        target_unit_id="s1.p1.r1.tbl1.tr1.tc1",
+                        target_id=doc.paragraphs[0].tables[0].cells[0].node_id,
                         expected_text="Left",
                         new_text="Changed",
                     )
@@ -254,23 +390,27 @@ class EditorApiTests(unittest.TestCase):
         )
 
         self.assertTrue(result.ok)
-        self.assertEqual(result.modified_target_ids, ["s1.p1.r1.tbl1.tr1.tc1"])
-        self.assertEqual(result.modified_run_ids, ["s1.p1.r1.tbl1.tr1.tc1.p1.r1"])
+        cell = doc.paragraphs[0].tables[0].cells[0]
+        run = cell.paragraphs[0].runs[0]
+        self.assertEqual(result.modified_target_ids, [cell.node_id])
+        self.assertEqual(result.modified_run_ids, [run.node_id])
         table = result.updated_doc_ir.paragraphs[0].tables[0]
         self.assertEqual(table.cells[0].text, "Changed")
         self.assertEqual(result.updated_doc_ir.paragraphs[0].text, "Changed\nRight")
 
     def test_apply_text_edits_replaces_docx_cell_text(self) -> None:
+        source_bytes = self._build_sample_table_docx_bytes()
+        doc = DocIR.from_file(source_bytes, doc_type="docx")
         result = apply_text_edits(
             ApplyTextEditsRequest(
                 document=DocumentInput(
-                    source_bytes=self._build_sample_table_docx_bytes(),
+                    source_bytes=source_bytes,
                     source_name="table.docx",
                 ),
                 edits=[
                     TextEdit(
                         target_kind="cell",
-                        target_unit_id="s1.p1.r1.tbl1.tr1.tc1",
+                        target_id=doc.paragraphs[0].tables[0].cells[0].node_id,
                         expected_text="Left",
                         new_text="Changed",
                     )
@@ -285,16 +425,18 @@ class EditorApiTests(unittest.TestCase):
         self.assertEqual(result.updated_doc_ir.paragraphs[0].tables[0].cells[0].text, "Changed")
 
     def test_apply_text_edits_replaces_hwpx_cell_text(self) -> None:
+        source_bytes = self._build_sample_table_hwpx_bytes()
+        doc = DocIR.from_file(source_bytes, doc_type="hwpx")
         result = apply_text_edits(
             ApplyTextEditsRequest(
                 document=DocumentInput(
-                    source_bytes=self._build_sample_table_hwpx_bytes(),
+                    source_bytes=source_bytes,
                     source_name="table.hwpx",
                 ),
                 edits=[
                     TextEdit(
                         target_kind="cell",
-                        target_unit_id="s1.p1.r1.tbl1.tr1.tc1",
+                        target_id=doc.paragraphs[0].tables[0].cells[0].node_id,
                         expected_text="Left",
                         new_text="Changed",
                     )
@@ -313,6 +455,7 @@ class EditorApiTests(unittest.TestCase):
             source = Path(tmp_dir) / "sample.hwpx"
             requested_output = Path(tmp_dir) / "sample_edited.docx"
             source.write_bytes(self._build_sample_hwpx_bytes())
+            doc = DocIR.from_file(source, doc_type="hwpx")
 
             result = apply_text_edits(
                 ApplyTextEditsRequest(
@@ -320,7 +463,7 @@ class EditorApiTests(unittest.TestCase):
                     edits=[
                         TextEdit(
                             target_kind="run",
-                            target_unit_id="s1.p1.r2",
+                            target_id=doc.paragraphs[0].runs[1].node_id,
                             expected_text="World",
                             new_text="HWPX",
                             reason="Rename token",
@@ -342,6 +485,7 @@ class EditorApiTests(unittest.TestCase):
             source = Path(tmp_dir) / "sample.hwpx"
             output = Path(tmp_dir) / "sample_edited.hwpx"
             source.write_bytes(self._build_namespaced_hwpx_bytes())
+            doc = DocIR.from_file(source, doc_type="hwpx")
 
             result = apply_text_edits(
                 ApplyTextEditsRequest(
@@ -349,7 +493,7 @@ class EditorApiTests(unittest.TestCase):
                     edits=[
                         TextEdit(
                             target_kind="run",
-                            target_unit_id="s1.p1.r2",
+                            target_id=doc.paragraphs[0].runs[1].node_id,
                             expected_text="World",
                             new_text="HWPX",
                             reason="Rename token",
@@ -378,7 +522,7 @@ class EditorApiTests(unittest.TestCase):
                 annotations=[
                     TextAnnotation(
                         target_kind="run",
-                        target_unit_id="s1.p1.r1",
+                        target_id=doc.paragraphs[0].runs[0].node_id,
                         selected_text="Hello",
                         label="Greeting",
                     )
@@ -390,6 +534,27 @@ class EditorApiTests(unittest.TestCase):
         self.assertIn("<mark", result.html or "")
         self.assertEqual(result.resolved_annotations[0].selected_text, "Hello")
 
+    def test_render_review_html_accepts_stable_target_id(self) -> None:
+        doc = DocIR.from_mapping({"s1.p1.r1": "Hello"})
+        run_id = doc.paragraphs[0].runs[0].node_id
+
+        result = render_review_html(
+            RenderReviewHtmlRequest(
+                document=DocumentInput(doc_ir=doc),
+                annotations=[
+                    TextAnnotation(
+                        target_kind="run",
+                        target_id=run_id,
+                        selected_text="Hello",
+                        label="Greeting",
+                    )
+                ],
+            )
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.resolved_annotations[0].target_id, run_id)
+
     def test_render_review_html_rejects_ambiguous_selected_text(self) -> None:
         doc = DocIR.from_mapping({"s1.p1.r1": "Hello Hello"})
 
@@ -399,7 +564,7 @@ class EditorApiTests(unittest.TestCase):
                 annotations=[
                     TextAnnotation(
                         target_kind="run",
-                        target_unit_id="s1.p1.r1",
+                        target_id=doc.paragraphs[0].runs[0].node_id,
                         selected_text="Hello",
                         label="Ambiguous",
                     )

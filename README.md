@@ -10,6 +10,9 @@ Additional docs:
 
 - [Usage Guide](docs/usage-guide.md)
 - [API Reference](docs/api-reference.md)
+- [PDF Parser DocIR Integration](docs/pdf-parser-docir-integration.md)
+- [Removed Legacy Edit API](docs/removed-legacy-edit-api.md)
+- [Removed Legacy Annotation API](docs/removed-legacy-annotation-api.md)
 
 ## Installation
 
@@ -106,17 +109,22 @@ written back to the native file format, or returned as bytes.
 
 ```python
 from document_processor import (
-    apply_text_edits,
     ApplyTextEditsRequest,
     DocumentInput,
+    ReadDocumentRequest,
     TextEdit,
+    apply_text_edits,
+    read_document,
 )
 
+document = DocumentInput(source_path="/path/to/file.docx")
+preview = read_document(ReadDocumentRequest(document=document, start=0, limit=1))
+
 result = apply_text_edits(ApplyTextEditsRequest(
-    document=DocumentInput(source_path="/path/to/file.docx"),
+    document=document,
     edits=[TextEdit(
         target_kind="paragraph",
-        target_unit_id="s1.p3",
+        target_id=preview.paragraphs[0].node_id,
         expected_text="old text",
         new_text="new text",
     )],
@@ -136,17 +144,22 @@ Resolve text annotations against a document and render a highlighted review page
 
 ```python
 from document_processor import (
-    render_review_html,
-    RenderReviewHtmlRequest,
     DocumentInput,
+    ReadDocumentRequest,
+    RenderReviewHtmlRequest,
     TextAnnotation,
+    read_document,
+    render_review_html,
 )
 
+document = DocumentInput(source_path="/path/to/file.docx")
+preview = read_document(ReadDocumentRequest(document=document, start=0, limit=1))
+
 result = render_review_html(RenderReviewHtmlRequest(
-    document=DocumentInput(source_path="/path/to/file.docx"),
+    document=document,
     annotations=[TextAnnotation(
         target_kind="paragraph",
-        target_unit_id="s1.p3",
+        target_id=preview.paragraphs[0].node_id,
         selected_text="some phrase",
         label="Needs revision",
     )],

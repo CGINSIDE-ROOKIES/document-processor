@@ -6,7 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 from .io_utils import SourceDocType
-from .models import DocIR
+from .models import DocIR, NativeAnchor
 
 TargetKind = Literal["paragraph", "run", "cell"]
 AnnotationTargetKind = Literal["paragraph", "run"]
@@ -61,9 +61,7 @@ class DocumentInput(BaseModel):
 
 class TextEdit(BaseModel):
     target_kind: TargetKind = Field(description="Whether this edit targets a paragraph, run, or table cell.")
-    target_unit_id: str = Field(
-        description="Stable unit id from the parsed document, such as `s1.p22`, `s1.p22.r1`, or `s1.p2.r1.tbl1.tr1.tc1`."
-    )
+    target_id: str = Field(description="Stable opaque node id from the parsed document.")
     expected_text: str = Field(description="Exact current text that must match before the edit is applied.")
     new_text: str = Field(description="Replacement text for the target.")
     reason: str = Field(default="", description="Short rationale for the change.")
@@ -71,7 +69,7 @@ class TextEdit(BaseModel):
 
 class TextAnnotation(BaseModel):
     target_kind: AnnotationTargetKind = Field(description="Whether this annotation targets a paragraph or a run.")
-    target_unit_id: str = Field(description="Stable unit id from the parsed document.")
+    target_id: str = Field(description="Stable opaque node id from the parsed document.")
     selected_text: str | None = Field(
         default=None,
         description="Exact substring to highlight inside the target. Omit to annotate the full target text.",
@@ -96,10 +94,11 @@ class TextAnnotation(BaseModel):
 
 class EditableTarget(BaseModel):
     target_kind: TargetKind
-    target_unit_id: str
-    parent_paragraph_unit_id: str | None = None
+    target_id: str
+    parent_paragraph_id: str | None = None
     current_text: str
     page_number: int | None = None
+    native_anchor: NativeAnchor | None = None
     writable: bool = True
     writable_reason: str | None = None
 
@@ -107,7 +106,7 @@ class EditableTarget(BaseModel):
 class EditValidationIssue(BaseModel):
     code: EditValidationCode
     target_kind: TargetKind | None = None
-    target_unit_id: str | None = None
+    target_id: str | None = None
     message: str
     expected_text: str | None = None
     current_text: str | None = None
@@ -129,8 +128,8 @@ class ApplyTextEditsResult(BaseModel):
     output_bytes: bytes | None = None
     updated_doc_ir: DocIR | None = None
     edits_applied: int = 0
-    modified_target_ids: list[str] = Field(default_factory=list)
-    modified_run_ids: list[str] = Field(default_factory=list)
+    modified_target_ids: list[str] = Field(default_factory=list, description="Stable target ids modified by the edit batch.")
+    modified_run_ids: list[str] = Field(default_factory=list, description="Stable run ids modified by the edit batch.")
     warnings: list[str] = Field(default_factory=list)
     validation: EditValidationResult = Field(default_factory=EditValidationResult)
 
@@ -138,7 +137,7 @@ class ApplyTextEditsResult(BaseModel):
 class AnnotationValidationIssue(BaseModel):
     code: AnnotationValidationCode
     target_kind: AnnotationTargetKind | None = None
-    target_unit_id: str | None = None
+    target_id: str | None = None
     message: str
     selected_text: str | None = None
     occurrence_index: int | None = None
@@ -153,7 +152,7 @@ class AnnotationValidationResult(BaseModel):
 
 class ResolvedTextAnnotation(BaseModel):
     target_kind: AnnotationTargetKind
-    target_unit_id: str
+    target_id: str
     selected_text: str
     occurrence_index: int | None = None
     start: int
@@ -171,17 +170,21 @@ class ReviewHtmlResult(BaseModel):
 
 
 class DocumentRunContext(BaseModel):
-    unit_id: str
+    node_id: str
     text: str
+    start: int = Field(default=0, description="Start offset of this run in the containing paragraph text.")
+    end: int = Field(default=0, description="End offset of this run in the containing paragraph text.")
+    native_anchor: NativeAnchor | None = None
 
 
 class DocumentParagraphContext(BaseModel):
-    unit_id: str
+    node_id: str
     text: str
     page_number: int | None = None
     has_tables: bool = False
     has_images: bool = False
     writable_as_paragraph: bool = False
+    native_anchor: NativeAnchor | None = None
     runs: list[DocumentRunContext] = Field(default_factory=list)
 
 
@@ -204,7 +207,7 @@ class DocumentBoundRequest(BaseModel):
 
 
 class GetDocumentContextRequest(DocumentBoundRequest):
-    unit_ids: list[str] = Field(description="Paragraph and/or run unit ids to inspect.")
+    target_ids: list[str] = Field(default_factory=list, description="Stable paragraph, run, or cell node ids to inspect.")
     before: int = Field(default=1, ge=0, description="How many surrounding paragraphs to include before each target.")
     after: int = Field(default=1, ge=0, description="How many surrounding paragraphs to include after each target.")
     include_runs: bool = Field(default=True, description="Whether to include exact run texts for returned paragraphs.")
@@ -215,11 +218,28 @@ class DocumentContextResult(BaseModel):
     source_doc_type: str | None = None
     source_name: str | None = None
     paragraphs: list[DocumentParagraphContext] = Field(default_factory=list)
-    missing_unit_ids: list[str] = Field(default_factory=list)
+    missing_target_ids: list[str] = Field(default_factory=list)
+
+
+class ReadDocumentRequest(DocumentBoundRequest):
+    start: int = Field(default=0, ge=0, description="Zero-based paragraph offset to start reading from.")
+    limit: int = Field(default=50, ge=1, le=500, description="Maximum number of paragraphs to return.")
+    include_runs: bool = Field(default=True, description="Whether to include exact run texts for returned paragraphs.")
+
+
+class ReadDocumentResult(BaseModel):
+    source_path: str | None = None
+    source_doc_type: str | None = None
+    source_name: str | None = None
+    start: int = 0
+    limit: int = 50
+    total_paragraphs: int = 0
+    next_start: int | None = None
+    paragraphs: list[DocumentParagraphContext] = Field(default_factory=list)
 
 
 class ListEditableTargetsRequest(DocumentBoundRequest):
-    unit_ids: list[str] = Field(default_factory=list, description="Optional exact unit ids to filter by.")
+    target_ids: list[str] = Field(default_factory=list, description="Optional stable node ids to filter by.")
     target_kinds: list[TargetKind] = Field(default_factory=lambda: ["paragraph", "cell", "run"])
     include_child_runs: bool = Field(
         default=False,
@@ -234,7 +254,7 @@ class ListEditableTargetsResult(BaseModel):
     source_doc_type: str | None = None
     source_name: str | None = None
     targets: list[EditableTarget] = Field(default_factory=list)
-    missing_unit_ids: list[str] = Field(default_factory=list)
+    missing_target_ids: list[str] = Field(default_factory=list)
 
 
 class ValidateTextEditsRequest(DocumentBoundRequest):
@@ -243,6 +263,7 @@ class ValidateTextEditsRequest(DocumentBoundRequest):
 
 class ApplyTextEditsRequest(DocumentBoundRequest):
     edits: list[TextEdit]
+    dry_run: bool = Field(default=False, description="Validate and preview the DocIR edit without writing native output.")
     output_path: str | None = Field(default=None, description="Optional output path for the edited native file.")
     output_filename: str | None = Field(
         default=None,
@@ -278,6 +299,10 @@ class RenderReviewHtmlRequest(DocumentBoundRequest):
     title: str = Field(default="Review")
 
 
+class ValidateTextAnnotationsRequest(DocumentBoundRequest):
+    annotations: list[TextAnnotation]
+
+
 __all__ = [
     "AnnotationTargetKind",
     "AnnotationValidationCode",
@@ -290,6 +315,8 @@ __all__ = [
     "DocumentInput",
     "DocumentParagraphContext",
     "DocumentRunContext",
+    "ReadDocumentRequest",
+    "ReadDocumentResult",
     "EditableTarget",
     "EditValidationCode",
     "EditValidationIssue",
@@ -304,4 +331,5 @@ __all__ = [
     "TextAnnotation",
     "TextEdit",
     "ValidateTextEditsRequest",
+    "ValidateTextAnnotationsRequest",
 ]

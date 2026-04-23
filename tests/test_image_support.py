@@ -28,20 +28,16 @@ class ImageSupportTests(unittest.TestCase):
         class ImageMeta(BaseModel):
             label: str
 
-        asset = ImageAsset[ImageMeta](
-            mime_type="image/png",
+        asset = ImageAsset[ImageMeta](mime_type="image/png",
             filename="shared.png",
             data_base64="AAAA",
             meta=ImageMeta(label="shared"),
         )
-        doc = DocIR(
-            assets={"img1": asset},
+        doc = DocIR(assets={"img1": asset},
             paragraphs=[
-                ParagraphIR(
-                    unit_id="s1.p1",
-                    content=[
-                        ImageIR(unit_id="s1.p1.img1", image_id="img1", display_width_pt=50.0),
-                        ImageIR(unit_id="s1.p1.img2", image_id="img1", display_width_pt=90.0),
+                ParagraphIR(content=[
+                        ImageIR(image_id="img1", display_width_pt=50.0),
+                        ImageIR(image_id="img1", display_width_pt=90.0),
                     ],
                 )
             ],
@@ -161,19 +157,18 @@ class ImageSupportTests(unittest.TestCase):
             ["RunIR", "ImageIR", "RunIR", "ImageIR", "RunIR"],
         )
         self.assertEqual(
-            [(run.unit_id, run.text) for run in paragraph_ir.runs],
+            [(run.native_anchor.debug_path, run.text) for run in paragraph_ir.runs],
             [
                 ("s1.p1.r1", "Before "),
                 ("s1.p1.r3", "Middle "),
                 ("s1.p1.r5", "After"),
             ],
         )
-        self.assertEqual([image.unit_id for image in paragraph_ir.images], ["s1.p1.img1", "s1.p1.img2"])
+        self.assertEqual([image.native_anchor.debug_path for image in paragraph_ir.images], ["s1.p1.img1", "s1.p1.img2"])
         self.assertEqual(len(parsed.assets), 1)
 
     def test_hwpx_image_display_size_prefers_object_size_over_intrinsic_size(self) -> None:
-        hwpx_bytes = self._build_hwpx_with_inline_image(
-            image_markup="""
+        hwpx_bytes = self._build_hwpx_with_inline_image(image_markup="""
         <hp:sz width="11657" height="3081" widthRelTo="ABSOLUTE" heightRelTo="ABSOLUTE"/>
         <hp:imgDim dimwidth="62580" dimheight="20880"/>
         <hc:img binaryItemIDRef="image1"/>
