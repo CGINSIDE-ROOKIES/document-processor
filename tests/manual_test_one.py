@@ -21,9 +21,7 @@ from document_processor import (  # noqa: E402
     TextAnnotation,
     TextEdit,
     apply_document_edits,
-    get_document_context,
     list_editable_targets,
-    read_document,
     render_review_html,
     validate_document_edits,
     validate_text_annotations,
@@ -58,6 +56,11 @@ def write_json(path: Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+def write_html(path: Path, html: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(html, encoding="utf-8")
+
+
 def iter_paragraph_texts(paragraphs) -> Any:
     for paragraph in paragraphs:
         yield paragraph.text
@@ -84,19 +87,9 @@ def target_kinds_for_arg(target_kind: str) -> list[TargetKind]:
     return [target_kind]  # type: ignore[list-item]
 
 
-def default_output_path(source_path: Path, output_dir: Path) -> Path:
+def default_comprehensive_output_path(source_path: Path, output_dir: Path) -> Path:
     suffix = source_path.suffix or ".out"
-    return output_dir / f"{source_path.stem}_manual_edit{suffix}"
-
-
-def default_cell_output_path(source_path: Path, output_dir: Path) -> Path:
-    suffix = source_path.suffix or ".out"
-    return output_dir / f"{source_path.stem}_manual_cell_edit{suffix}"
-
-
-def default_structural_output_path(source_path: Path, output_dir: Path) -> Path:
-    suffix = source_path.suffix or ".out"
-    return output_dir / f"{source_path.stem}_manual_structural_edit{suffix}"
+    return output_dir / f"{source_path.stem}_comprehensive_edit{suffix}"
 
 
 def default_bytes_output_filename(source_path: Path, *, marker: str = "manual_edit_bytes") -> str:
@@ -157,42 +150,6 @@ def select_edit_target(
     if target_index < 0 or target_index >= len(candidates):
         raise RuntimeError(f"--target-index {target_index} is out of range for {len(candidates)} candidate(s).")
     return candidates[target_index], candidates
-
-
-def select_optional_cell_target(
-    *,
-    document: DocumentInput,
-    target_id: str | None,
-    contains: str | None,
-    target_index: int,
-    excluded_target_ids: set[str],
-) -> tuple[EditableTarget | None, list[EditableTarget], str | None]:
-    target_result = list_editable_targets(
-        document=document,
-        target_ids=[target_id] if target_id else [],
-        target_kinds=["cell"],
-        only_writable=True,
-        include_child_runs=False,
-        max_targets=None,
-    )
-    if target_result.missing_target_ids:
-        raise RuntimeError(f"Missing cell target ids: {target_result.missing_target_ids}")
-
-    candidates = [
-        target
-        for target in target_result.targets
-        if target.target_kind == "cell"
-        and target.current_text.strip()
-        and target.target_id not in excluded_target_ids
-        and (contains is None or contains in target.current_text)
-    ]
-    if not candidates:
-        if target_id or contains:
-            raise RuntimeError("No writable non-empty cell targets matched --cell-target-id or --cell-contains.")
-        return None, [], "No writable non-empty cell target was found."
-    if target_index < 0 or target_index >= len(candidates):
-        raise RuntimeError(f"--cell-target-index {target_index} is out of range for {len(candidates)} cell candidate(s).")
-    return candidates[target_index], candidates, None
 
 
 def resolve_annotation_target(
@@ -360,202 +317,60 @@ def build_text_edit(*, edit_target: EditableTarget, replacement: str) -> TextEdi
     )
 
 
-def validate_edit_suite(*, document: DocumentInput, edit: TextEdit) -> dict[str, Any]:
-    edit_validation = validate_document_edits(
+def resolve_updated_target(*, document: DocumentInput, target: EditableTarget) -> EditableTarget:
+    result = list_editable_targets(
         document=document,
-        edits=[edit],
+        target_ids=[target.target_id],
+        target_kinds=[target.target_kind],
+        only_writable=False,
+        include_child_runs=False,
+        max_targets=None,
     )
-    require_validation_ok("validate_document_edits", edit_validation)
-    return edit_validation.model_dump(mode="json")
+    if result.targets:
+        return result.targets[0]
 
-
-def run_dry_run_edit_suite(*, document: DocumentInput, edit: TextEdit) -> dict[str, Any]:
-    dry_run_result = apply_document_edits(
+    candidates = list_editable_targets(
         document=document,
-        edits=[edit],
-        dry_run=True,
-        return_doc_ir=True,
+        target_kinds=[target.target_kind],
+        only_writable=False,
+        include_child_runs=False,
+        max_targets=None,
+    ).targets
+
+    structural_path = target.native_anchor.structural_path if target.native_anchor is not None else None
+    if structural_path is not None:
+        anchored_matches = [
+            candidate
+            for candidate in candidates
+            if candidate.native_anchor is not None and candidate.native_anchor.structural_path == structural_path
+        ]
+        exact_text_matches = [
+            candidate for candidate in anchored_matches if candidate.current_text == target.current_text
+        ]
+        if len(exact_text_matches) == 1:
+            return exact_text_matches[0]
+        if len(anchored_matches) == 1:
+            return anchored_matches[0]
+
+    text_matches = [candidate for candidate in candidates if candidate.current_text == target.current_text]
+    if len(text_matches) == 1:
+        return text_matches[0]
+
+    raise RuntimeError(
+        "Updated target is missing after edits and could not be re-mapped "
+        f"by structural path/text: {target.target_id}"
     )
-    require_result_ok("apply_document_edits dry_run", dry_run_result)
-    updated_texts = collect_doc_texts(dry_run_result.updated_doc_ir) if dry_run_result.updated_doc_ir else []
-    return {
-        "ok": dry_run_result.ok,
-        "edits_applied": dry_run_result.edits_applied,
-        "modified_target_ids": dry_run_result.modified_target_ids,
-        "updated_doc_ir_contains_new_text": any(edit.new_text in text for text in updated_texts),
-    }
 
 
-def run_doc_ir_edit_suite(*, doc: DocIR, edit: TextEdit) -> dict[str, Any]:
-    doc_ir_result = apply_document_edits(
-        document=DocumentInput(doc_ir=doc),
-        edits=[edit],
-        return_doc_ir=True,
-    )
-    require_result_ok("apply_document_edits doc_ir", doc_ir_result)
-    updated_texts = collect_doc_texts(doc_ir_result.updated_doc_ir) if doc_ir_result.updated_doc_ir else []
-    if not any(edit.new_text in text for text in updated_texts):
-        raise RuntimeError("DocIR edit result did not contain the replacement text.")
-    return {
-        "ok": doc_ir_result.ok,
-        "edits_applied": doc_ir_result.edits_applied,
-        "modified_target_ids": doc_ir_result.modified_target_ids,
-        "modified_run_ids": doc_ir_result.modified_run_ids,
-        "updated_texts": updated_texts[:50],
-    }
+def requested_post_edit_selected_text(*, annotation_target: EditableTarget, selected_text: str | None) -> str | None:
+    if selected_text and selected_text in annotation_target.current_text:
+        return selected_text
+    return None
 
 
-def run_bytes_edit_suite(
-    *,
-    source_path: Path,
-    source_doc_type: str,
-    output_dir: Path,
-    edit: TextEdit,
-    output_filename: str | None = None,
-) -> dict[str, Any]:
-    resolved_output_filename = output_filename or default_bytes_output_filename(source_path)
-    bytes_result = apply_document_edits(
-        document=DocumentInput(
-            source_bytes=source_path.read_bytes(),
-            source_doc_type=source_doc_type,  # type: ignore[arg-type]
-            source_name=source_path.name,
-        ),
-        edits=[edit],
-        output_filename=resolved_output_filename,
-        return_doc_ir=True,
-    )
-    require_result_ok("apply_document_edits bytes", bytes_result)
-    if bytes_result.output_bytes is None:
-        raise RuntimeError("Bytes-backed edit did not return output_bytes.")
-
-    saved_output_path = output_dir / (bytes_result.output_filename or resolved_output_filename)
-    saved_output_path.write_bytes(bytes_result.output_bytes)
-
-    reparsed = parse_output_doc_ir(
-        bytes_result.output_bytes,
-        output_name=bytes_result.output_filename or resolved_output_filename,
-        source_doc_type=source_doc_type,
-    )
-    reparsed_texts = collect_doc_texts(reparsed)
-    if not any(edit.new_text in text for text in reparsed_texts):
-        raise RuntimeError(f"Bytes output did not contain expected text {edit.new_text!r}.")
-    return {
-        "ok": bytes_result.ok,
-        "output_filename": bytes_result.output_filename,
-        "saved_output": str(saved_output_path),
-        "output_bytes": len(bytes_result.output_bytes),
-        "edits_applied": bytes_result.edits_applied,
-        "modified_target_ids": bytes_result.modified_target_ids,
-        "modified_run_ids": bytes_result.modified_run_ids,
-        "reparsed_texts": reparsed_texts[:50],
-    }
-
-
-def run_native_file_edit_suite(
-    *,
-    document: DocumentInput,
-    source_doc_type: str,
-    edit: TextEdit,
-    output_path: Path,
-) -> tuple[Any, list[str]]:
-    edit_result = apply_document_edits(
-        document=document,
-        edits=[edit],
-        output_path=str(output_path),
-        return_doc_ir=True,
-    )
-    require_result_ok("apply_document_edits", edit_result)
-
-    actual_output_path = Path(edit_result.output_path or output_path)
-    if not actual_output_path.exists():
-        raise RuntimeError(f"Edited output file was not created: {actual_output_path}")
-
-    reparsed = parse_output_doc_ir(
-        actual_output_path,
-        output_name=actual_output_path,
-        source_doc_type=source_doc_type,
-    )
-    reparsed_texts = collect_doc_texts(reparsed)
-    if not any(edit.new_text in text for text in reparsed_texts):
-        raise RuntimeError(f"Edited output did not contain expected text {edit.new_text!r}: {actual_output_path}")
-    return edit_result, reparsed_texts
-
-
-def run_optional_cell_edit_suite(
-    *,
-    source_path: Path,
-    source_doc_type: str,
-    source_doc_ir: DocIR,
-    document: DocumentInput,
-    output_dir: Path,
-    cell_output_path: Path,
-    target_id: str | None,
-    contains: str | None,
-    target_index: int,
-    replacement: str | None,
-    append_text: str,
-    excluded_target_ids: set[str],
-) -> dict[str, Any]:
-    cell_target, candidates, skip_reason = select_optional_cell_target(
-        document=document,
-        target_id=target_id,
-        contains=contains,
-        target_index=target_index,
-        excluded_target_ids=excluded_target_ids,
-    )
-    if cell_target is None:
-        return {
-            "skipped": True,
-            "reason": skip_reason,
-            "candidate_count": len(candidates),
-        }
-
-    new_text = replacement if replacement is not None else f"{cell_target.current_text}{append_text}"
-    edit = build_text_edit(edit_target=cell_target, replacement=new_text)
-    edit_validation = validate_edit_suite(document=document, edit=edit)
-    dry_run_suite = run_dry_run_edit_suite(document=document, edit=edit)
-    doc_ir_suite = run_doc_ir_edit_suite(doc=source_doc_ir, edit=edit)
-    bytes_suite = run_bytes_edit_suite(
-        source_path=source_path,
-        source_doc_type=source_doc_type,
-        output_dir=output_dir,
-        edit=edit,
-        output_filename=default_bytes_output_filename(source_path, marker="manual_cell_edit_bytes"),
-    )
-    edit_result, reparsed_texts = run_native_file_edit_suite(
-        document=document,
-        source_doc_type=source_doc_type,
-        edit=edit,
-        output_path=cell_output_path,
-    )
-    return {
-        "skipped": False,
-        "target": cell_target.model_dump(mode="json"),
-        "candidate_count": len(candidates),
-        "first_candidates": [
-            {
-                "target_kind": target.target_kind,
-                "target_id": target.target_id,
-                "current_text": target.current_text,
-                "native_anchor": target.native_anchor.model_dump(mode="json") if target.native_anchor else None,
-            }
-            for target in candidates[:20]
-        ],
-        "edit": edit.model_dump(mode="json"),
-        "validation": edit_validation,
-        "dry_run": dry_run_suite,
-        "doc_ir": doc_ir_suite,
-        "bytes": bytes_suite,
-        "native_file": {
-            "output_path": edit_result.output_path,
-            "new_text": new_text,
-            "edits_applied": edit_result.edits_applied,
-            "modified_target_ids": edit_result.modified_target_ids,
-            "modified_run_ids": edit_result.modified_run_ids,
-            "warnings": edit_result.warnings,
-            "reparsed_texts": reparsed_texts[:50],
-        },
-    }
+def write_doc_html(*, doc: DocIR, output_path: Path, title: str) -> str:
+    write_html(output_path, doc.to_html(title=title))
+    return str(output_path)
 
 
 def iter_doc_ir_tables(doc: DocIR) -> Any:
@@ -792,289 +607,186 @@ def assert_doc_contains_markers(doc: DocIR, markers: list[str], *, label: str) -
     return texts
 
 
-def build_structural_removal_probe_operations(
-    *,
-    document: DocumentInput,
-    source_doc_ir: DocIR,
-    paragraph_target: EditableTarget,
-    cell_target: EditableTarget | None,
-) -> list[StructuralEdit]:
-    operations: list[StructuralEdit] = []
-
-    run_result = list_editable_targets(
-        document=document,
-        target_kinds=["run"],
-        only_writable=True,
-        max_targets=None,
-    )
-    removable_runs = [target for target in run_result.targets if target.current_text.strip()]
-    if removable_runs:
-        run_target = removable_runs[-1]
-        operations.append(
-            StructuralEdit(
-                operation="remove_run",
-                target_id=run_target.target_id,
-                expected_text=run_target.current_text,
-                reason="Manual structural dry-run remove_run probe.",
-            )
-        )
-
-    paragraph_result = list_editable_targets(
-        document=document,
-        target_kinds=["paragraph"],
-        only_writable=False,
-        max_targets=None,
-    )
-    removable_paragraphs = [
-        target
-        for target in paragraph_result.targets
-        if target.target_id != paragraph_target.target_id and target.current_text.strip()
-    ]
-    if removable_paragraphs:
-        paragraph = removable_paragraphs[-1]
-        operations.append(
-            StructuralEdit(
-                operation="remove_paragraph",
-                target_id=paragraph.target_id,
-                expected_text=paragraph.current_text,
-                reason="Manual structural dry-run remove_paragraph probe.",
-            )
-        )
-
-    table_result = list_editable_targets(
-        document=document,
-        target_kinds=["table"],
-        only_writable=False,
-        max_targets=None,
-    )
-    if table_result.targets:
-        operations.append(
-            StructuralEdit(
-                operation="remove_table",
-                target_id=table_result.targets[0].target_id,
-                reason="Manual structural dry-run remove_table probe.",
-            )
-        )
-
-    if cell_target is not None:
-        table_and_cell = find_doc_ir_cell_table(source_doc_ir, cell_target.target_id)
-        if table_and_cell is not None:
-            table, _ = table_and_cell
-            row_count, col_count = table_shape(table)
-            if table_is_rectangular(table) and row_count > 1:
-                operations.append(
-                    StructuralEdit(
-                        operation="remove_table_row",
-                        target_id=cell_target.target_id,
-                        position="after",
-                        reason="Manual structural dry-run remove_table_row probe.",
-                    )
-                )
-            if table_is_rectangular(table) and col_count > 1:
-                operations.append(
-                    StructuralEdit(
-                        operation="remove_table_column",
-                        target_id=cell_target.target_id,
-                        position="after",
-                        reason="Manual structural dry-run remove_table_column probe.",
-                    )
-                )
-
-    return operations
-
-
-def run_structural_removal_probe(
-    *,
-    document: DocumentInput,
-    operations: list[StructuralEdit],
-) -> list[dict[str, Any]]:
-    probe_results = []
-    for operation in operations:
-        validation = validate_document_edits(
-            document=document,
-            edits=[operation],
-        )
-        entry: dict[str, Any] = {
-            "operation": operation.model_dump(mode="json"),
-            "validation": validation.model_dump(mode="json"),
-        }
-        if validation.ok:
-            dry_run = apply_document_edits(
-                document=document,
-                edits=[operation],
-                dry_run=True,
-                return_doc_ir=True,
-            )
-            require_result_ok(f"apply_document_edits dry-run {operation.operation}", dry_run)
-            entry["dry_run"] = operation_summary(dry_run)
-        probe_results.append(entry)
-    return probe_results
-
-
-def run_structural_edit_suite(
+def run_comprehensive_edit_suite(
     *,
     source_path: Path,
     source_doc_type: str,
     source_doc_ir: DocIR,
     document: DocumentInput,
     output_dir: Path,
-    structural_output_path: Path,
-    preferred_target: EditableTarget,
+    edit_target: EditableTarget,
+    annotation_selected_text: str | None,
+    annotation_occurrence_index: int | None,
+    annotation_label: str,
+    annotation_color: str,
+    annotation_note: str,
+    replacement: str | None,
+    append_text: str,
     cell_target_id: str | None,
     cell_contains: str | None,
     cell_target_index: int,
-    paragraph_text: str,
-    run_text: str,
-    cell_text: str,
+    structural_paragraph_text: str,
+    structural_run_text: str,
+    structural_cell_text: str,
 ) -> dict[str, Any]:
     paragraph_target, paragraph_candidates = select_structural_paragraph_target(
         document=document,
-        preferred_target=preferred_target,
+        preferred_target=edit_target,
     )
-    cell_target, cell_table, cell, cell_candidates, cell_skip_reason = select_structural_cell_target(
+    cell_target, cell_table, _cell, cell_candidates, cell_skip_reason = select_structural_cell_target(
         document=document,
         source_doc_ir=source_doc_ir,
         target_id=cell_target_id,
         contains=cell_contains,
         target_index=cell_target_index,
     )
-    table_rows = [
-        ["Manual table A1", "Manual table B1"],
-        ["Manual table A2", "Manual table B2"],
-    ]
-    operations, expected_markers, table_summary = build_structural_operations(
+    if cell_target is not None and cell_target.target_id == edit_target.target_id:
+        cell_target = None
+        cell_table = None
+        cell_skip_reason = "Skipped structural cell operations because the text edit target is the same cell."
+
+    new_text = replacement if replacement is not None else f"{edit_target.current_text}{append_text}"
+    text_edit = build_text_edit(edit_target=edit_target, replacement=new_text)
+    structural_operations, structural_markers, table_summary = build_structural_operations(
         paragraph_target=paragraph_target,
         cell_target=cell_target,
         cell_table=cell_table,
-        paragraph_text=paragraph_text,
-        run_text=run_text,
-        cell_text=cell_text,
-        table_rows=table_rows,
+        paragraph_text=structural_paragraph_text,
+        run_text=structural_run_text,
+        cell_text=structural_cell_text,
+        table_rows=[
+            ["Comprehensive table A1", "Comprehensive table B1"],
+            ["Comprehensive table A2", "Comprehensive table B2"],
+        ],
     )
+    operations = [text_edit, *structural_operations]
+    expected_markers = [new_text, *structural_markers]
 
-    validation = validate_document_edits(
-        document=document,
-        edits=operations,
-    )
-    require_validation_ok("validate_document_edits", validation)
+    validation = validate_document_edits(document=document, edits=operations)
+    require_validation_ok("validate_document_edits comprehensive", validation)
 
-    dry_run_result = apply_document_edits(
-        document=document,
-        edits=operations,
-        dry_run=True,
-        return_doc_ir=True,
-    )
-    require_result_ok("apply_document_edits structural dry_run", dry_run_result)
-    if dry_run_result.updated_doc_ir is not None:
-        assert_doc_contains_markers(dry_run_result.updated_doc_ir, expected_markers, label="Structural dry run")
+    suites: dict[str, Any] = {}
+    output_specs = {
+        "native_file": {
+            "output_path": default_comprehensive_output_path(source_path, output_dir),
+            "output_filename": None,
+            "source_document": document,
+        },
+        "bytes": {
+            "output_path": None,
+            "output_filename": default_bytes_output_filename(source_path, marker="comprehensive_edit_bytes"),
+            "source_document": DocumentInput(
+                source_bytes=source_path.read_bytes(),
+                source_doc_type=source_doc_type,  # type: ignore[arg-type]
+                source_name=source_path.name,
+            ),
+        },
+    }
 
-    doc_ir_result = apply_document_edits(
-        document=DocumentInput(doc_ir=source_doc_ir),
-        edits=operations,
-        return_doc_ir=True,
-    )
-    require_result_ok("apply_document_edits structural doc_ir", doc_ir_result)
-    doc_ir_texts = []
-    if doc_ir_result.updated_doc_ir is not None:
-        doc_ir_texts = assert_doc_contains_markers(
-            doc_ir_result.updated_doc_ir,
+    for suite_name, spec in output_specs.items():
+        result = apply_document_edits(
+            document=spec["source_document"],
+            edits=operations,
+            output_path=None if spec["output_path"] is None else str(spec["output_path"]),
+            output_filename=spec["output_filename"],
+            return_doc_ir=True,
+        )
+        require_result_ok(f"apply_document_edits comprehensive {suite_name}", result)
+        if result.updated_doc_ir is None:
+            raise RuntimeError(f"Comprehensive {suite_name} edit did not return updated_doc_ir.")
+
+        updated_doc = result.updated_doc_ir
+        assert_doc_contains_markers(updated_doc, expected_markers, label=f"Comprehensive {suite_name} preview")
+
+        if suite_name == "bytes":
+            if result.output_bytes is None:
+                raise RuntimeError("Comprehensive bytes edit did not return output_bytes.")
+            saved_output_path = output_dir / (result.output_filename or spec["output_filename"])
+            saved_output_path.write_bytes(result.output_bytes)
+        else:
+            saved_output_path = Path(result.output_path or spec["output_path"])
+            if not saved_output_path.exists():
+                raise RuntimeError(f"Comprehensive edited output file was not created: {saved_output_path}")
+
+        reparsed = parse_output_doc_ir(
+            result.output_bytes if suite_name == "bytes" else saved_output_path,
+            output_name=result.output_filename or saved_output_path,
+            source_doc_type=source_doc_type,
+        )
+        reparsed_texts = assert_doc_contains_markers(
+            reparsed,
             expected_markers,
-            label="Structural DocIR result",
+            label=f"Comprehensive {suite_name} output",
         )
 
-    bytes_output_filename = default_bytes_output_filename(source_path, marker="manual_structural_edit_bytes")
-    bytes_result = apply_document_edits(
-        document=DocumentInput(
-            source_bytes=source_path.read_bytes(),
-            source_doc_type=source_doc_type,  # type: ignore[arg-type]
-            source_name=source_path.name,
-        ),
-        edits=operations,
-        output_filename=bytes_output_filename,
-        return_doc_ir=True,
-    )
-    require_result_ok("apply_document_edits structural bytes", bytes_result)
-    if bytes_result.output_bytes is None:
-        raise RuntimeError("Bytes-backed structural edit did not return output_bytes.")
-    saved_bytes_output_path = output_dir / (bytes_result.output_filename or bytes_output_filename)
-    saved_bytes_output_path.write_bytes(bytes_result.output_bytes)
-    bytes_reparsed = parse_output_doc_ir(
-        bytes_result.output_bytes,
-        output_name=bytes_result.output_filename or bytes_output_filename,
-        source_doc_type=source_doc_type,
-    )
-    bytes_reparsed_texts = assert_doc_contains_markers(
-        bytes_reparsed,
-        expected_markers,
-        label="Structural bytes output",
-    )
+        html_output = write_doc_html(
+            doc=reparsed,
+            output_path=output_dir
+            / f"{source_path.stem}_comprehensive_edit{'_bytes' if suite_name == 'bytes' else ''}.html",
+            title=f"Comprehensive Edit ({suite_name}): {saved_output_path.name}",
+        )
 
-    native_result = apply_document_edits(
-        document=document,
-        edits=operations,
-        output_path=str(structural_output_path),
-        return_doc_ir=True,
-    )
-    require_result_ok("apply_document_edits structural native_file", native_result)
-    actual_structural_output_path = Path(native_result.output_path or structural_output_path)
-    if not actual_structural_output_path.exists():
-        raise RuntimeError(f"Structural edited output file was not created: {actual_structural_output_path}")
-    native_reparsed = parse_output_doc_ir(
-        actual_structural_output_path,
-        output_name=actual_structural_output_path,
-        source_doc_type=source_doc_type,
-    )
-    native_reparsed_texts = assert_doc_contains_markers(
-        native_reparsed,
-        expected_markers,
-        label="Structural native output",
-    )
+        preview_document = DocumentInput(
+            doc_ir=updated_doc,
+            source_name=saved_output_path.name,
+            source_doc_type=updated_doc.source_doc_type or source_doc_type,  # type: ignore[arg-type]
+        )
+        preview_updated_edit_target = resolve_updated_target(document=preview_document, target=edit_target)
+        preview_updated_annotation_target = resolve_annotation_target(
+            document=preview_document,
+            edit_target=preview_updated_edit_target,
+        )
 
-    removal_probe = run_structural_removal_probe(
-        document=document,
-        operations=build_structural_removal_probe_operations(
-            document=document,
-            source_doc_ir=source_doc_ir,
-            paragraph_target=paragraph_target,
-            cell_target=cell_target,
-        ),
-    )
+        reparsed_document = DocumentInput(
+            doc_ir=reparsed,
+            source_path=str(saved_output_path),
+            source_name=saved_output_path.name,
+            source_doc_type=reparsed.source_doc_type or source_doc_type,  # type: ignore[arg-type]
+        )
+        updated_edit_target = resolve_updated_target(document=reparsed_document, target=preview_updated_edit_target)
+        updated_annotation_target = resolve_updated_target(
+            document=reparsed_document,
+            target=preview_updated_annotation_target,
+        )
+        annotation_suite = run_annotation_suite(
+            document=reparsed_document,
+            annotation_target=updated_annotation_target,
+            output_dir=output_dir,
+            source_stem=f"{source_path.stem}_comprehensive_edit{'_bytes' if suite_name == 'bytes' else ''}",
+            selected_text=requested_post_edit_selected_text(
+                annotation_target=updated_annotation_target,
+                selected_text=annotation_selected_text,
+            ),
+            occurrence_index=annotation_occurrence_index,
+            label=f"{annotation_label} ({suite_name} comprehensive)",
+            color=annotation_color,
+            note=f"{annotation_note} Applied after the mixed edit batch.",
+        )
+
+        suites[suite_name] = {
+            **operation_summary(result),
+            "output_path": str(saved_output_path),
+            "output_filename": result.output_filename,
+            "output_bytes": None if result.output_bytes is None else len(result.output_bytes),
+            "expected_markers": expected_markers,
+            "html_output": html_output,
+            "reparsed_texts": reparsed_texts[:50],
+            "updated_edit_target": updated_edit_target.model_dump(mode="json"),
+            "updated_annotation_target": updated_annotation_target.model_dump(mode="json"),
+            "annotation_suite": annotation_suite,
+        }
 
     return {
-        "skipped": False,
+        "operations": [operation.model_dump(mode="json") for operation in operations],
+        "validation": validation.model_dump(mode="json"),
         "paragraph_target": paragraph_target.model_dump(mode="json"),
         "paragraph_candidate_count": len(paragraph_candidates),
         "cell_target": cell_target.model_dump(mode="json") if cell_target else None,
-        "cell_source_position": None
-        if cell is None
-        else {
-            "row_index": cell.row_index,
-            "col_index": cell.col_index,
-        },
         "cell_candidate_count": len(cell_candidates),
         "cell_skip_reason": cell_skip_reason,
         "table_summary": table_summary,
-        "operations": [operation.model_dump(mode="json") for operation in operations],
-        "expected_markers": expected_markers,
-        "validation": validation.model_dump(mode="json"),
-        "dry_run": operation_summary(dry_run_result),
-        "doc_ir": {
-            **operation_summary(doc_ir_result),
-            "updated_texts": doc_ir_texts[:50],
-        },
-        "bytes": {
-            **operation_summary(bytes_result),
-            "output_filename": bytes_result.output_filename,
-            "saved_output": str(saved_bytes_output_path),
-            "output_bytes": len(bytes_result.output_bytes),
-            "reparsed_texts": bytes_reparsed_texts[:50],
-        },
-        "native_file": {
-            **operation_summary(native_result),
-            "output_path": native_result.output_path,
-            "reparsed_texts": native_reparsed_texts[:50],
-        },
-        "removal_dry_run_probe": removal_probe,
+        "native_file": suites["native_file"],
+        "bytes": suites["bytes"],
     }
 
 
@@ -1083,8 +795,6 @@ def run_manual_file_flow(
     source_path: Path,
     source_doc_type: str,
     output_dir: Path,
-    output_path: Path | None,
-    structural_output_path: Path | None,
     target_kind: str,
     target_id: str | None,
     contains: str | None,
@@ -1094,26 +804,19 @@ def run_manual_file_flow(
     cell_target_id: str | None,
     cell_contains: str | None,
     cell_target_index: int,
-    cell_replacement: str | None,
-    cell_append_text: str,
     annotation_selected_text: str | None,
     annotation_occurrence_index: int | None,
     annotation_label: str,
     annotation_color: str,
     annotation_note: str,
-    skip_structural_suite: bool,
     structural_paragraph_text: str,
     structural_run_text: str,
     structural_cell_text: str,
-    preview_limit: int,
 ) -> dict[str, Any]:
     if not source_path.exists():
         raise FileNotFoundError(f"Source file does not exist: {source_path}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    requested_output_path = output_path or default_output_path(source_path, output_dir)
-    requested_cell_output_path = default_cell_output_path(source_path, output_dir)
-    requested_structural_output_path = structural_output_path or default_structural_output_path(source_path, output_dir)
     summary_path = output_dir / f"{source_path.stem}_summary.json"
     source_doc_ir = DocIR.from_file(source_path, doc_type=source_doc_type)  # type: ignore[arg-type]
     source_doc_ir.ensure_node_identity()
@@ -1122,12 +825,6 @@ def run_manual_file_flow(
         source_path=str(source_path),
         source_doc_type=source_doc_ir.source_doc_type or source_doc_type,  # type: ignore[arg-type]
     )
-
-    read_result = read_document(
-        document=cached_document,
-        include_runs=True,
-        limit=preview_limit,
-    )
     edit_target, candidates = select_edit_target(
         document=cached_document,
         target_kind=target_kind,
@@ -1135,81 +832,30 @@ def run_manual_file_flow(
         contains=contains,
         target_index=target_index,
     )
-    annotation_target = resolve_annotation_target(
+    initial_annotation_target = resolve_annotation_target(
         document=cached_document,
         edit_target=edit_target,
     )
-    context_result = get_document_context(
-        document=cached_document,
-        target_ids=[edit_target.target_id, annotation_target.target_id],
-        before=1,
-        after=1,
-        include_runs=True,
-    )
-    annotation_suite = run_annotation_suite(
-        document=cached_document,
-        annotation_target=annotation_target,
-        output_dir=output_dir,
-        source_stem=source_path.stem,
-        selected_text=annotation_selected_text,
-        occurrence_index=annotation_occurrence_index,
-        label=annotation_label,
-        color=annotation_color,
-        note=annotation_note,
-    )
-
-    new_text = replacement if replacement is not None else f"{edit_target.current_text}{append_text}"
-    edit = build_text_edit(edit_target=edit_target, replacement=new_text)
-    edit_validation = validate_edit_suite(document=cached_document, edit=edit)
-    dry_run_suite = run_dry_run_edit_suite(document=cached_document, edit=edit)
-    doc_ir_suite = run_doc_ir_edit_suite(doc=source_doc_ir, edit=edit)
-    bytes_suite = run_bytes_edit_suite(
-        source_path=source_path,
-        source_doc_type=source_doc_type,
-        output_dir=output_dir,
-        edit=edit,
-    )
-    edit_result, reparsed_texts = run_native_file_edit_suite(
-        document=cached_document,
-        source_doc_type=source_doc_type,
-        edit=edit,
-        output_path=requested_output_path,
-    )
-    cell_edit_suite = run_optional_cell_edit_suite(
+    comprehensive_edit_suite = run_comprehensive_edit_suite(
         source_path=source_path,
         source_doc_type=source_doc_type,
         source_doc_ir=source_doc_ir,
         document=cached_document,
         output_dir=output_dir,
-        cell_output_path=requested_cell_output_path,
-        target_id=cell_target_id,
-        contains=cell_contains,
-        target_index=cell_target_index,
-        replacement=cell_replacement,
-        append_text=cell_append_text,
-        excluded_target_ids={edit_target.target_id},
-    )
-    structural_edit_suite = (
-        {
-            "skipped": True,
-            "reason": "Skipped by --skip-structural-suite.",
-        }
-        if skip_structural_suite
-        else run_structural_edit_suite(
-            source_path=source_path,
-            source_doc_type=source_doc_type,
-            source_doc_ir=source_doc_ir,
-            document=cached_document,
-            output_dir=output_dir,
-            structural_output_path=requested_structural_output_path,
-            preferred_target=edit_target,
-            cell_target_id=cell_target_id,
-            cell_contains=cell_contains,
-            cell_target_index=cell_target_index,
-            paragraph_text=structural_paragraph_text,
-            run_text=structural_run_text,
-            cell_text=structural_cell_text,
-        )
+        edit_target=edit_target,
+        annotation_selected_text=annotation_selected_text,
+        annotation_occurrence_index=annotation_occurrence_index,
+        annotation_label=annotation_label,
+        annotation_color=annotation_color,
+        annotation_note=annotation_note,
+        replacement=replacement,
+        append_text=append_text,
+        cell_target_id=cell_target_id,
+        cell_contains=cell_contains,
+        cell_target_index=cell_target_index,
+        structural_paragraph_text=structural_paragraph_text,
+        structural_run_text=structural_run_text,
+        structural_cell_text=structural_cell_text,
     )
 
     summary = {
@@ -1219,67 +865,23 @@ def run_manual_file_flow(
             "requested_doc_type": source_doc_type,
         },
         "paths": {
-            "requested_output": str(requested_output_path),
-            "edited_output": edit_result.output_path,
-            "requested_cell_output": str(requested_cell_output_path),
-            "cell_edited_output": None
-            if cell_edit_suite["skipped"]
-            else cell_edit_suite["native_file"]["output_path"],
-            "requested_structural_output": str(requested_structural_output_path),
-            "structural_edited_output": None
-            if structural_edit_suite["skipped"]
-            else structural_edit_suite["native_file"]["output_path"],
-            "review_html_full": annotation_suite["full_target"]["review_html"],
-            "review_html_selected": annotation_suite["selected_text"]["review_html"],
-            "bytes_output": bytes_suite["saved_output"],
-            "cell_bytes_output": None
-            if cell_edit_suite["skipped"]
-            else cell_edit_suite["bytes"]["saved_output"],
-            "structural_bytes_output": None
-            if structural_edit_suite["skipped"]
-            else structural_edit_suite["bytes"]["saved_output"],
+            "comprehensive_output": comprehensive_edit_suite["native_file"]["output_path"],
+            "comprehensive_bytes_output": comprehensive_edit_suite["bytes"]["output_path"],
+            "comprehensive_html": comprehensive_edit_suite["native_file"]["html_output"],
+            "comprehensive_bytes_html": comprehensive_edit_suite["bytes"]["html_output"],
+            "comprehensive_review_html_full": comprehensive_edit_suite["native_file"]["annotation_suite"]["full_target"][
+                "review_html"
+            ],
+            "comprehensive_review_html_selected": comprehensive_edit_suite["native_file"]["annotation_suite"][
+                "selected_text"
+            ]["review_html"],
+            "comprehensive_bytes_review_html_full": comprehensive_edit_suite["bytes"]["annotation_suite"][
+                "full_target"
+            ]["review_html"],
+            "comprehensive_bytes_review_html_selected": comprehensive_edit_suite["bytes"]["annotation_suite"][
+                "selected_text"
+            ]["review_html"],
             "summary_json": str(summary_path),
-        },
-        "read_document_preview": {
-            "start": read_result.start,
-            "limit": read_result.limit,
-            "total_paragraphs": read_result.total_paragraphs,
-            "next_start": read_result.next_start,
-            "paragraphs": [
-                {
-                    "node_id": paragraph.node_id,
-                    "text": paragraph.text,
-                    "runs": [
-                        {
-                            "node_id": run.node_id,
-                            "text": run.text,
-                            "start": run.start,
-                            "end": run.end,
-                        }
-                        for run in paragraph.runs
-                    ],
-                }
-                for paragraph in read_result.paragraphs
-            ],
-        },
-        "document_context": {
-            "missing_target_ids": context_result.missing_target_ids,
-            "paragraphs": [
-                {
-                    "node_id": paragraph.node_id,
-                    "text": paragraph.text,
-                    "runs": [
-                        {
-                            "node_id": run.node_id,
-                            "text": run.text,
-                            "start": run.start,
-                            "end": run.end,
-                        }
-                        for run in paragraph.runs
-                    ],
-                }
-                for paragraph in context_result.paragraphs
-            ],
         },
         "target_selection": {
             "target_kind_arg": target_kind,
@@ -1299,35 +901,9 @@ def run_manual_file_flow(
         },
         "selected_targets": {
             "edit": edit_target.model_dump(mode="json"),
-            "annotation": annotation_target.model_dump(mode="json"),
+            "initial_annotation": initial_annotation_target.model_dump(mode="json"),
         },
-        "annotation_suites": annotation_suite,
-        "edit_suites": {
-            "edit": edit.model_dump(mode="json"),
-            "validation": edit_validation,
-            "dry_run": dry_run_suite,
-            "doc_ir": doc_ir_suite,
-            "bytes": bytes_suite,
-            "native_file": {
-                "new_text": new_text,
-                "edits_applied": edit_result.edits_applied,
-                "modified_target_ids": edit_result.modified_target_ids,
-                "modified_run_ids": edit_result.modified_run_ids,
-                "warnings": edit_result.warnings,
-                "reparsed_texts": reparsed_texts[:50],
-            },
-        },
-        "cell_edit_suite": cell_edit_suite,
-        "structural_edit_suite": structural_edit_suite,
-        # Kept as a compact alias for terminal output and quick manual inspection.
-        "edit": {
-            "new_text": new_text,
-            "edits_applied": edit_result.edits_applied,
-            "modified_target_ids": edit_result.modified_target_ids,
-            "modified_run_ids": edit_result.modified_run_ids,
-            "warnings": edit_result.warnings,
-        },
-        "reparsed_texts": reparsed_texts[:50],
+        "comprehensive_edit_suite": comprehensive_edit_suite,
     }
     write_json(summary_path, summary)
     return summary
@@ -1335,7 +911,7 @@ def run_manual_file_flow(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Manually annotate, edit, and export one existing DOCX/HWPX/HWP file through the public API.",
+        description="Run the comprehensive mixed edit + annotation manual flow on one existing DOCX/HWPX/HWP file.",
     )
     parser.add_argument(
         "source_path",
@@ -1353,18 +929,6 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=ROOT / "tests" / "results" / "manual_test_one",
         help="Directory for edited output, review HTML, and summary JSON.",
-    )
-    parser.add_argument(
-        "--output-path",
-        type=Path,
-        default=None,
-        help="Exact requested output path. HWP outputs are normalized to .hwpx by the API.",
-    )
-    parser.add_argument(
-        "--structural-output-path",
-        type=Path,
-        default=None,
-        help="Exact requested output path for the structural edit suite.",
     )
     parser.add_argument(
         "--target-kind",
@@ -1401,28 +965,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--cell-target-id",
         default=None,
-        help="Exact stable cell target id for the optional cell edit suite.",
+        help="Exact stable cell target id for the comprehensive set_cell_text/row/column operations.",
     )
     parser.add_argument(
         "--cell-contains",
         default=None,
-        help="Select the optional cell edit target by substring.",
+        help="Select the comprehensive cell target by substring.",
     )
     parser.add_argument(
         "--cell-target-index",
         type=int,
         default=0,
         help="Zero-based index among matched writable cell targets.",
-    )
-    parser.add_argument(
-        "--cell-replacement",
-        default=None,
-        help="Replacement text for the optional cell edit. Defaults to appending --cell-append-text.",
-    )
-    parser.add_argument(
-        "--cell-append-text",
-        default=" [manual cell edit]",
-        help="Text appended to the selected cell when --cell-replacement is omitted.",
     )
     parser.add_argument(
         "--annotation-selected-text",
@@ -1451,30 +1005,19 @@ def parse_args() -> argparse.Namespace:
         help="Annotation note shown in the generated review HTML.",
     )
     parser.add_argument(
-        "--skip-structural-suite",
-        action="store_true",
-        help="Skip apply_document_edits structural operation checks.",
-    )
-    parser.add_argument(
         "--structural-paragraph-text",
         default="Manual structural paragraph",
-        help="Text inserted by the structural paragraph operation.",
+        help="Text inserted by the comprehensive paragraph operation.",
     )
     parser.add_argument(
         "--structural-run-text",
         default=" [manual structural run]",
-        help="Text inserted by the structural run operation.",
+        help="Text inserted by the comprehensive run operation.",
     )
     parser.add_argument(
         "--structural-cell-text",
         default="Manual structural cell",
-        help="Text used by the structural set_cell_text operation when a table cell exists.",
-    )
-    parser.add_argument(
-        "--preview-limit",
-        type=int,
-        default=25,
-        help="Number of paragraphs to include in the read_document preview summary.",
+        help="Text used by the comprehensive set_cell_text operation when a table cell exists.",
     )
     return parser.parse_args()
 
@@ -1485,8 +1028,6 @@ def main() -> int:
         source_path=args.source_path,
         source_doc_type=args.source_doc_type,
         output_dir=args.output_dir,
-        output_path=args.output_path,
-        structural_output_path=args.structural_output_path,
         target_kind=args.target_kind,
         target_id=args.target_id,
         contains=args.contains,
@@ -1496,51 +1037,47 @@ def main() -> int:
         cell_target_id=args.cell_target_id,
         cell_contains=args.cell_contains,
         cell_target_index=args.cell_target_index,
-        cell_replacement=args.cell_replacement,
-        cell_append_text=args.cell_append_text,
         annotation_selected_text=args.annotation_selected_text,
         annotation_occurrence_index=args.annotation_occurrence_index,
         annotation_label=args.annotation_label,
         annotation_color=args.annotation_color,
         annotation_note=args.annotation_note,
-        skip_structural_suite=args.skip_structural_suite,
         structural_paragraph_text=args.structural_paragraph_text,
         structural_run_text=args.structural_run_text,
         structural_cell_text=args.structural_cell_text,
-        preview_limit=args.preview_limit,
     )
 
     print("Manual file flow completed.")
     print(f"Source: {summary['source']['path']}")
-    print(f"Edited output: {summary['paths']['edited_output']}")
-    print(f"Bytes output: {summary['paths']['bytes_output']}")
-    if summary["cell_edit_suite"]["skipped"]:
-        print(f"Cell edit: skipped ({summary['cell_edit_suite']['reason']})")
-    else:
-        print(f"Cell edited output: {summary['paths']['cell_edited_output']}")
-        print(f"Cell bytes output: {summary['paths']['cell_bytes_output']}")
-    if summary["structural_edit_suite"]["skipped"]:
-        print(f"Structural edits: skipped ({summary['structural_edit_suite']['reason']})")
-    else:
-        print(f"Structural edited output: {summary['paths']['structural_edited_output']}")
-        print(f"Structural bytes output: {summary['paths']['structural_bytes_output']}")
-    print(f"Review HTML full: {summary['paths']['review_html_full']}")
-    print(f"Review HTML selected: {summary['paths']['review_html_selected']}")
+    print(f"Comprehensive edited output: {summary['paths']['comprehensive_output']}")
+    print(f"Comprehensive bytes output: {summary['paths']['comprehensive_bytes_output']}")
+    print(f"Comprehensive HTML: {summary['paths']['comprehensive_html']}")
+    print(f"Comprehensive bytes HTML: {summary['paths']['comprehensive_bytes_html']}")
+    print(f"Comprehensive review HTML full: {summary['paths']['comprehensive_review_html_full']}")
+    print(f"Comprehensive review HTML selected: {summary['paths']['comprehensive_review_html_selected']}")
+    print(f"Comprehensive bytes review HTML full: {summary['paths']['comprehensive_bytes_review_html_full']}")
+    print(
+        "Comprehensive bytes review HTML selected: "
+        f"{summary['paths']['comprehensive_bytes_review_html_selected']}"
+    )
     print(f"Summary JSON: {summary['paths']['summary_json']}")
     print(
-        "Edited target: "
+        "Initial edit target: "
         f"{summary['selected_targets']['edit']['target_kind']} "
         f"{summary['selected_targets']['edit']['target_id']}"
     )
-    print(f"Annotation target: {summary['selected_targets']['annotation']['target_id']}")
-    print(f"Modified target ids: {', '.join(summary['edit']['modified_target_ids'])}")
+    print(f"Initial annotation target: {summary['selected_targets']['initial_annotation']['target_id']}")
     print(
-        "Suites: read_document, get_document_context, list_editable_targets, "
-        "validate/render annotations, validate/dry-run/doc_ir/bytes/native edits, "
-        "validate/dry-run/doc_ir/bytes/native structural edits"
+        "Comprehensive modified target ids: "
+        f"{', '.join(summary['comprehensive_edit_suite']['native_file']['modified_target_ids'])}"
     )
-    if summary["edit"]["warnings"]:
-        print(f"Warnings: {'; '.join(summary['edit']['warnings'])}")
+    print(
+        "Suite: one mixed text+structural comprehensive edit path with native/bytes exports "
+        "plus HTML and post-edit annotation exports"
+    )
+    warnings = summary["comprehensive_edit_suite"]["native_file"]["warnings"]
+    if warnings:
+        print(f"Warnings: {'; '.join(warnings)}")
     return 0
 
 

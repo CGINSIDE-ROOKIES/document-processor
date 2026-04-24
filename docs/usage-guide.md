@@ -89,7 +89,8 @@ from document_processor import DocIR
 doc = DocIR.from_file("/path/to/contract.docx")
 
 for paragraph in doc.paragraphs[:3]:
-    print(paragraph.node_id, paragraph.page_number, paragraph.text)
+    marker = paragraph.para_style.list_info.marker if paragraph.para_style and paragraph.para_style.list_info else ""
+    print(paragraph.node_id, paragraph.page_number, marker, paragraph.text)
     for run in paragraph.runs:
         print(" ", run.node_id, repr(run.text))
 ```
@@ -99,6 +100,8 @@ Useful helpers:
 - `paragraph.runs`
 - `paragraph.images`
 - `paragraph.tables`
+- `paragraph.para_style.list_info` for resolved list markers
+- `paragraph.para_style.column_layout` for multi-column layout
 - `table.markdown`
 - `doc.pages`
 

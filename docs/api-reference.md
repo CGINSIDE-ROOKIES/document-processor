@@ -107,8 +107,9 @@ hanging indents are preserved when the positive left indent is large enough.
 Table cell padding is rendered from `CellStyleInfo` when extracted from source
 cell margins such as HWPX `hp:cellMargin` or DOCX `w:tcMar`.
 Top-level consecutive paragraphs with the same multi-column
-`ParaStyleInfo` column fields are wrapped in a CSS multi-column group when rendered
-to HTML.
+`ParaStyleInfo.column_layout` are wrapped in a CSS multi-column group when
+rendered to HTML. Paragraphs with `ParaStyleInfo.list_info` render their
+resolved list marker before the editable paragraph text.
 
 ### `ParagraphIR`
 
@@ -164,6 +165,8 @@ Computed helper:
 - `TableCellIR`
 - `NativeAnchor`
 - `CellStyleInfo`
+- `ColumnLayoutInfo`
+- `ListItemInfo`
 - `ParaStyleInfo`
 - `RunStyleInfo`
 - `TableStyleInfo`
@@ -226,15 +229,43 @@ Important fields:
 - `right_indent_pt`
 - `first_line_indent_pt`
 - `hanging_indent_pt`
-- `column_count`
-- `column_gap_pt`
-- `column_widths_pt`
-- `column_gaps_pt`
-- `column_equal_width`
+- `column_layout`
+- `list_info`
 
-Column fields represent active section/text-column layout for rendering. They
-live directly on `ParaStyleInfo` because they affect paragraph presentation, not
-the structural identity of the paragraph.
+`column_layout` is a `ColumnLayoutInfo` object used for active section/text-column
+layout. It is omitted for ordinary single-column paragraphs.
+
+`list_info` is a `ListItemInfo` object containing resolved paragraph-list display
+metadata. It is intentionally per paragraph rather than a separate list node, so
+the structural IR remains paragraph-first.
+
+#### `ColumnLayoutInfo`
+
+Column layout metadata for paragraph rendering.
+
+Important fields:
+
+- `count`
+- `gap_pt`
+- `widths_pt`
+- `gaps_pt`
+- `equal_width`
+
+#### `ListItemInfo`
+
+Resolved list marker metadata for a paragraph.
+
+Important fields:
+
+- `list_id`
+- `level`
+- `marker`
+- `marker_type`
+- `marker_text`
+
+For DOCX, this is resolved from `w:numPr` and `word/numbering.xml`. For HWPX,
+this is resolved from `hh:paraPr/hh:heading` and header `hh:numbering` or
+`hh:bullet` definitions.
 
 ## Source/Input Models
 
@@ -284,9 +315,15 @@ Response fields:
 - `next_start`
 - `paragraphs`
 
-Each paragraph contains a fully constructed `text` field for readability. When
-`include_runs=True`, each run includes `start` and `end` offsets relative to that
-paragraph text so callers can map readable text spans back to editable run IDs.
+Each paragraph contains:
+
+- `text`: editable paragraph text without generated list markers.
+- `display_text`: readable text with resolved list markers prefixed when present.
+- `list_info`: optional resolved list marker metadata.
+
+When `include_runs=True`, each run includes `start` and `end` offsets relative to
+the raw paragraph `text` so callers can map readable text spans back to editable
+run IDs.
 
 ### `get_document_context(*, document=None, source_path=None, target_ids=None, before=1, after=1, include_runs=True) -> DocumentContextResult`
 

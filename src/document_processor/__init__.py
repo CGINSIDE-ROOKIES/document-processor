@@ -38,7 +38,7 @@ from .builder import build_doc_ir_from_mapping
 from .diagram import create_model_diagram, draw_model_diagram
 from .hwpx import HwpxDocument
 from .models import DocIR, ImageAsset, ImageIR, NativeAnchor, NodeKind, PageInfo, ParagraphContentNode, ParagraphIR, RunIR, TableCellIR, TableIR
-from .style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo, StyleMap, TableStyleInfo
+from .style_types import CellStyleInfo, ColumnLayoutInfo, ListItemInfo, ParaStyleInfo, RunStyleInfo, StyleMap, TableStyleInfo
 
 __all__ = [
     "AnnotationTargetKind",
@@ -47,6 +47,7 @@ __all__ = [
     "AnnotationValidationResult",
     "ApplyDocumentEditsResult",
     "CellStyleInfo",
+    "ColumnLayoutInfo",
     "DocIR",
     "DocumentContextResult",
     "DocumentEdit",
@@ -62,6 +63,7 @@ __all__ = [
     "ImageIR",
     "InsertPosition",
     "ListEditableTargetsResult",
+    "ListItemInfo",
     "NativeAnchor",
     "NodeKind",
     "PageInfo",

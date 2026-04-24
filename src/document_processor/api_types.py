@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from .io_utils import SourceDocType
 from .models import DocIR, NativeAnchor
+from .style_types import ListItemInfo
 
 TargetKind = Literal["paragraph", "run", "cell", "table"]
 TextTargetKind = Literal["paragraph", "run", "cell"]
@@ -246,7 +247,9 @@ class DocumentRunContext(BaseModel):
 class DocumentParagraphContext(BaseModel):
     node_id: str
     text: str
+    display_text: str = ""
     page_number: int | None = None
+    list_info: ListItemInfo | None = None
     has_tables: bool = False
     has_images: bool = False
     writable_as_paragraph: bool = False

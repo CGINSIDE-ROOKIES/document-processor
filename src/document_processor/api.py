@@ -1258,16 +1258,28 @@ def _validate_text_annotations_for_doc(
 
 def _paragraph_context(paragraph: ParagraphIR, *, include_runs: bool) -> DocumentParagraphContext:
     writable, _reason = _paragraph_writable(paragraph)
+    text = paragraph.text or ""
     return DocumentParagraphContext(
         node_id=paragraph.node_id,
-        text=paragraph.text or "",
+        text=text,
+        display_text=_paragraph_display_text(paragraph),
         page_number=paragraph.page_number,
+        list_info=paragraph.para_style.list_info if paragraph.para_style is not None else None,
         has_tables=bool(paragraph.tables),
         has_images=bool(paragraph.images),
         writable_as_paragraph=writable,
         native_anchor=paragraph.native_anchor,
         runs=_run_contexts(paragraph) if include_runs else [],
     )
+
+
+def _paragraph_display_text(paragraph: ParagraphIR) -> str:
+    text = paragraph.text or ""
+    list_info = paragraph.para_style.list_info if paragraph.para_style is not None else None
+    if list_info is None or not list_info.marker:
+        return text
+    indent = "  " * max(list_info.level, 0)
+    return f"{indent}{list_info.marker} {text}".rstrip()
 
 
 def _run_contexts(paragraph: ParagraphIR) -> list[DocumentRunContext]:

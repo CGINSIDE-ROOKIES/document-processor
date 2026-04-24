@@ -1101,9 +1101,11 @@ def _make_inserted_paragraph(
     seed: str,
     source_doc_type: str | None,
     existing_ids: set[str],
+    page_number: int | None = None,
 ) -> ParagraphIR:
     paragraph = ParagraphIR(
         node_id=_new_inserted_node_id("paragraph", f"{seed}.paragraph.{_text_digest(text)}", existing_ids),
+        page_number=page_number,
         native_anchor=_inserted_anchor("paragraph", seed, source_doc_type=source_doc_type, text=text),
     )
     paragraph.content.append(
@@ -1129,6 +1131,7 @@ def _make_inserted_cell(
     row_count: int = 1,
     col_count: int = 1,
     cell_style: CellStyleInfo | None = None,
+    page_number: int | None = None,
 ) -> TableCellIR:
     cell = TableCellIR(
         node_id=_new_inserted_node_id("cell", f"{seed}.cell.r{row_index}.c{col_index}.{_text_digest(text)}", existing_ids),
@@ -1143,6 +1146,7 @@ def _make_inserted_cell(
             seed=f"{seed}.cell.r{row_index}.c{col_index}.p1",
             source_doc_type=source_doc_type,
             existing_ids=existing_ids,
+            page_number=page_number,
         )
     )
     cell.recompute_text()
@@ -1155,6 +1159,7 @@ def _make_inserted_table(
     seed: str,
     source_doc_type: str | None,
     existing_ids: set[str],
+    page_number: int | None = None,
 ) -> TableIR:
     row_count = len(rows)
     col_count = len(rows[0]) if rows else 0
@@ -1177,6 +1182,7 @@ def _make_inserted_table(
                     existing_ids=existing_ids,
                     row_count=row_count,
                     col_count=col_count,
+                    page_number=page_number,
                 )
             )
     return table
@@ -1190,6 +1196,32 @@ def _normalize_table_rows(rows: list[list[str]] | None) -> list[list[str]]:
     if any(len(row) != width for row in normalized):
         raise EditValidationError("insert_table rows must be rectangular.", code="invalid_table_shape")
     return [[str(value) for value in row] for row in normalized]
+
+
+def _assign_page_number_to_paragraph(paragraph: ParagraphIR, page_number: int | None) -> None:
+    paragraph.page_number = page_number
+    for node in paragraph.content:
+        if isinstance(node, TableIR):
+            for cell in node.cells:
+                for cell_paragraph in cell.paragraphs:
+                    _assign_page_number_to_paragraph(cell_paragraph, page_number)
+
+
+def _infer_cell_page_number(cell: TableCellIR) -> int | None:
+    for paragraph in cell.paragraphs:
+        if paragraph.page_number is not None:
+            return paragraph.page_number
+    return None
+
+
+def _infer_table_page_number(index: _StructuralDocIrIndex, table: TableIR) -> int | None:
+    table_location = index.tables.get(table.node_id)
+    if table_location is not None and table_location.paragraph.page_number is not None:
+        return table_location.paragraph.page_number
+    for cell in table.cells:
+        if (page_number := _infer_cell_page_number(cell)) is not None:
+            return page_number
+    return None
 
 
 def _collect_doc_ir_node_ids(node) -> list[str]:
@@ -1237,6 +1269,7 @@ def _replace_cell_paragraphs(
     source_doc_type: str | None,
     existing_ids: set[str],
     result: _EditEngineResult,
+    page_number: int | None = None,
 ) -> None:
     for paragraph in cell.paragraphs:
         for node_id in _collect_doc_ir_node_ids(paragraph):
@@ -1249,6 +1282,7 @@ def _replace_cell_paragraphs(
             seed=f"{seed}.p{index}",
             source_doc_type=source_doc_type,
             existing_ids=existing_ids,
+            page_number=page_number,
         )
         for index, line in enumerate(lines, start=1)
     ]
@@ -1339,11 +1373,13 @@ def _validate_expected_text(expected_text: str | None, current_text: str, operat
 def _ensure_doc_ir_has_content(doc: DocIR, existing_ids: set[str], result: _EditEngineResult) -> None:
     if doc.paragraphs:
         return
+    default_page_number = doc.pages[0].page_number if doc.pages else None
     paragraph = _make_inserted_paragraph(
         text="",
         seed="document.empty.p1",
         source_doc_type=doc.source_doc_type,
         existing_ids=existing_ids,
+        page_number=default_page_number,
     )
     doc.paragraphs.append(paragraph)
     for node_id in _collect_doc_ir_node_ids(paragraph):
@@ -1353,11 +1389,13 @@ def _ensure_doc_ir_has_content(doc: DocIR, existing_ids: set[str], result: _Edit
 def _ensure_cell_has_paragraph(cell: TableCellIR, doc: DocIR, existing_ids: set[str], result: _EditEngineResult) -> None:
     if cell.paragraphs:
         return
+    page_number = _infer_cell_page_number(cell)
     paragraph = _make_inserted_paragraph(
         text="",
         seed=f"{cell.node_id}.empty.p1",
         source_doc_type=doc.source_doc_type,
         existing_ids=existing_ids,
+        page_number=page_number,
     )
     cell.paragraphs.append(paragraph)
     cell.recompute_text()
@@ -1393,6 +1431,7 @@ def _apply_structural_doc_ir_operation(
                 seed=seed,
                 source_doc_type=doc.source_doc_type,
                 existing_ids=existing_ids,
+                page_number=paragraph_location.node.page_number,
             )
             offset = 0 if operation.position == "before" else 1
             paragraph_location.container.insert(paragraph_location.index + offset, inserted)
@@ -1404,6 +1443,7 @@ def _apply_structural_doc_ir_operation(
                 seed=seed,
                 source_doc_type=doc.source_doc_type,
                 existing_ids=existing_ids,
+                page_number=_infer_cell_page_number(cell_location.node),
             )
             insert_index = 0 if operation.position in {"start", "before"} else len(cell_location.node.paragraphs)
             cell_location.node.paragraphs.insert(insert_index, inserted)
@@ -1523,13 +1563,16 @@ def _apply_structural_doc_ir_operation(
             seed=seed,
             source_doc_type=doc.source_doc_type,
             existing_ids=existing_ids,
+            page_number=paragraph_location.node.page_number,
         )
         table_paragraph = ParagraphIR(
             node_id=_new_inserted_node_id("paragraph", f"{seed}.table.paragraph", existing_ids),
+            page_number=paragraph_location.node.page_number,
             native_anchor=_inserted_anchor("paragraph", seed, source_doc_type=doc.source_doc_type),
             content=[table],
         )
         table_paragraph.recompute_text()
+        _assign_page_number_to_paragraph(table_paragraph, paragraph_location.node.page_number)
         offset = 0 if operation.position == "before" else 1
         paragraph_location.container.insert(paragraph_location.index + offset, table_paragraph)
         for node_id in _collect_doc_ir_node_ids(table_paragraph):
@@ -1574,6 +1617,7 @@ def _apply_structural_doc_ir_operation(
             source_doc_type=doc.source_doc_type,
             existing_ids=existing_ids,
             result=result,
+            page_number=_infer_cell_page_number(cell_location.node),
         )
         _append_unique(result.modified_target_ids, operation.target_id)
         result.operations_applied += 1
@@ -1583,6 +1627,7 @@ def _apply_structural_doc_ir_operation(
         table, row_index = _resolve_table_axis(index, operation, axis="row")
         row_count = _table_row_count(table)
         col_count = _table_col_count(table)
+        table_page_number = _infer_table_page_number(index, table)
         if row_index < 1 or row_index > row_count:
             raise EditValidationError("Table row index is out of bounds.", code="index_out_of_bounds", operation=operation.operation)
         if operation.operation == "remove_table_row":
@@ -1624,6 +1669,7 @@ def _apply_structural_doc_ir_operation(
                     row_count=row_count + 1,
                     col_count=col_count,
                     cell_style=template_styles[col_index],
+                    page_number=table_page_number,
                 )
                 table.cells.append(new_cell)
                 for node_id in _collect_doc_ir_node_ids(new_cell):
@@ -1637,6 +1683,7 @@ def _apply_structural_doc_ir_operation(
         table, column_index = _resolve_table_axis(index, operation, axis="column")
         row_count = _table_row_count(table)
         col_count = _table_col_count(table)
+        table_page_number = _infer_table_page_number(index, table)
         if column_index < 1 or column_index > col_count:
             raise EditValidationError("Table column index is out of bounds.", code="index_out_of_bounds", operation=operation.operation)
         if operation.operation == "remove_table_column":
@@ -1678,6 +1725,7 @@ def _apply_structural_doc_ir_operation(
                     row_count=row_count,
                     col_count=col_count + 1,
                     cell_style=template_styles[row_index],
+                    page_number=table_page_number,
                 )
                 table.cells.append(new_cell)
                 for node_id in _collect_doc_ir_node_ids(new_cell):

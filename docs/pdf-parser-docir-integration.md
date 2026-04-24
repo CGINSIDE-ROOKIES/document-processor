@@ -67,7 +67,7 @@ follow the same principle with page or object-stream locators.
 ## Minimal Build Pattern
 
 ```python
-from document_processor import DocIR, NativeAnchor, ParagraphIR, RunIR
+from document_processor import DocIR, ListItemInfo, NativeAnchor, ParaStyleInfo, ParagraphIR, RunIR
 
 
 def pdf_paragraph_to_ir(doc_fingerprint: str, page_index: int, block_index: int, spans: list[str]) -> ParagraphIR:
@@ -108,7 +108,26 @@ def pdf_paragraph_to_ir(doc_fingerprint: str, page_index: int, block_index: int,
         ),
     )
 
+```
 
+If the PDF parser detects generated list markers, keep `ParagraphIR.text` as the
+editable body text and store the resolved marker on paragraph style metadata:
+
+```python
+paragraph.para_style = ParaStyleInfo(
+    list_info=ListItemInfo(
+        list_id="pdf-list-1",
+        level=0,
+        marker="1.",
+        marker_type="decimal",
+    )
+)
+```
+
+Likewise, multi-column layout should use `ParaStyleInfo.column_layout` rather
+than flat paragraph fields.
+
+```python
 doc = DocIR(
     source_doc_type="pdf",
     paragraphs=[

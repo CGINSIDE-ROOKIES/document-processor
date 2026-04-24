@@ -19,6 +19,26 @@ class RunStyleInfo(BaseModel):
     size_pt: float | None = None
 
 
+class ColumnLayoutInfo(BaseModel):
+    """Paragraph column layout metadata."""
+
+    count: int | None = None
+    gap_pt: float | None = None
+    widths_pt: list[float] = Field(default_factory=list)
+    gaps_pt: list[float] = Field(default_factory=list)
+    equal_width: bool | None = None
+
+
+class ListItemInfo(BaseModel):
+    """Resolved paragraph list marker metadata."""
+
+    list_id: str | None = None
+    level: int = 0
+    marker: str | None = None
+    marker_type: str | None = None
+    marker_text: str | None = None
+
+
 class ParaStyleInfo(BaseModel):
     """Paragraph-level formatting."""
 
@@ -27,11 +47,8 @@ class ParaStyleInfo(BaseModel):
     right_indent_pt: float | None = None
     first_line_indent_pt: float | None = None
     hanging_indent_pt: float | None = None
-    column_count: int | None = None
-    column_gap_pt: float | None = None
-    column_widths_pt: list[float] = Field(default_factory=list)
-    column_gaps_pt: list[float] = Field(default_factory=list)
-    column_equal_width: bool | None = None
+    column_layout: ColumnLayoutInfo | None = None
+    list_info: ListItemInfo | None = None
 
 
 class CellStyleInfo(BaseModel):
@@ -75,6 +92,8 @@ class StyleMap(BaseModel):
 
 
 __all__ = [
+    "ColumnLayoutInfo",
+    "ListItemInfo",
     "RunStyleInfo",
     "ParaStyleInfo",
     "CellStyleInfo",

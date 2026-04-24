@@ -25,7 +25,7 @@ from ..models import (
     _anchored_node_id,
     _make_native_anchor,
 )
-from ..style_types import ParaStyleInfo
+from ..style_types import ColumnLayoutInfo, ParaStyleInfo
 from .docx_structured_exporter import _iter_blocks, _iter_blocks_from_element, _load_docx_source
 from .hwp_converter import convert_hwp_to_hwpx_bytes
 from .hwpx_structured_exporter import _HP, _logical_table_cells, _paragraph_text, _run_text, _safe_int, _section_roots_from_bytes
@@ -113,15 +113,21 @@ def _page_layout(
     }
 
 
-def _copy_column_style(column_style: ParaStyleInfo | None) -> ParaStyleInfo | None:
+def _copy_column_style(column_style: ColumnLayoutInfo | None) -> ColumnLayoutInfo | None:
     return column_style.model_copy(deep=True) if column_style is not None else None
 
 
-def _para_style_with_columns(column_style: ParaStyleInfo | None) -> ParaStyleInfo | None:
+def _has_meaningful_column_layout(column_style: ColumnLayoutInfo | None) -> bool:
+    if column_style is None:
+        return False
+    return (column_style.count or 1) > 1 or bool(column_style.widths_pt) or bool(column_style.gaps_pt)
+
+
+def _para_style_with_columns(column_style: ColumnLayoutInfo | None) -> ParaStyleInfo | None:
     copied_column_style = _copy_column_style(column_style)
-    if copied_column_style is None:
+    if not _has_meaningful_column_layout(copied_column_style):
         return None
-    return copied_column_style
+    return ParaStyleInfo(column_layout=copied_column_style)
 
 
 def _ensure_page_info(
@@ -241,7 +247,7 @@ def _resolve_doc_metadata(
 def _docx_section_layouts(doc) -> list[dict[str, Any]]:
     from docx.oxml.ns import qn
 
-    def _docx_column_style(sect_pr) -> ParaStyleInfo | None:
+    def _docx_column_style(sect_pr) -> ColumnLayoutInfo | None:
         cols = sect_pr.find(qn("w:cols")) if sect_pr is not None else None
         if cols is None:
             return None
@@ -263,12 +269,12 @@ def _docx_section_layouts(doc) -> list[dict[str, Any]]:
         equal_width_value = cols.get(qn("w:equalWidth"))
         equal_width = None if equal_width_value is None else equal_width_value not in {"0", "false", "False"}
 
-        return ParaStyleInfo(
-            column_count=max(count, 1),
-            column_gap_pt=gap_pt,
-            column_widths_pt=widths_pt,
-            column_gaps_pt=gaps_pt,
-            column_equal_width=equal_width,
+        return ColumnLayoutInfo(
+            count=max(count, 1),
+            gap_pt=gap_pt,
+            widths_pt=widths_pt,
+            gaps_pt=gaps_pt,
+            equal_width=equal_width,
         )
 
     return [
@@ -345,7 +351,7 @@ def _hwpx_section_page_layout(section_root: ET.Element) -> dict[str, float | Non
     )
 
 
-def _hwpx_column_style_from_col_pr(col_pr: ET.Element) -> ParaStyleInfo:
+def _hwpx_column_style_from_col_pr(col_pr: ET.Element) -> ColumnLayoutInfo:
     count = _safe_int(col_pr.get("colCount")) or 1
     same_gap_pt = _hwpunit_to_pt(col_pr.get("sameGap"))
     same_sz = col_pr.get("sameSz")
@@ -364,16 +370,16 @@ def _hwpx_column_style_from_col_pr(col_pr: ET.Element) -> ParaStyleInfo:
         if gap is not None:
             gaps_pt.append(gap)
 
-    return ParaStyleInfo(
-        column_count=max(count, 1),
-        column_gap_pt=same_gap_pt,
-        column_widths_pt=widths_pt,
-        column_gaps_pt=gaps_pt,
-        column_equal_width=equal_width,
+    return ColumnLayoutInfo(
+        count=max(count, 1),
+        gap_pt=same_gap_pt,
+        widths_pt=widths_pt,
+        gaps_pt=gaps_pt,
+        equal_width=equal_width,
     )
 
 
-def _hwpx_paragraph_column_style(paragraph_el: ET.Element) -> ParaStyleInfo | None:
+def _hwpx_paragraph_column_style(paragraph_el: ET.Element) -> ColumnLayoutInfo | None:
     col_prs = paragraph_el.findall(f"{_HP}run/{_HP}secPr/{_HP}colPr")
     col_prs.extend(paragraph_el.findall(f"{_HP}run/{_HP}ctrl/{_HP}colPr"))
     if not col_prs:
@@ -381,7 +387,7 @@ def _hwpx_paragraph_column_style(paragraph_el: ET.Element) -> ParaStyleInfo | No
     return _hwpx_column_style_from_col_pr(col_prs[-1])
 
 
-def _hwpx_section_column_style(section_root: ET.Element) -> ParaStyleInfo | None:
+def _hwpx_section_column_style(section_root: ET.Element) -> ColumnLayoutInfo | None:
     sec_pr = section_root.find(f".//{_HP}secPr")
     col_pr = sec_pr.find(f"{_HP}colPr") if sec_pr is not None else None
     return _hwpx_column_style_from_col_pr(col_pr) if col_pr is not None else None

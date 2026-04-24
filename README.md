@@ -100,6 +100,14 @@ first_asset = next(iter(doc.assets.values()))
 html = doc.to_html()
 ```
 
+## Paragraph layout metadata
+
+Paragraph styling stays attached to `ParagraphIR.para_style`. Multi-column
+layout is stored in `para_style.column_layout`, and resolved DOCX/HWPX list
+markers are stored in `para_style.list_info`. Raw `paragraph.text` remains the
+editable text without generated numbering; `read_document(...)` also returns
+`display_text` with the marker prefixed for LLM-readable context.
+
 
 ## Editing documents
 

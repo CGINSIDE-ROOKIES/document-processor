@@ -675,6 +675,55 @@ class EditorApiTests(unittest.TestCase):
         self.assertEqual(result.updated_doc_ir.paragraphs[2].node_id, second_id)
         self.assertEqual(result.updated_doc_ir.paragraphs[2].native_anchor.structural_path, "s1.p3")
 
+    def test_apply_document_edits_preview_assigns_page_numbers_to_inserted_nodes(self) -> None:
+        source_bytes = self._build_sample_docx_bytes()
+        doc = DocIR.from_file(source_bytes, doc_type="docx")
+        anchor_page_number = doc.paragraphs[0].page_number
+
+        self.assertIsNotNone(anchor_page_number)
+
+        result = apply_document_edits(
+            document=DocumentInput(
+                source_bytes=source_bytes,
+                source_name="sample.docx",
+            ),
+            edits=[
+                StructuralEdit(
+                    operation="insert_paragraph",
+                    target_id=doc.paragraphs[0].node_id,
+                    position="after",
+                    text="Inserted paragraph",
+                ),
+                StructuralEdit(
+                    operation="insert_table",
+                    target_id=doc.paragraphs[0].node_id,
+                    position="after",
+                    rows=[["A", "B"]],
+                ),
+            ],
+            return_doc_ir=True,
+        )
+
+        self.assertTrue(result.ok, result.validation.issues)
+        self.assertIsNotNone(result.updated_doc_ir)
+        updated = result.updated_doc_ir
+        table_wrapper = updated.paragraphs[1]
+        inserted_paragraph = updated.paragraphs[2]
+
+        self.assertEqual(table_wrapper.page_number, anchor_page_number)
+        self.assertEqual(inserted_paragraph.page_number, anchor_page_number)
+        self.assertEqual(table_wrapper.tables[0].cells[0].paragraphs[0].page_number, anchor_page_number)
+
+        review = render_review_html(
+            document=DocumentInput(doc_ir=updated),
+            annotations=[],
+        )
+
+        self.assertTrue(review.ok, review.validation.issues)
+        self.assertIsNotNone(review.html)
+        self.assertNotIn('<section class="document-unpaged">', review.html)
+        self.assertIn("Inserted paragraph", review.html)
+
     def test_apply_document_edits_writes_docx_table_row_column_and_cell_text(self) -> None:
         source_bytes = self._build_sample_table_docx_bytes()
         doc = DocIR.from_file(source_bytes, doc_type="docx")
