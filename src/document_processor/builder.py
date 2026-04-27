@@ -89,11 +89,14 @@ def _merge_para_style(
 ) -> "ParaStyleInfo | None":
     if incoming_style is None:
         return existing_style
-    if existing_style is None or incoming_style.column_layout is not None:
+    if existing_style is None:
         return incoming_style
 
     merged_style = incoming_style.model_copy(deep=True)
-    merged_style.column_layout = existing_style.column_layout
+    if merged_style.column_layout is None and existing_style.column_layout is not None:
+        merged_style.column_layout = existing_style.column_layout.model_copy(deep=True)
+    if merged_style.list_info is None and existing_style.list_info is not None:
+        merged_style.list_info = existing_style.list_info.model_copy(deep=True)
     return merged_style
 
 

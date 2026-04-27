@@ -100,27 +100,34 @@ first_asset = next(iter(doc.assets.values()))
 html = doc.to_html()
 ```
 
+## Paragraph layout metadata
+
+Paragraph styling stays attached to `ParagraphIR.para_style`. Multi-column
+layout is stored in `para_style.column_layout`, and resolved DOCX/HWPX list
+markers are stored in `para_style.list_info`. Raw `paragraph.text` remains the
+editable text without generated numbering; `read_document(...)` also returns
+`display_text` with the marker prefixed for LLM-readable context.
+
 
 ## Editing documents
 
-The stateless edit API lets you apply text edits to documents. Edits are
-validated before application, and results can be returned as an updated `DocIR`,
-written back to the native file format, or returned as bytes.
+The stateless edit API lets you apply text and structural edits to documents.
+Edits are validated before application, and results can be returned as an
+updated `DocIR`, written back to the native file format, or returned as bytes.
 
 ```python
 from document_processor import (
-    ApplyTextEditsRequest,
     DocumentInput,
-    ReadDocumentRequest,
+    StructuralEdit,
     TextEdit,
-    apply_text_edits,
+    apply_document_edits,
     read_document,
 )
 
 document = DocumentInput(source_path="/path/to/file.docx")
-preview = read_document(ReadDocumentRequest(document=document, start=0, limit=1))
+preview = read_document(document=document, start=0, limit=1)
 
-result = apply_text_edits(ApplyTextEditsRequest(
+result = apply_document_edits(
     document=document,
     edits=[TextEdit(
         target_kind="paragraph",
@@ -128,14 +135,36 @@ result = apply_text_edits(ApplyTextEditsRequest(
         expected_text="old text",
         new_text="new text",
     )],
-))
+)
 ```
 
 Related helpers:
 
 - `get_document_context()` &mdash; fetch surrounding paragraphs for target IDs
-- `list_editable_targets()` &mdash; enumerate safe paragraph, run, and cell edit targets
-- `validate_text_edits()` &mdash; dry-run validation without applying
+- `list_editable_targets()` &mdash; enumerate safe paragraph, run, cell, and table targets
+- `validate_document_edits()` &mdash; validate text replacements, insert/remove operations, and table edits
+
+Structural edits use the same stable `node_id` targets:
+
+```python
+result = apply_document_edits(
+    document=document,
+    edits=[
+        StructuralEdit(
+            operation="insert_paragraph",
+            target_id=preview.paragraphs[0].node_id,
+            position="after",
+            text="Inserted paragraph",
+        ),
+    ],
+    return_doc_ir=True,
+)
+```
+
+Inserted DOCX/HWPX tables receive basic visible table defaults: non-zero
+geometry, cell padding, and a black grid. HWPX table inserts are written as
+inline objects (`treatAsChar="1"`), and inserted rows/columns inherit nearby
+row/cell properties when possible.
 
 
 ## Annotations and review HTML
@@ -145,17 +174,15 @@ Resolve text annotations against a document and render a highlighted review page
 ```python
 from document_processor import (
     DocumentInput,
-    ReadDocumentRequest,
-    RenderReviewHtmlRequest,
     TextAnnotation,
     read_document,
     render_review_html,
 )
 
 document = DocumentInput(source_path="/path/to/file.docx")
-preview = read_document(ReadDocumentRequest(document=document, start=0, limit=1))
+preview = read_document(document=document, start=0, limit=1)
 
-result = render_review_html(RenderReviewHtmlRequest(
+result = render_review_html(
     document=document,
     annotations=[TextAnnotation(
         target_kind="paragraph",
@@ -163,7 +190,7 @@ result = render_review_html(RenderReviewHtmlRequest(
         selected_text="some phrase",
         label="Needs revision",
     )],
-))
+)
 
 html = result.html
 ```

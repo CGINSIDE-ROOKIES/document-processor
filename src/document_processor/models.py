@@ -525,6 +525,15 @@ def _image_markdown_placeholder(image: ImageIR) -> str:
     return f"[image:{label}]"
 
 
+def _paragraph_list_marker_prefix(paragraph: ParagraphIR) -> str:
+    style = paragraph.para_style
+    list_info = style.list_info if style is not None else None
+    if list_info is None or not list_info.marker:
+        return ""
+    indent = "  " * max(list_info.level, 0)
+    return f"{indent}{list_info.marker} "
+
+
 def _paragraph_markdown_text(
     paragraph: ParagraphIR,
     *,
@@ -540,7 +549,10 @@ def _paragraph_markdown_text(
             table_path = _node_debug_path(node)
             nested_tables.setdefault(table_path, node)
             parts.append(f"[tbl:{table_path}]")
-    return "".join(parts).strip()
+    text = "".join(parts).strip()
+    if not text:
+        return text
+    return f"{_paragraph_list_marker_prefix(paragraph)}{text}"
 
 
 def _escape_markdown_cell_text(value: str) -> str:

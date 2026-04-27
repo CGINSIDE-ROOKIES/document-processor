@@ -1,8 +1,8 @@
 # Removed Legacy Annotation API
 
 This package no longer exposes the old low-level annotation DTOs or direct HTML
-annotation renderer/resolver functions. The public annotation API is now the
-structured request/response surface intended for LLM tool calling.
+annotation renderer/resolver functions. The public annotation API now uses
+flattened keyword functions with `TextAnnotation` DTOs for LLM tool calling.
 
 ## Removed Names
 
@@ -35,10 +35,8 @@ TextAnnotation(
 Use these public models and functions instead:
 
 - `TextAnnotation`
-- `ValidateTextAnnotationsRequest`
 - `AnnotationValidationResult`
 - `ResolvedTextAnnotation`
-- `RenderReviewHtmlRequest`
 - `ReviewHtmlResult`
 - `validate_text_annotations`
 - `render_review_html`
@@ -48,25 +46,22 @@ Example:
 ```python
 from document_processor import (
     DocumentInput,
-    RenderReviewHtmlRequest,
     TextAnnotation,
     render_review_html,
 )
 
 result = render_review_html(
-    RenderReviewHtmlRequest(
-        document=DocumentInput(source_path="/path/to/source.docx"),
-        annotations=[
-            TextAnnotation(
-                target_kind="paragraph",
-                target_id="p_15cb9ef0efc99b82",
-                selected_text="selected phrase",
-                occurrence_index=0,
-                label="Needs review",
-            )
-        ],
-        title="Review",
-    )
+    document=DocumentInput(source_path="/path/to/source.docx"),
+    annotations=[
+        TextAnnotation(
+            target_kind="paragraph",
+            target_id="p_15cb9ef0efc99b82",
+            selected_text="selected phrase",
+            occurrence_index=0,
+            label="Needs review",
+        )
+    ],
+    title="Review",
 )
 
 html = result.html
@@ -78,22 +73,19 @@ For in-memory `DocIR` review rendering, pass the IR through `DocumentInput`:
 ```python
 from document_processor import (
     DocumentInput,
-    RenderReviewHtmlRequest,
     TextAnnotation,
     render_review_html,
 )
 
 result = render_review_html(
-    RenderReviewHtmlRequest(
-        document=DocumentInput(doc_ir=doc),
-        annotations=[
-            TextAnnotation(
-                target_kind="run",
-                target_id=doc.paragraphs[0].runs[0].node_id,
-                label="Review this run",
-            )
-        ],
-    )
+    document=DocumentInput(doc_ir=doc),
+    annotations=[
+        TextAnnotation(
+            target_kind="run",
+            target_id=doc.paragraphs[0].runs[0].node_id,
+            label="Review this run",
+        )
+    ],
 )
 ```
 
@@ -104,9 +96,8 @@ result = render_review_html(
 - Keep `selected_text` optional to annotate the full target.
 - Keep `occurrence_index` when `selected_text` appears multiple times in the
   same target.
-- Use `ValidateTextAnnotationsRequest` plus `validate_text_annotations` for
-  validation without HTML rendering.
-- Use `RenderReviewHtmlRequest` plus `render_review_html` for review HTML.
+- Use `validate_text_annotations(...)` for validation without HTML rendering.
+- Use `render_review_html(...)` for review HTML.
 
 The lower-level HTML annotation resolver and renderer still exist internally,
 but they are not part of the public API. This keeps external callers and LLM

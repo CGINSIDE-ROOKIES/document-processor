@@ -17,8 +17,9 @@ def _non_negative_pt(value: float | None) -> float | None:
     return max(value, 0.0)
 
 
-def _column_layout_key(layout: ColumnLayoutInfo | None) -> tuple[object, ...] | None:
-    if layout is None or layout.count <= 1:
+def _column_style_key(style: ParaStyleInfo | None) -> tuple[object, ...] | None:
+    layout = style.column_layout if style is not None else None
+    if layout is None or (layout.count or 1) <= 1:
         return None
     return (
         layout.count,
@@ -29,18 +30,18 @@ def _column_layout_key(layout: ColumnLayoutInfo | None) -> tuple[object, ...] | 
     )
 
 
-def _paragraph_column_layout(paragraph: ParagraphIR) -> ColumnLayoutInfo | None:
-    return paragraph.para_style.column_layout if paragraph.para_style is not None else None
+def _paragraph_column_style(paragraph: ParagraphIR) -> ColumnLayoutInfo | None:
+    return paragraph.para_style.column_layout if _column_style_key(paragraph.para_style) is not None else None
 
 
-def _column_group_css(layout: ColumnLayoutInfo) -> str:
+def _column_group_css(style: ColumnLayoutInfo) -> str:
     parts = [
-        f"column-count:{max(layout.count, 1)}",
-        f"-webkit-column-count:{max(layout.count, 1)}",
+        f"column-count:{max(style.count or 1, 1)}",
+        f"-webkit-column-count:{max(style.count or 1, 1)}",
         "column-fill:balance",
         "break-inside:auto",
     ]
-    gap_pt = _non_negative_pt(layout.gap_pt)
+    gap_pt = _non_negative_pt(style.gap_pt)
     if gap_pt is not None:
         parts.append(f"column-gap:{gap_pt:.1f}pt")
         parts.append(f"-webkit-column-gap:{gap_pt:.1f}pt")
@@ -373,6 +374,20 @@ def _paragraph_css(style: ParaStyleInfo | None) -> str:
     return ";".join(parts)
 
 
+def _list_marker_html(style: ParaStyleInfo | None) -> str:
+    list_info = style.list_info if style is not None else None
+    if list_info is None or not list_info.marker:
+        return ""
+    level = max(list_info.level, 0)
+    min_width = max(12.0, 14.0 + level * 8.0)
+    marker = escape(list_info.marker)
+    return (
+        f'<span class="document-list-marker" '
+        f'style="display:inline-block;min-width:{min_width:.1f}pt;margin-right:4.0pt;white-space:nowrap">'
+        f"{marker}</span>"
+    )
+
+
 def _flush_paragraph(
     paragraph_id: str,
     fragments: list[str],
@@ -381,6 +396,9 @@ def _flush_paragraph(
     content = "".join(fragments)
     if not content.strip():
         content = "&nbsp;"
+    list_marker = _list_marker_html(para_style)
+    if list_marker:
+        content = f"{list_marker}{content}"
     return (
         f'<p data-node-id="{escape(paragraph_id)}" '
         f'style="{_paragraph_css(para_style)}">'
@@ -852,11 +870,11 @@ def _render_column_group(
     paragraph_annotations_by_id: dict[str, list[_ResolvedAnnotation]],
     run_annotations_by_id: dict[str, list[_ResolvedAnnotation]],
 ) -> str:
-    if not paragraphs or _paragraph_column_layout(paragraphs[0]) is None:
+    if not paragraphs or _paragraph_column_style(paragraphs[0]) is None:
         return ""
 
-    layout = _paragraph_column_layout(paragraphs[0])
-    if layout is None:
+    column_style = _paragraph_column_style(paragraphs[0])
+    if column_style is None:
         return ""
     content_html = "\n\n".join(
         _render_paragraph(doc_ir, paragraph, paragraph_annotations_by_id, run_annotations_by_id)
@@ -864,8 +882,8 @@ def _render_column_group(
     )
     attrs = [
         'class="document-column-group"',
-        f'data-column-count="{max(layout.count, 1)}"',
-        f'style="{_column_group_css(layout)}"',
+        f'data-column-count="{max(column_style.count or 1, 1)}"',
+        f'style="{_column_group_css(column_style)}"',
     ]
     return f"<div {' '.join(attrs)}>{content_html or '&nbsp;'}</div>"
 
@@ -895,7 +913,7 @@ def _render_paragraph_sequence(
         current_column_key = None
 
     for paragraph in paragraphs:
-        column_key = _column_layout_key(_paragraph_column_layout(paragraph))
+        column_key = _column_style_key(paragraph.para_style)
         if column_key is None:
             flush_column_group()
             parts.append(_render_paragraph(doc_ir, paragraph, paragraph_annotations_by_id, run_annotations_by_id))

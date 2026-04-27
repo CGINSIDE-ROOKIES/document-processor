@@ -8,27 +8,22 @@ Import directly from the package root:
 
 ```python
 from document_processor import (
-    ApplyTextEditsRequest,
     DocIR,
+    DocumentEdit,
     DocumentInput,
-    GetDocumentContextRequest,
     HwpxDocument,
-    ListEditableTargetsRequest,
     NativeAnchor,
     NodeKind,
-    ReadDocumentRequest,
-    RenderReviewHtmlRequest,
+    StructuralEdit,
     TextAnnotation,
     TextEdit,
-    ValidateTextAnnotationsRequest,
-    ValidateTextEditsRequest,
-    apply_text_edits,
+    apply_document_edits,
     get_document_context,
     list_editable_targets,
     read_document,
     render_review_html,
+    validate_document_edits,
     validate_text_annotations,
-    validate_text_edits,
 )
 ```
 
@@ -112,8 +107,9 @@ hanging indents are preserved when the positive left indent is large enough.
 Table cell padding is rendered from `CellStyleInfo` when extracted from source
 cell margins such as HWPX `hp:cellMargin` or DOCX `w:tcMar`.
 Top-level consecutive paragraphs with the same multi-column
-`para_style.column_layout` are wrapped in a CSS multi-column group when rendered
-to HTML.
+`ParaStyleInfo.column_layout` are wrapped in a CSS multi-column group when
+rendered to HTML. Paragraphs with `ParaStyleInfo.list_info` render their
+resolved list marker before the editable paragraph text.
 
 ### `ParagraphIR`
 
@@ -165,11 +161,12 @@ Computed helper:
 
 - `ImageAsset`
 - `ImageIR`
-- `ColumnLayoutInfo`
 - `PageInfo`
 - `TableCellIR`
 - `NativeAnchor`
 - `CellStyleInfo`
+- `ColumnLayoutInfo`
+- `ListItemInfo`
 - `ParaStyleInfo`
 - `RunStyleInfo`
 - `TableStyleInfo`
@@ -233,12 +230,18 @@ Important fields:
 - `first_line_indent_pt`
 - `hanging_indent_pt`
 - `column_layout`
+- `list_info`
+
+`column_layout` is a `ColumnLayoutInfo` object used for active section/text-column
+layout. It is omitted for ordinary single-column paragraphs.
+
+`list_info` is a `ListItemInfo` object containing resolved paragraph-list display
+metadata. It is intentionally per paragraph rather than a separate list node, so
+the structural IR remains paragraph-first.
 
 #### `ColumnLayoutInfo`
 
-Active section/text-column layout for a paragraph. This is stored as
-`ParagraphIR.para_style.column_layout` because it affects paragraph rendering
-rather than the structural identity of the paragraph.
+Column layout metadata for paragraph rendering.
 
 Important fields:
 
@@ -247,6 +250,22 @@ Important fields:
 - `widths_pt`
 - `gaps_pt`
 - `equal_width`
+
+#### `ListItemInfo`
+
+Resolved list marker metadata for a paragraph.
+
+Important fields:
+
+- `list_id`
+- `level`
+- `marker`
+- `marker_type`
+- `marker_text`
+
+For DOCX, this is resolved from `w:numPr` and `word/numbering.xml`. For HWPX,
+this is resolved from `hh:paraPr/hh:heading` and header `hh:numbering` or
+`hh:bullet` definitions.
 
 ## Source/Input Models
 
@@ -272,14 +291,15 @@ Rules:
 
 These functions operate on `DocumentInput` and are intended for public API usage.
 
-### `read_document(request: ReadDocumentRequest) -> ReadDocumentResult`
+### `read_document(*, document=None, source_path=None, start=0, limit=50, include_runs=True) -> ReadDocumentResult`
 
 Read a bounded paragraph window from a document. This is the preferred tool-call entry
 point when an LLM needs to inspect a document incrementally.
 
-Request fields:
+Input fields:
 
 - `document`
+- `source_path`
 - `start`
 - `limit`
 - `include_runs`
@@ -295,17 +315,24 @@ Response fields:
 - `next_start`
 - `paragraphs`
 
-Each paragraph contains a fully constructed `text` field for readability. When
-`include_runs=True`, each run includes `start` and `end` offsets relative to that
-paragraph text so callers can map readable text spans back to editable run IDs.
+Each paragraph contains:
 
-### `get_document_context(request: GetDocumentContextRequest) -> DocumentContextResult`
+- `text`: editable paragraph text without generated list markers.
+- `display_text`: readable text with resolved list markers prefixed when present.
+- `list_info`: optional resolved list marker metadata.
+
+When `include_runs=True`, each run includes `start` and `end` offsets relative to
+the raw paragraph `text` so callers can map readable text spans back to editable
+run IDs.
+
+### `get_document_context(*, document=None, source_path=None, target_ids=None, before=1, after=1, include_runs=True) -> DocumentContextResult`
 
 Return surrounding paragraph context for paragraph or run ids.
 
-Request fields:
+Input fields:
 
 - `document`
+- `source_path`
 - `target_ids`
 - `before`
 - `after`
@@ -319,13 +346,14 @@ Response fields:
 - `paragraphs`
 - `missing_target_ids`
 
-### `list_editable_targets(request: ListEditableTargetsRequest) -> ListEditableTargetsResult`
+### `list_editable_targets(*, document=None, source_path=None, target_ids=None, target_kinds=None, include_child_runs=False, only_writable=True, max_targets=200) -> ListEditableTargetsResult`
 
-Enumerate paragraph, run, and cell targets that can be edited safely.
+Enumerate paragraph, run, cell, and table targets that can be edited safely.
 
-Request fields:
+Input fields:
 
 - `document`
+- `source_path`
 - `target_ids`
 - `target_kinds`
 - `include_child_runs`
@@ -340,30 +368,45 @@ Response fields:
 - `targets`
 - `missing_target_ids`
 
-### `validate_text_edits(request: ValidateTextEditsRequest) -> EditValidationResult`
+### `validate_document_edits(*, document=None, source_path=None, edits) -> EditValidationResult`
 
-Validate proposed edits against the current document state.
+Validate text and structural edit operations against the current document state.
 
 Validation checks include:
 
 - target exists
-- target kind matches
-- expected text matches exactly
-- paragraph target is not mixed content
-- cell target is not mixed content and preserves the existing paragraph count
+- target kind is valid for the requested operation
+- exact text edits match `expected_text`
+- exact paragraph text edits do not target mixed table/image paragraphs
+- exact cell text edits preserve existing cell paragraph count
+- optional `expected_text` guards match
+- inserted table rows are rectangular
+- inserted row/column values match the target table shape
 - native write-back type is supported when native source data is present
 
-### `apply_text_edits(request: ApplyTextEditsRequest) -> ApplyTextEditsResult`
+### `apply_document_edits(*, document=None, source_path=None, edits, dry_run=False, output_path=None, output_filename=None, return_doc_ir=False) -> ApplyDocumentEditsResult`
 
-Validate and apply edits using either:
+Validate and apply text and structural edits in one ordered batch.
 
-- in-memory `DocIR` updates
-- path-backed native write-back
-- bytes-backed native write-back
+The `edits` list accepts `TextEdit` and `StructuralEdit` objects. Text edits
+perform exact replacements. Structural edit operations include:
 
-Request fields:
+- `insert_paragraph`
+- `remove_paragraph`
+- `insert_run`
+- `remove_run`
+- `insert_table`
+- `remove_table`
+- `set_cell_text`
+- `insert_table_row`
+- `remove_table_row`
+- `insert_table_column`
+- `remove_table_column`
+
+Input fields:
 
 - `document`
+- `source_path`
 - `edits`
 - `dry_run`
 - `output_path`
@@ -380,10 +423,18 @@ Response fields:
 - `output_bytes`
 - `updated_doc_ir`
 - `edits_applied`
+- `operations_applied`
 - `modified_target_ids`
+- `created_target_ids`
+- `removed_target_ids`
 - `modified_run_ids`
 - `warnings`
 - `validation`
+
+For native write-back, the API resolves public `node_id` targets through each
+node's current `native_anchor.structural_path`. Mixed batches are applied in
+list order. After structural edits, returned `updated_doc_ir` preserves existing
+`node_id` values and refreshes native anchors to the new physical document paths.
 
 Behavior by input type:
 
@@ -391,27 +442,21 @@ Behavior by input type:
 - `DocumentInput(source_path=...)`: writes to `output_path` or a default sibling `*_edited.*` file.
 - `DocumentInput(source_bytes=...)`: returns `output_bytes` and `output_filename`.
 
-Native write-back is currently supported for:
-
-- `docx`
-- `hwpx`
-- `hwp`
-
+Native write-back is currently supported for `docx`, `hwpx`, and `hwp`.
 For `.hwp`, edited output is written as `.hwpx`.
 
-`modified_target_ids` and `modified_run_ids` contain stable `node_id` values.
-
-### `validate_text_annotations(request: ValidateTextAnnotationsRequest) -> AnnotationValidationResult`
+### `validate_text_annotations(*, document=None, source_path=None, annotations) -> AnnotationValidationResult`
 
 Validate annotation targets and selected text without rendering HTML.
 
-### `render_review_html(request: RenderReviewHtmlRequest) -> ReviewHtmlResult`
+### `render_review_html(*, document=None, source_path=None, annotations, title="Review") -> ReviewHtmlResult`
 
 Render annotated review HTML from `DocIR`, bytes, or a source path.
 
-Request fields:
+Input fields:
 
 - `document`
+- `source_path`
 - `annotations`
 - `title`
 
@@ -428,6 +473,7 @@ Response fields:
 
 Fields:
 
+- `edit_type: Literal["text"] = "text"`
 - `target_kind: Literal["paragraph", "run", "cell"]`
 - `target_id: str`
 - `expected_text: str`
@@ -440,6 +486,52 @@ Use the `node_id` returned by `read_document`, `get_document_context`, or
 Cell text edits replace the full text of a table cell. For multi-paragraph cells, `new_text`
 must contain the same number of newline-separated lines as the current cell text; the API
 does not create or delete paragraphs inside cells.
+
+### `StructuralEdit`
+
+Fields:
+
+- `edit_type: Literal["structural"] = "structural"`
+- `operation`
+- `target_id`
+- `position`
+- `expected_text`
+- `text`
+- `rows`
+- `values`
+- `row_index`
+- `column_index`
+- `reason`
+
+Use stable `node_id` values as `target_id`.
+
+Operation field usage:
+
+- `insert_paragraph`: target a paragraph with `position="before"|"after"` or a
+  cell with `position="start"|"end"`; set `text`.
+- `remove_paragraph`: target a paragraph; optional `expected_text`.
+- `insert_run`: target a run with `position="before"|"after"` or a paragraph
+  with `position="start"|"end"`; set `text`.
+- `remove_run`: target a run; optional `expected_text`.
+- `insert_table`: target a paragraph with `position="before"|"after"`; set
+  rectangular `rows`.
+- `remove_table`: target a table.
+- `set_cell_text`: target a cell; set `text`. Newlines create cell paragraphs.
+- `insert_table_row`: target a cell to anchor its row, or a table with
+  `row_index`; set optional row `values`.
+- `remove_table_row`: target a cell to remove its row, or a table with
+  `row_index`.
+- `insert_table_column`: target a cell to anchor its column, or a table with
+  `column_index`; set optional column `values`.
+- `remove_table_column`: target a cell to remove its column, or a table with
+  `column_index`.
+
+Inserted native tables use conservative visible defaults when the caller does
+not provide style options: fixed non-zero column widths, cell padding, and a
+black grid border. HWPX tables are created with `treatAsChar="1"` so Hancom
+treats them as inline tables rather than floating wrapped objects. Inserted
+rows and columns clone the nearest row/cell properties when available and fall
+back to the same defaults only when the target table lacks usable properties.
 
 ### `TextAnnotation`
 
@@ -487,10 +579,20 @@ Fields:
 
 ## Edit API Boundary
 
-Use `TextEdit`, `ValidateTextEditsRequest`, `ApplyTextEditsRequest`,
-`validate_text_edits`, and `apply_text_edits` for edits. These request/response
-models are the supported public surface for LLM tool calling and structured
-outputs.
+Use `TextEdit` for exact text replacements and `StructuralEdit` for
+insert/remove/table operations. Pass both through `validate_document_edits` and
+`apply_document_edits` with flattened keyword arguments:
+
+```python
+result = apply_document_edits(
+    document=document,
+    edits=[TextEdit(...), StructuralEdit(...)],
+    return_doc_ir=True,
+)
+```
+
+These DTOs and functions are the supported public surface for LLM tool calling
+and structured outputs.
 
 The older low-level edit DTOs and direct engine entrypoints were removed to keep
 DocIR editing centered on stable `target_id` values. See
@@ -499,10 +601,9 @@ migration shape.
 
 ## Annotation API Boundary
 
-Use `TextAnnotation`, `ValidateTextAnnotationsRequest`,
-`RenderReviewHtmlRequest`, `validate_text_annotations`, and
-`render_review_html` for annotations. These request/response models are the
-supported public surface for LLM tool calling and structured outputs.
+Use `TextAnnotation`, `validate_text_annotations`, and `render_review_html` for
+annotations. These DTOs and functions are the supported public surface for LLM
+tool calling and structured outputs.
 
 The older low-level annotation DTOs and direct renderer/resolver entrypoints
 were removed to keep annotation tooling centered on stable `target_id` values.
@@ -522,7 +623,6 @@ Return the generated diagram object.
 ## Current Limits
 
 - `pdf` parsing is not implemented.
-- Table structure edits are out of scope.
-- Paragraph edits are blocked when the paragraph contains tables or images.
+- Exact text paragraph edits are blocked when the paragraph contains tables or images.
 - Native write-back is limited to same-format `docx`, `hwpx`, and `hwp -> hwpx`.
 - Annotation matching is exact-string based within the selected paragraph or run.

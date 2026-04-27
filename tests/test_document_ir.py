@@ -16,6 +16,7 @@ if str(SRC_ROOT) not in sys.path:
 from document_processor import (
     CellStyleInfo,
     DocIR,
+    DocumentInput,
     HwpxDocument,
     ImageIR,
     PageInfo,
@@ -28,6 +29,7 @@ from document_processor import (
     TableIR,
     TableStyleInfo,
     build_doc_ir_from_mapping,
+    read_document,
 )
 from document_processor.core.hwpx_structured_exporter import export_hwpx_structured_mapping
 
@@ -300,7 +302,7 @@ class DocumentIRTests(unittest.TestCase):
             parsed = DocIR.from_file(docx_path, skip_empty=True)
 
         self.assertEqual([paragraph.text for paragraph in parsed.paragraphs], ["One column title", "Three column body"])
-        self.assertEqual(parsed.paragraphs[0].para_style.column_layout.count, 1)
+        self.assertIsNone(parsed.paragraphs[0].para_style)
         self.assertEqual(parsed.paragraphs[1].para_style.column_layout.count, 3)
         self.assertAlmostEqual(parsed.paragraphs[1].para_style.column_layout.gap_pt or 0.0, 36.0, places=2)
 
@@ -343,8 +345,93 @@ class DocumentIRTests(unittest.TestCase):
             "Three column body start",
             "Three column body continued",
         ])
-        self.assertEqual([paragraph.para_style.column_layout.count for paragraph in parsed.paragraphs], [1, 3, 3])
+        self.assertIsNone(parsed.paragraphs[0].para_style)
+        self.assertEqual([paragraph.para_style.column_layout.count for paragraph in parsed.paragraphs[1:]], [3, 3])
         self.assertAlmostEqual(parsed.paragraphs[1].para_style.column_layout.gap_pt or 0.0, 3.0, places=2)
+
+    def test_from_file_docx_extracts_list_markers_from_numbering(self) -> None:
+        from docx import Document
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            docx_path = Path(tmp_dir) / "lists.docx"
+            doc = Document()
+            doc.add_paragraph("First numbered item", style="List Number")
+            doc.add_paragraph("Second numbered item", style="List Number")
+            doc.add_paragraph("Bullet item", style="List Bullet")
+            doc.save(str(docx_path))
+
+            parsed = DocIR.from_file(docx_path, skip_empty=True)
+
+        list_infos = [paragraph.para_style.list_info for paragraph in parsed.paragraphs]
+        self.assertEqual([info.marker for info in list_infos], ["1.", "2.", "•"])
+        self.assertEqual([info.level for info in list_infos], [0, 0, 0])
+        self.assertEqual([info.marker_type for info in list_infos], ["decimal", "decimal", "bullet"])
+
+        read_result = read_document(document=DocumentInput(doc_ir=parsed))
+        self.assertEqual(
+            [paragraph.display_text for paragraph in read_result.paragraphs],
+            ["1. First numbered item", "2. Second numbered item", "• Bullet item"],
+        )
+
+        html = parsed.to_html()
+        self.assertIn('class="document-list-marker"', html)
+        self.assertIn(">1.</span>First numbered item", html)
+        self.assertIn(">2.</span>Second numbered item", html)
+        self.assertIn(">•</span>Bullet item", html)
+
+    def test_from_file_docx_without_numbering_part_does_not_raise(self) -> None:
+        docx_path = THIS_DIR / "doc_samples" / "new_test" / "element_side_by_side_test.docx"
+
+        parsed = DocIR.from_file(docx_path, skip_empty=True)
+
+        self.assertGreater(len(parsed.paragraphs), 0)
+
+    def test_from_file_hwpx_extracts_number_and_bullet_headings(self) -> None:
+        hwpx_bytes_io = BytesIO()
+        with zipfile.ZipFile(hwpx_bytes_io, "w") as zf:
+            zf.writestr(
+                "Contents/header.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core">
+  <hh:refList>
+    <hh:numberings itemCnt="1">
+      <hh:numbering id="1" start="1">
+        <hh:paraHead start="1" level="1" numFormat="DIGIT">^1.</hh:paraHead>
+      </hh:numbering>
+    </hh:numberings>
+    <hh:bullets itemCnt="1">
+      <hh:bullet id="2" char="•" useImg="0">
+        <hh:paraHead level="0" numFormat="DIGIT" />
+      </hh:bullet>
+    </hh:bullets>
+    <hh:paraProperties itemCnt="2">
+      <hh:paraPr id="1">
+        <hh:heading type="NUMBER" idRef="1" level="0" />
+      </hh:paraPr>
+      <hh:paraPr id="2">
+        <hh:heading type="BULLET" idRef="2" level="0" />
+      </hh:paraPr>
+    </hh:paraProperties>
+  </hh:refList>
+</hh:head>
+""",
+            )
+            zf.writestr(
+                "Contents/section0.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p paraPrIDRef="1"><hp:run><hp:t>First numbered item</hp:t></hp:run></hp:p>
+  <hp:p paraPrIDRef="1"><hp:run><hp:t>Second numbered item</hp:t></hp:run></hp:p>
+  <hp:p paraPrIDRef="2"><hp:run><hp:t>Bullet item</hp:t></hp:run></hp:p>
+</hs:sec>
+""",
+            )
+
+        parsed = DocIR.from_file(hwpx_bytes_io.getvalue(), doc_type="hwpx")
+
+        list_infos = [paragraph.para_style.list_info for paragraph in parsed.paragraphs]
+        self.assertEqual([info.marker for info in list_infos], ["1.", "2.", "•"])
+        self.assertEqual([info.marker_type for info in list_infos], ["decimal", "decimal", "bullet"])
 
     def test_from_file_hwp_file_object_materializes_temp_path(self) -> None:
         fake_hwp = b"fake-hwp"

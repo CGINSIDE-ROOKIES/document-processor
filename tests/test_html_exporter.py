@@ -12,20 +12,17 @@ if str(SRC_ROOT) not in sys.path:
 from document_processor import (
     DocIR,
     DocumentInput,
-    RenderReviewHtmlRequest,
     TextAnnotation,
     render_review_html,
 )
 from document_processor.models import ImageAsset, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
-from document_processor.style_types import CellStyleInfo, ColumnLayoutInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
+from document_processor.style_types import CellStyleInfo, ColumnLayoutInfo, ListItemInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
 
 
 def _render_review_html_for_doc(doc: DocIR, annotations: list[TextAnnotation] | None = None) -> str:
     result = render_review_html(
-        RenderReviewHtmlRequest(
-            document=DocumentInput(doc_ir=doc),
-            annotations=annotations or [],
-        )
+        document=DocumentInput(doc_ir=doc),
+        annotations=annotations or [],
     )
     assert result.ok
     assert result.html is not None
@@ -292,13 +289,12 @@ class HtmlExporterTests(unittest.TestCase):
         self.assertIn("Second page", html)
 
     def test_export_html_groups_paragraphs_by_column_layout(self) -> None:
-        two_columns = ColumnLayoutInfo(count=2, gap_pt=18.0)
         doc = DocIR(paragraphs=[
                 ParagraphIR(content=[RunIR(text="Title")]),
-                ParagraphIR(para_style=ParaStyleInfo(column_layout=two_columns),
+                ParagraphIR(para_style=ParaStyleInfo(column_layout=ColumnLayoutInfo(count=2, gap_pt=18.0)),
                     content=[RunIR(text="Column body one")],
                 ),
-                ParagraphIR(para_style=ParaStyleInfo(column_layout=two_columns),
+                ParagraphIR(para_style=ParaStyleInfo(column_layout=ColumnLayoutInfo(count=2, gap_pt=18.0)),
                     content=[RunIR(text="Column body two")],
                 ),
                 ParagraphIR(content=[RunIR(text="Footer")]),
@@ -313,6 +309,20 @@ class HtmlExporterTests(unittest.TestCase):
             self.assertLess(html.index("Title"), html.index('class="document-column-group"'))
             self.assertLess(html.index('class="document-column-group"'), html.index("Column body one"))
             self.assertLess(html.index("Column body two"), html.index("Footer"))
+
+    def test_export_html_renders_paragraph_list_markers(self) -> None:
+        doc = DocIR(paragraphs=[
+                ParagraphIR(
+                    para_style=ParaStyleInfo(list_info=ListItemInfo(list_id="list-1", level=1, marker="a)")),
+                    content=[RunIR(text="Nested list item")],
+                )
+            ],
+        )
+
+        for html in (doc.to_html(), _render_review_html_for_doc(doc)):
+            self.assertIn('class="document-list-marker"', html)
+            self.assertIn(">a)</span>", html)
+            self.assertIn("Nested list item", html)
 
     def test_export_html_clamps_negative_first_line_indent_inside_table_cells(self) -> None:
         doc = DocIR(paragraphs=[
