@@ -356,8 +356,10 @@ _SECTION_NAME_RE = re.compile(r"^Contents/section(\d+)\.xml$")
 _HEADER_NAME = "Contents/header.xml"
 _HH_NS = "http://www.hancom.co.kr/hwpml/2011/head"
 _HP_NS = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+_HC_NS = "http://www.hancom.co.kr/hwpml/2011/core"
 _HH = f"{{{_HH_NS}}}"
 _HP = f"{{{_HP_NS}}}"
+_HC = f"{{{_HC_NS}}}"
 _XML_PREFIX_AND_ROOT_RE = re.compile(
     rb"^(?P<prefix>\s*(?:<\?xml[^>]*\?>\s*)?)(?P<root_open><[^!?][^>]*>)",
     re.DOTALL,
@@ -1169,13 +1171,6 @@ def _apply_style_edit_to_doc_ir_index(index: _StructuralDocIrIndex, edit: StyleE
     elif edit.target_kind == "table":
         table = index.tables[edit.target_id].node
         style = table.table_style or TableStyleInfo(row_count=table.row_count, col_count=table.col_count)
-        for field_name in ("width_pt", "height_pt"):
-            if field_name in edit.clear_fields:
-                _set_or_clear_field(style, field_name, None, clear=True)
-                continue
-            value = getattr(edit, field_name)
-            if value is not None:
-                setattr(style, field_name, value)
         style.placement = _apply_placement_edit(style.placement, edit)
         table.table_style = style
     elif edit.target_kind == "image":
@@ -2692,6 +2687,137 @@ def _docx_set_width_el(parent, tag: str, value_pt: float | None, *, clear: bool 
     existing.set(qn("w:w"), str(width))
 
 
+def _docx_set_width_twips_el(parent, tag: str, width_twips: int | None, *, clear: bool = False) -> None:
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    existing = parent.find(qn(tag))
+    if clear:
+        if existing is not None:
+            parent.remove(existing)
+        return
+    if width_twips is None:
+        return
+    if existing is None:
+        existing = OxmlElement(tag)
+        parent.insert(0, existing)
+    existing.set(qn("w:type"), "dxa")
+    existing.set(qn("w:w"), str(width_twips))
+
+
+def _docx_grid_span(tc_el) -> int:
+    from docx.oxml.ns import qn
+
+    tc_pr = tc_el.find(qn("w:tcPr"))
+    grid_span = tc_pr.find(qn("w:gridSpan")) if tc_pr is not None else None
+    return max(_safe_int(grid_span.get(qn("w:val"))) if grid_span is not None else 1, 1)
+
+
+def _docx_row_logical_cells(row_el):
+    logical_col = 1
+    for cell_el in _docx_row_cells(row_el):
+        span = _docx_grid_span(cell_el)
+        yield logical_col, span, cell_el
+        logical_col += span
+
+
+def _docx_table_logical_col_count(table_el) -> int:
+    from docx.oxml.ns import qn
+
+    grid = table_el.find(qn("w:tblGrid"))
+    grid_col_count = len(grid.findall(qn("w:gridCol"))) if grid is not None else 0
+    row_col_count = 0
+    for row_el in _docx_table_rows(table_el):
+        for logical_col, span, _cell_el in _docx_row_logical_cells(row_el):
+            row_col_count = max(row_col_count, logical_col + span - 1)
+    return max(grid_col_count, row_col_count)
+
+
+def _docx_set_fixed_table_layout(table_el) -> None:
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    tbl_pr = _docx_get_or_add_tbl_pr(table_el)
+    layout = tbl_pr.find(qn("w:tblLayout"))
+    if layout is None:
+        layout = OxmlElement("w:tblLayout")
+        tbl_pr.append(layout)
+    layout.set(qn("w:type"), "fixed")
+
+
+def _docx_ensure_table_grid(table_el, col_count: int):
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    grid = table_el.find(qn("w:tblGrid"))
+    if grid is None:
+        grid = OxmlElement("w:tblGrid")
+        insert_at = 1 if table_el.find(qn("w:tblPr")) is not None else 0
+        table_el.insert(insert_at, grid)
+    grid_cols = list(grid.findall(qn("w:gridCol")))
+    while len(grid_cols) < col_count:
+        grid_col = OxmlElement("w:gridCol")
+        grid_col.set(qn("w:w"), str(_DOCX_MIN_COLUMN_WIDTH_TWIPS))
+        grid.append(grid_col)
+        grid_cols.append(grid_col)
+    return grid, grid_cols
+
+
+def _docx_grid_widths(table_el, col_count: int) -> list[int]:
+    from docx.oxml.ns import qn
+
+    _grid, grid_cols = _docx_ensure_table_grid(table_el, col_count)
+    widths: list[int] = []
+    for grid_col in grid_cols[:col_count]:
+        widths.append(_safe_int(grid_col.get(qn("w:w"))) or _DOCX_MIN_COLUMN_WIDTH_TWIPS)
+    return widths
+
+
+def _docx_set_column_width(table_el, *, col_index: int, width_twips: int) -> list[int]:
+    from docx.oxml.ns import qn
+
+    col_count = max(_docx_table_logical_col_count(table_el), col_index)
+    grid, grid_cols = _docx_ensure_table_grid(table_el, col_count)
+    widths = _docx_grid_widths(table_el, col_count)
+    widths[col_index - 1] = width_twips
+    for index, grid_col in enumerate(grid_cols[:col_count]):
+        grid_col.set(qn("w:w"), str(widths[index]))
+
+    tbl_pr = _docx_get_or_add_tbl_pr(table_el)
+    _docx_set_width_twips_el(tbl_pr, "w:tblW", sum(widths))
+    _docx_set_fixed_table_layout(table_el)
+    return widths
+
+
+def _docx_apply_column_width_to_cells(table_el, *, col_index: int, grid_widths: list[int]) -> None:
+    for row_el in _docx_table_rows(table_el):
+        for logical_col, span, cell_el in _docx_row_logical_cells(row_el):
+            if not (logical_col <= col_index < logical_col + span):
+                continue
+            tc_pr = _docx_get_or_add_tc_pr(cell_el)
+            start = logical_col - 1
+            end = min(start + span, len(grid_widths))
+            width_twips = sum(grid_widths[start:end]) if end > start else grid_widths[col_index - 1]
+            _docx_set_width_twips_el(tc_pr, "w:tcW", width_twips)
+
+
+def _docx_apply_cell_width(cell_location: _DocxCellLocation, edit: StyleEdit) -> None:
+    if "width_pt" not in _style_edit_supplied_fields(edit):
+        return
+
+    table_el = cell_location.table._tbl
+    if "width_pt" in edit.clear_fields:
+        tc_pr = _docx_get_or_add_tc_pr(cell_location.cell._tc)
+        _docx_set_width_twips_el(tc_pr, "w:tcW", None, clear=True)
+        return
+
+    width_twips = _pt_to_twips(edit.width_pt)
+    if width_twips is None:
+        return
+    grid_widths = _docx_set_column_width(table_el, col_index=cell_location.col_index, width_twips=width_twips)
+    _docx_apply_column_width_to_cells(table_el, col_index=cell_location.col_index, grid_widths=grid_widths)
+
+
 def _docx_set_cell_padding(tc_pr, edit: StyleEdit) -> None:
     from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
@@ -2785,7 +2911,7 @@ def _apply_docx_cell_style(cell_location: _DocxCellLocation, edit: StyleEdit) ->
 
     cell = cell_location.cell
     tc_pr = _docx_get_or_add_tc_pr(cell._tc)
-    _docx_set_width_el(tc_pr, "w:tcW", edit.width_pt, clear="width_pt" in edit.clear_fields)
+    _docx_apply_cell_width(cell_location, edit)
 
     if "background" in edit.clear_fields:
         shd = tc_pr.find(qn("w:shd"))
@@ -2887,8 +3013,6 @@ def _docx_set_table_placement(table_el, edit: StyleEdit) -> None:
 
 def _apply_docx_table_style(table_location: _DocxTableLocation, edit: StyleEdit) -> None:
     table_el = table_location.table._tbl
-    tbl_pr = _docx_get_or_add_tbl_pr(table_el)
-    _docx_set_width_el(tbl_pr, "w:tblW", edit.width_pt, clear="width_pt" in edit.clear_fields)
     _docx_set_table_placement(table_el, edit)
 
 
@@ -3388,25 +3512,220 @@ def _hwpx_find_or_create_child(parent: ET.Element, name: str) -> ET.Element:
                     insert_at = index
                     break
             parent.insert(insert_at, child)
+        elif name in {"subList", "cellAddr", "cellSpan", "cellSz", "cellMargin"}:
+            order = {"subList": 0, "cellAddr": 1, "cellSpan": 2, "cellSz": 3, "cellMargin": 4}
+            insert_at = len(parent)
+            for index, existing in enumerate(list(parent)):
+                existing_name = existing.tag.rsplit("}", 1)[-1]
+                existing_order = order.get(existing_name)
+                if existing_order is None or existing_order > order[name]:
+                    insert_at = index
+                    break
+            parent.insert(insert_at, child)
         else:
             parent.append(child)
     return child
 
 
+def _hwpx_find_or_create_hh_child(parent: ET.Element, name: str) -> ET.Element:
+    child = parent.find(f"{_HH}{name}")
+    if child is None:
+        child = _hh_el(name)
+        parent.append(child)
+    return child
+
+
+def _hwpx_find_or_create_hc_child(parent: ET.Element, name: str) -> ET.Element:
+    child = parent.find(f"{_HC}{name}")
+    if child is None:
+        child = _hc_el(name)
+        parent.append(child)
+    return child
+
+
+def _hwpx_header_or_raise(archive: _EditableHwpxArchive, edit: StyleEdit) -> _EditableHwpxHeader:
+    if archive.header_entry is None:
+        raise EditValidationError(
+            "HWPX native style write-back requires Contents/header.xml.",
+            code="invalid_style",
+            target_kind=edit.target_kind,
+            target_id=edit.target_id,
+        )
+    return archive.header_entry
+
+
+def _ensure_hwpx_header_style_container(
+    header: _EditableHwpxHeader,
+    container_name: str,
+) -> ET.Element:
+    ref_list = _ensure_hwpx_ref_list(header)
+    container = ref_list.find(f"{_HH}{container_name}")
+    if container is not None:
+        return container
+    container = _hh_el(container_name, {"itemCnt": "0"})
+    ref_list.append(container)
+    return container
+
+
+def _hwpx_next_header_ref_id(container: ET.Element, child_name: str) -> str:
+    existing_ids = [
+        item_id
+        for child in container.findall(f"{_HH}{child_name}")
+        if (item_id := _safe_int(child.get("id"))) is not None
+    ]
+    return str((max(existing_ids) + 1) if existing_ids else 0)
+
+
+def _hwpx_header_child_by_id(container: ET.Element, child_name: str, child_id: str | None) -> ET.Element | None:
+    if child_id is None:
+        return None
+    for child in container.findall(f"{_HH}{child_name}"):
+        if child.get("id") == child_id:
+            return child
+    return None
+
+
+def _hwpx_default_char_pr(char_pr_id: str) -> ET.Element:
+    char_pr = _hh_el(
+        "charPr",
+        {
+            "id": char_pr_id,
+            "height": "1000",
+            "textColor": "#000000",
+            "shadeColor": "none",
+            "useFontSpace": "0",
+            "useKerning": "0",
+            "symMark": "NONE",
+        },
+    )
+    char_pr.append(_hh_el("fontRef", {"hangul": "0", "latin": "0", "hanja": "0", "japanese": "0", "other": "0", "symbol": "0", "user": "0"}))
+    char_pr.append(_hh_el("ratio", {"hangul": "100", "latin": "100", "hanja": "100", "japanese": "100", "other": "100", "symbol": "100", "user": "100"}))
+    char_pr.append(_hh_el("spacing", {"hangul": "0", "latin": "0", "hanja": "0", "japanese": "0", "other": "0", "symbol": "0", "user": "0"}))
+    char_pr.append(_hh_el("relSz", {"hangul": "100", "latin": "100", "hanja": "100", "japanese": "100", "other": "100", "symbol": "100", "user": "100"}))
+    char_pr.append(_hh_el("offset", {"hangul": "0", "latin": "0", "hanja": "0", "japanese": "0", "other": "0", "symbol": "0", "user": "0"}))
+    char_pr.append(_hh_el("underline", {"type": "NONE", "shape": "SOLID", "color": "#000000"}))
+    char_pr.append(_hh_el("strikeout", {"shape": "NONE", "color": "#000000"}))
+    char_pr.append(_hh_el("outline", {"type": "NONE"}))
+    char_pr.append(_hh_el("shadow", {"type": "NONE", "color": "#C0C0C0", "offsetX": "10", "offsetY": "10"}))
+    return char_pr
+
+
+def _hwpx_default_para_pr(para_pr_id: str) -> ET.Element:
+    para_pr = _hh_el(
+        "paraPr",
+        {
+            "id": para_pr_id,
+            "tabPrIDRef": "0",
+            "condense": "0",
+            "fontLineHeight": "0",
+            "snapToGrid": "1",
+            "suppressLineNumbers": "0",
+            "checked": "0",
+        },
+    )
+    para_pr.append(_hh_el("align", {"horizontal": "LEFT", "vertical": "BASELINE"}))
+    margin = _hh_el("margin")
+    for name in ("intent", "left", "right", "prev", "next"):
+        margin.append(_hc_el(name, {"value": "0", "unit": "HWPUNIT"}))
+    para_pr.append(margin)
+    return para_pr
+
+
+def _hwpx_clone_or_create_header_ref(
+    archive: _EditableHwpxArchive,
+    *,
+    container_name: str,
+    child_name: str,
+    source_id: str | None,
+    edit: StyleEdit,
+    default_factory: Callable[[str], ET.Element],
+) -> tuple[ET.Element, str]:
+    header = _hwpx_header_or_raise(archive, edit)
+    container = _ensure_hwpx_header_style_container(header, container_name)
+    new_id = _hwpx_next_header_ref_id(container, child_name)
+    source = _hwpx_header_child_by_id(container, child_name, source_id)
+    cloned = deepcopy(source) if source is not None else default_factory(new_id)
+    cloned.set("id", new_id)
+    container.append(cloned)
+    container.set("itemCnt", str(len(container.findall(f"{_HH}{child_name}"))))
+    return cloned, new_id
+
+
+def _hwpx_clone_char_pr_for_run(
+    archive: _EditableHwpxArchive,
+    run_el: ET.Element,
+    edit: StyleEdit,
+) -> ET.Element:
+    char_pr, new_id = _hwpx_clone_or_create_header_ref(
+        archive,
+        container_name="charProperties",
+        child_name="charPr",
+        source_id=run_el.get("charPrIDRef"),
+        edit=edit,
+        default_factory=_hwpx_default_char_pr,
+    )
+    run_el.set("charPrIDRef", new_id)
+    return char_pr
+
+
+def _hwpx_clone_para_pr_for_paragraph(
+    archive: _EditableHwpxArchive,
+    paragraph_el: ET.Element,
+    edit: StyleEdit,
+) -> ET.Element:
+    para_pr, new_id = _hwpx_clone_or_create_header_ref(
+        archive,
+        container_name="paraProperties",
+        child_name="paraPr",
+        source_id=paragraph_el.get("paraPrIDRef"),
+        edit=edit,
+        default_factory=_hwpx_default_para_pr,
+    )
+    paragraph_el.set("paraPrIDRef", new_id)
+    return para_pr
+
+
 def _hwpx_style_unsupported_fields(edit: StyleEdit) -> set[str]:
     supplied = _style_edit_supplied_fields(edit)
+    if edit.target_kind == "run":
+        supported = {
+            "bold",
+            "italic",
+            "underline",
+            "strikethrough",
+            "color",
+            "font_size_pt",
+        }
+        return supplied - supported
+    if edit.target_kind == "paragraph":
+        supported = {
+            "paragraph_align",
+            "left_indent_pt",
+            "right_indent_pt",
+            "first_line_indent_pt",
+            "hanging_indent_pt",
+        }
+        return supplied - supported
     if edit.target_kind == "cell":
         supported = {
             "width_pt",
             "height_pt",
+            "background",
             "vertical_align",
+            "horizontal_align",
             "padding_top_pt",
             "padding_right_pt",
             "padding_bottom_pt",
             "padding_left_pt",
+            "border_top",
+            "border_right",
+            "border_bottom",
+            "border_left",
         }
         return supplied - supported
-    if edit.target_kind in {"table", "image"}:
+    if edit.target_kind == "table":
+        return supplied - set(_PLACEMENT_FIELD_MAP)
+    if edit.target_kind == "image":
         return supplied - ({"width_pt", "height_pt"} | set(_PLACEMENT_FIELD_MAP))
     return supplied
 
@@ -3429,18 +3748,99 @@ def _hwpx_set_size_el(object_el: ET.Element, edit: StyleEdit) -> None:
         size_el.set("protect", "0")
 
 
-def _hwpx_set_cell_size_el(cell_el: ET.Element, edit: StyleEdit) -> None:
+def _hwpx_cell_colspan(cell_el: ET.Element) -> int:
+    cell_span = cell_el.find(f"{_HP}cellSpan")
+    return max(_safe_int(cell_span.get("colSpan")) if cell_span is not None else 1, 1)
+
+
+def _hwpx_cell_margin_units(cell_el: ET.Element, table_el: ET.Element) -> dict[str, int]:
+    margin = cell_el.find(f"{_HP}cellMargin")
+    if margin is None:
+        margin = table_el.find(f"{_HP}inMargin")
+    return {
+        side: _safe_int(margin.get(side)) if margin is not None else 0
+        for side in ("left", "right", "top", "bottom")
+    }
+
+
+def _hwpx_update_cell_text_area(cell_el: ET.Element, table_el: ET.Element) -> None:
+    sub_list = cell_el.find(f"{_HP}subList")
+    size_el = cell_el.find(f"{_HP}cellSz")
+    if sub_list is None or size_el is None:
+        return
+    margins = _hwpx_cell_margin_units(cell_el, table_el)
+    width = _safe_int(size_el.get("width"))
+    height = _safe_int(size_el.get("height"))
+    if width is not None:
+        sub_list.set("textWidth", str(max(width - (margins["left"] or 0) - (margins["right"] or 0), 0)))
+    if height is not None:
+        sub_list.set("textHeight", str(max(height - (margins["top"] or 0) - (margins["bottom"] or 0), 0)))
+
+
+def _hwpx_set_cell_size_attrs(
+    cell_el: ET.Element,
+    table_el: ET.Element,
+    *,
+    width: int | None = None,
+    height: int | None = None,
+    clear_width: bool = False,
+    clear_height: bool = False,
+) -> None:
+    size_el = _hwpx_find_or_create_child(cell_el, "cellSz")
+    if clear_width:
+        size_el.attrib.pop("width", None)
+    elif width is not None:
+        size_el.set("width", str(width))
+    if clear_height:
+        size_el.attrib.pop("height", None)
+    elif height is not None:
+        size_el.set("height", str(height))
+    _hwpx_update_cell_text_area(cell_el, table_el)
+
+
+def _hwpx_apply_cell_width(location: _HwpxCellLocation, edit: StyleEdit) -> None:
+    if "width_pt" not in _style_edit_supplied_fields(edit):
+        return
+
+    table_el = location.table
+    target_colspan = _hwpx_cell_colspan(location.element)
+    width = None if "width_pt" in edit.clear_fields else _pt_to_hwpunit(edit.width_pt)
+    for row_el in _hwpx_table_rows(table_el):
+        for logical_col, cell_el in _logical_table_cells(row_el):
+            if logical_col != location.col_index:
+                continue
+            if cell_el is not location.element and (target_colspan > 1 or _hwpx_cell_colspan(cell_el) > 1):
+                continue
+            _hwpx_set_cell_size_attrs(
+                cell_el,
+                table_el,
+                width=width,
+                clear_width="width_pt" in edit.clear_fields,
+            )
+
+
+def _hwpx_apply_cell_height(location: _HwpxCellLocation, edit: StyleEdit) -> None:
+    if "height_pt" not in _style_edit_supplied_fields(edit):
+        return
+
+    rows = _hwpx_table_rows(location.table)
+    if location.row_index < 1 or location.row_index > len(rows):
+        return
+    height = None if "height_pt" in edit.clear_fields else _pt_to_hwpunit(edit.height_pt)
+    for cell_el in _hwpx_row_cells(rows[location.row_index - 1]):
+        _hwpx_set_cell_size_attrs(
+            cell_el,
+            location.table,
+            height=height,
+            clear_height="height_pt" in edit.clear_fields,
+        )
+
+
+def _hwpx_set_cell_size_el(location: _HwpxCellLocation, edit: StyleEdit) -> None:
     if not any(field in _style_edit_supplied_fields(edit) for field in ("width_pt", "height_pt")):
         return
-    size_el = _hwpx_find_or_create_child(cell_el, "cellSz")
-    if "width_pt" in edit.clear_fields:
-        size_el.attrib.pop("width", None)
-    elif edit.width_pt is not None:
-        size_el.set("width", str(_pt_to_hwpunit(edit.width_pt) or 0))
-    if "height_pt" in edit.clear_fields:
-        size_el.attrib.pop("height", None)
-    elif edit.height_pt is not None:
-        size_el.set("height", str(_pt_to_hwpunit(edit.height_pt) or 0))
+    _hwpx_apply_cell_width(location, edit)
+    _hwpx_apply_cell_height(location, edit)
 
 
 def _hwpx_set_cell_margin_el(cell_el: ET.Element, edit: StyleEdit) -> None:
@@ -3460,10 +3860,239 @@ def _hwpx_set_cell_margin_el(cell_el: ET.Element, edit: StyleEdit) -> None:
             margin_el.set(attr, str(_pt_to_hwpunit(value) or 0))
 
 
-def _hwpx_apply_cell_style(location: _HwpxCellLocation, edit: StyleEdit) -> None:
+def _hwpx_set_presence_style_child(parent: ET.Element, name: str, value: bool | None, *, clear: bool) -> None:
+    child = parent.find(f"{_HH}{name}")
+    if clear or value is False:
+        if child is not None:
+            parent.remove(child)
+        return
+    if value is True and child is None:
+        parent.append(_hh_el(name))
+
+
+def _hwpx_apply_run_style(archive: _EditableHwpxArchive, location: _HwpxRunLocation, edit: StyleEdit) -> None:
+    char_pr = _hwpx_clone_char_pr_for_run(archive, location.element, edit)
+    _hwpx_set_presence_style_child(char_pr, "bold", edit.bold, clear="bold" in edit.clear_fields)
+    _hwpx_set_presence_style_child(char_pr, "italic", edit.italic, clear="italic" in edit.clear_fields)
+
+    if "underline" in edit.clear_fields or edit.underline is False:
+        underline = char_pr.find(f"{_HH}underline")
+        if underline is not None:
+            underline.set("type", "NONE")
+    elif edit.underline is True:
+        underline = _hwpx_find_or_create_hh_child(char_pr, "underline")
+        underline.set("type", "BOTTOM")
+        underline.set("shape", "SOLID")
+        underline.set("color", "#000000")
+
+    if "strikethrough" in edit.clear_fields or edit.strikethrough is False:
+        strikeout = char_pr.find(f"{_HH}strikeout")
+        if strikeout is not None:
+            strikeout.set("type", "NONE")
+            strikeout.set("shape", "NONE")
+    elif edit.strikethrough is True:
+        strikeout = _hwpx_find_or_create_hh_child(char_pr, "strikeout")
+        strikeout.set("type", "CONTINUOUS")
+        strikeout.set("shape", "SOLID")
+        strikeout.set("color", "#000000")
+
+    if "color" in edit.clear_fields:
+        char_pr.set("textColor", "#000000")
+    elif edit.color is not None:
+        char_pr.set("textColor", f"#{_docx_hex_color(edit.color)}")
+
+    if "font_size_pt" in edit.clear_fields:
+        char_pr.attrib.pop("height", None)
+    elif edit.font_size_pt is not None:
+        char_pr.set("height", str(int(round(edit.font_size_pt * 100))))
+
+
+def _hwpx_align_value(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return {
+        "left": "LEFT",
+        "center": "CENTER",
+        "right": "RIGHT",
+        "justify": "JUSTIFY",
+    }[value]
+
+
+def _hwpx_set_para_align(para_pr: ET.Element, align: str | None, *, clear: bool = False) -> None:
+    align_el = _hwpx_find_or_create_hh_child(para_pr, "align")
+    if clear:
+        align_el.set("horizontal", "LEFT")
+    elif align is not None:
+        align_el.set("horizontal", _hwpx_align_value(align) or "LEFT")
+    if "vertical" not in align_el.attrib:
+        align_el.set("vertical", "BASELINE")
+
+
+def _hwpx_set_margin_value(margin_el: ET.Element, name: str, value_pt: float | None, *, clear: bool = False) -> None:
+    child = _hwpx_find_or_create_hc_child(margin_el, name)
+    child.set("unit", "HWPUNIT")
+    child.set("value", "0" if clear or value_pt is None else str(_pt_to_hwpunit(value_pt) or 0))
+
+
+def _hwpx_apply_para_margin_edits(para_pr: ET.Element, edit: StyleEdit) -> None:
+    margin_fields = {
+        "left_indent_pt",
+        "right_indent_pt",
+        "first_line_indent_pt",
+        "hanging_indent_pt",
+    }
+    if not any(field in _style_edit_supplied_fields(edit) for field in margin_fields):
+        return
+
+    margin_elements = para_pr.findall(f".//{_HH}margin")
+    if not margin_elements:
+        margin_elements = [_hwpx_find_or_create_hh_child(para_pr, "margin")]
+
+    for margin_el in margin_elements:
+        if "left_indent_pt" in edit.clear_fields:
+            _hwpx_set_margin_value(margin_el, "left", None, clear=True)
+        elif edit.left_indent_pt is not None:
+            _hwpx_set_margin_value(margin_el, "left", edit.left_indent_pt)
+
+        if "right_indent_pt" in edit.clear_fields:
+            _hwpx_set_margin_value(margin_el, "right", None, clear=True)
+        elif edit.right_indent_pt is not None:
+            _hwpx_set_margin_value(margin_el, "right", edit.right_indent_pt)
+
+        if "first_line_indent_pt" in edit.clear_fields or "hanging_indent_pt" in edit.clear_fields:
+            _hwpx_set_margin_value(margin_el, "intent", None, clear=True)
+        if edit.first_line_indent_pt is not None:
+            _hwpx_set_margin_value(margin_el, "intent", edit.first_line_indent_pt)
+        if edit.hanging_indent_pt is not None:
+            _hwpx_set_margin_value(margin_el, "intent", -edit.hanging_indent_pt)
+
+
+def _hwpx_apply_paragraph_style(archive: _EditableHwpxArchive, location: _HwpxParagraphLocation, edit: StyleEdit) -> None:
+    para_pr = _hwpx_clone_para_pr_for_paragraph(archive, location.element, edit)
+    if "paragraph_align" in edit.clear_fields:
+        _hwpx_set_para_align(para_pr, None, clear=True)
+    elif edit.paragraph_align is not None:
+        _hwpx_set_para_align(para_pr, edit.paragraph_align)
+    _hwpx_apply_para_margin_edits(para_pr, edit)
+
+
+def _hwpx_clone_border_fill_for_cell(
+    archive: _EditableHwpxArchive,
+    cell_el: ET.Element,
+    edit: StyleEdit,
+) -> ET.Element:
+    border_fill, new_id = _hwpx_clone_or_create_header_ref(
+        archive,
+        container_name="borderFills",
+        child_name="borderFill",
+        source_id=cell_el.get("borderFillIDRef"),
+        edit=edit,
+        default_factory=_hwpx_create_default_border_fill,
+    )
+    cell_el.set("borderFillIDRef", new_id)
+    return border_fill
+
+
+def _hwpx_border_attrs(border_value: str) -> dict[str, str]:
+    attrs = _docx_border_attrs(border_value)
+    val = {
+        "nil": "NONE",
+        "dashed": "DASH",
+        "dotted": "DOT",
+        "single": "SOLID",
+    }.get(attrs["val"], "SOLID")
+    width_match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*pt", border_value)
+    if width_match:
+        width_mm = float(width_match.group(1)) * 0.352777778
+        width = f"{width_mm:.2f} mm"
+    else:
+        width = "0.12 mm"
+    return {"type": val, "width": width, "color": f"#{attrs['color']}"}
+
+
+def _hwpx_remove_fill_brushes(border_fill: ET.Element) -> None:
+    for child in list(border_fill):
+        if child.tag.rsplit("}", 1)[-1] == "fillBrush":
+            border_fill.remove(child)
+
+
+def _hwpx_set_border_fill_background(border_fill: ET.Element, color: str) -> None:
+    _hwpx_remove_fill_brushes(border_fill)
+    fill_brush = _hc_el("fillBrush")
+    fill_brush.append(
+        _hc_el(
+            "winBrush",
+            {
+                "faceColor": f"#{_docx_hex_color(color)}",
+                "hatchColor": "#999999",
+                "alpha": "0",
+            },
+        )
+    )
+    border_fill.append(fill_brush)
+
+
+def _hwpx_apply_cell_border_fill_style(
+    archive: _EditableHwpxArchive,
+    cell_el: ET.Element,
+    edit: StyleEdit,
+) -> None:
+    border_fields = {
+        "border_top": "topBorder",
+        "border_right": "rightBorder",
+        "border_bottom": "bottomBorder",
+        "border_left": "leftBorder",
+    }
+    if not any(
+        field in _style_edit_supplied_fields(edit)
+        for field in {"background", *border_fields}
+    ):
+        return
+
+    border_fill = _hwpx_clone_border_fill_for_cell(archive, cell_el, edit)
+    if "background" in edit.clear_fields:
+        _hwpx_remove_fill_brushes(border_fill)
+    elif edit.background is not None:
+        _hwpx_set_border_fill_background(border_fill, edit.background)
+
+    for field_name, child_name in border_fields.items():
+        border_el = _hwpx_find_or_create_hh_child(border_fill, child_name)
+        if field_name in edit.clear_fields:
+            border_el.set("type", "NONE")
+            border_el.set("width", "0.12 mm")
+            border_el.set("color", "#000000")
+            continue
+        value = getattr(edit, field_name)
+        if value is None:
+            continue
+        for attr, attr_value in _hwpx_border_attrs(value).items():
+            border_el.set(attr, attr_value)
+
+
+def _hwpx_apply_cell_horizontal_align(archive: _EditableHwpxArchive, cell_el: ET.Element, edit: StyleEdit) -> None:
+    if "horizontal_align" not in _style_edit_supplied_fields(edit):
+        return
+    sub_list = cell_el.find(f"{_HP}subList")
+    if sub_list is None:
+        return
+    for paragraph_el in sub_list.findall(f"{_HP}p"):
+        para_pr = _hwpx_clone_para_pr_for_paragraph(archive, paragraph_el, edit)
+        if "horizontal_align" in edit.clear_fields:
+            _hwpx_set_para_align(para_pr, None, clear=True)
+        elif edit.horizontal_align is not None:
+            _hwpx_set_para_align(para_pr, edit.horizontal_align)
+
+
+def _hwpx_apply_cell_style(archive: _EditableHwpxArchive, location: _HwpxCellLocation, edit: StyleEdit) -> None:
     cell_el = location.element
-    _hwpx_set_cell_size_el(cell_el, edit)
+    _hwpx_set_cell_size_el(location, edit)
     _hwpx_set_cell_margin_el(cell_el, edit)
+    if _style_edit_supplied_fields(edit).intersection({"width_pt", "height_pt", "padding_top_pt", "padding_right_pt", "padding_bottom_pt", "padding_left_pt"}):
+        for row_el in _hwpx_table_rows(location.table):
+            for existing_cell in _hwpx_row_cells(row_el):
+                _hwpx_update_cell_text_area(existing_cell, location.table)
+    _hwpx_apply_cell_border_fill_style(archive, cell_el, edit)
+    _hwpx_apply_cell_horizontal_align(archive, cell_el, edit)
     if "vertical_align" in edit.clear_fields:
         sub_list = cell_el.find(f"{_HP}subList")
         if sub_list is not None:
@@ -3608,10 +4237,13 @@ def _apply_hwpx_style_edit(archive: _EditableHwpxArchive, edit: StyleEdit, resul
         )
 
     index = _build_hwpx_structural_index(archive)
-    if edit.target_kind == "cell" and (location := index.cells.get(edit.target_id)):
-        _hwpx_apply_cell_style(location, edit)
+    if edit.target_kind == "run" and (location := index.runs.get(edit.target_id)):
+        _hwpx_apply_run_style(archive, location, edit)
+    elif edit.target_kind == "paragraph" and (location := index.paragraphs.get(edit.target_id)):
+        _hwpx_apply_paragraph_style(archive, location, edit)
+    elif edit.target_kind == "cell" and (location := index.cells.get(edit.target_id)):
+        _hwpx_apply_cell_style(archive, location, edit)
     elif edit.target_kind == "table" and (location := index.tables.get(edit.target_id)):
-        _hwpx_set_size_el(location.element, edit)
         _hwpx_apply_object_placement(location.element, edit)
     elif edit.target_kind == "image" and (location := index.images.get(edit.target_id)):
         _hwpx_set_size_el(location.element, edit)
@@ -3634,6 +4266,10 @@ def _hwpx_el(name: str, attrs: dict[str, str] | None = None) -> ET.Element:
 
 def _hh_el(name: str, attrs: dict[str, str] | None = None) -> ET.Element:
     return ET.Element(f"{_HH}{name}", attrs or {})
+
+
+def _hc_el(name: str, attrs: dict[str, str] | None = None) -> ET.Element:
+    return ET.Element(f"{_HC}{name}", attrs or {})
 
 
 def _hwpx_default_column_widths(col_count: int) -> list[int]:
@@ -3938,13 +4574,17 @@ def _update_hwpx_table_size_from_cells(table_el: ET.Element) -> None:
         max_row_width = max(max_row_width, row_width)
         total_height += row_height
 
-    size_el = table_el.find(f"{_HP}sz")
-    if size_el is None:
+    if max_row_width <= 0 and total_height <= 0:
         return
+    size_el = _hwpx_find_or_create_child(table_el, "sz")
     if max_row_width > 0:
         size_el.set("width", str(max_row_width))
+        size_el.set("widthRelTo", "ABSOLUTE")
     if total_height > 0:
         size_el.set("height", str(total_height))
+        size_el.set("heightRelTo", "ABSOLUTE")
+    if "protect" not in size_el.attrib:
+        size_el.set("protect", "0")
 
 
 def _hwpx_set_cell_text(cell_el: ET.Element, text: str) -> None:

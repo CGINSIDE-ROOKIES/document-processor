@@ -114,6 +114,78 @@ class EditorApiTests(unittest.TestCase):
         return hwpx_bytes.getvalue()
 
     @staticmethod
+    def _build_sample_styled_table_hwpx_bytes() -> bytes:
+        hwpx_bytes = BytesIO()
+        with zipfile.ZipFile(hwpx_bytes, "w") as archive:
+            archive.writestr(
+                "Contents/header.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core">
+  <hh:refList>
+    <hh:borderFills itemCnt="1">
+      <hh:borderFill id="0" threeD="0" shadow="0" centerLine="NONE" breakCellSeparateLine="0">
+        <hh:slash type="NONE" Crooked="0" isCounter="0"/>
+        <hh:backSlash type="NONE" Crooked="0" isCounter="0"/>
+        <hh:leftBorder type="SOLID" width="0.12 mm" color="#000000"/>
+        <hh:rightBorder type="SOLID" width="0.12 mm" color="#000000"/>
+        <hh:topBorder type="SOLID" width="0.12 mm" color="#000000"/>
+        <hh:bottomBorder type="SOLID" width="0.12 mm" color="#000000"/>
+        <hc:fillBrush><hc:winBrush faceColor="#DDEEFF" hatchColor="#999999" alpha="0"/></hc:fillBrush>
+      </hh:borderFill>
+    </hh:borderFills>
+    <hh:charProperties itemCnt="1">
+      <hh:charPr id="0" height="1000" textColor="#000000" shadeColor="none" useFontSpace="0" useKerning="0" symMark="NONE">
+        <hh:fontRef hangul="0" latin="0" hanja="0" japanese="0" other="0" symbol="0" user="0"/>
+        <hh:ratio hangul="100" latin="100" hanja="100" japanese="100" other="100" symbol="100" user="100"/>
+        <hh:spacing hangul="0" latin="0" hanja="0" japanese="0" other="0" symbol="0" user="0"/>
+        <hh:relSz hangul="100" latin="100" hanja="100" japanese="100" other="100" symbol="100" user="100"/>
+        <hh:offset hangul="0" latin="0" hanja="0" japanese="0" other="0" symbol="0" user="0"/>
+        <hh:underline type="NONE" shape="SOLID" color="#000000"/>
+        <hh:strikeout shape="NONE" color="#000000"/>
+      </hh:charPr>
+    </hh:charProperties>
+    <hh:paraProperties itemCnt="1">
+      <hh:paraPr id="0" tabPrIDRef="0" condense="0" fontLineHeight="0" snapToGrid="1" suppressLineNumbers="0" checked="0">
+        <hh:align horizontal="LEFT" vertical="BASELINE"/>
+        <hh:margin>
+          <hc:intent value="0" unit="HWPUNIT"/>
+          <hc:left value="0" unit="HWPUNIT"/>
+          <hc:right value="0" unit="HWPUNIT"/>
+        </hh:margin>
+      </hh:paraPr>
+    </hh:paraProperties>
+  </hh:refList>
+</hh:head>
+""",
+            )
+            archive.writestr(
+                "Contents/section0.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p paraPrIDRef="0">
+    <hp:run charPrIDRef="0"><hp:t>Hello</hp:t></hp:run>
+    <hp:run>
+      <hp:tbl>
+        <hp:tr>
+          <hp:tc borderFillIDRef="0">
+            <hp:subList vertAlign="TOP">
+              <hp:p paraPrIDRef="0"><hp:run charPrIDRef="0"><hp:t>Cell</hp:t></hp:run></hp:p>
+            </hp:subList>
+            <hp:cellAddr colAddr="0" rowAddr="0"/>
+            <hp:cellSpan colSpan="1" rowSpan="1"/>
+            <hp:cellSz width="5000" height="1000"/>
+            <hp:cellMargin left="0" right="0" top="0" bottom="0"/>
+          </hp:tc>
+        </hp:tr>
+      </hp:tbl>
+    </hp:run>
+  </hp:p>
+</hs:sec>
+""",
+            )
+        return hwpx_bytes.getvalue()
+
+    @staticmethod
     def _build_hwpx_table_after_intro_with_control_bytes() -> bytes:
         hwpx_bytes = BytesIO()
         with zipfile.ZipFile(hwpx_bytes, "w") as archive:
@@ -331,6 +403,148 @@ class EditorApiTests(unittest.TestCase):
         self.assertEqual(updated_run.run_style.color, "#445566")
         self.assertAlmostEqual(updated_run.run_style.size_pt, 16.0)
 
+    def test_style_edit_rejects_table_level_size_fields(self) -> None:
+        with self.assertRaises(ValueError) as error:
+            StyleEdit(
+                target_kind="table",
+                target_id="table-1",
+                width_pt=360,
+                height_pt=72,
+            )
+
+        self.assertIn("table style edits do not support fields", str(error.exception))
+
+    def test_apply_document_edits_writes_docx_cell_geometry_and_background(self) -> None:
+        from xml.etree import ElementTree as ET
+
+        source_bytes = self._build_sample_table_docx_bytes()
+        doc = DocIR.from_file(source_bytes, doc_type="docx")
+        cell = doc.paragraphs[0].tables[0].cells[0]
+
+        result = apply_document_edits(
+            document=DocumentInput(
+                source_bytes=source_bytes,
+                source_name="sample.docx",
+            ),
+            edits=[
+                StyleEdit(
+                    target_kind="cell",
+                    target_id=cell.node_id,
+                    width_pt=144,
+                    height_pt=36,
+                    background="#FFF2CC",
+                )
+            ],
+        )
+
+        self.assertTrue(result.ok, result.validation.issues)
+        reparsed = DocIR.from_file(result.output_bytes, doc_type="docx")
+        updated_cell = reparsed.paragraphs[0].tables[0].cells[0]
+        self.assertAlmostEqual(updated_cell.cell_style.width_pt, 144.0)
+        self.assertAlmostEqual(updated_cell.cell_style.height_pt, 36.0)
+        self.assertEqual(updated_cell.cell_style.background, "#FFF2CC")
+
+        with zipfile.ZipFile(BytesIO(result.output_bytes)) as archive:
+            document_xml = archive.read("word/document.xml")
+        root = ET.fromstring(document_xml)
+        w = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        self.assertEqual(root.find(f".//{w}tblLayout").get(f"{w}type"), "fixed")
+        self.assertEqual(root.findall(f".//{w}tblGrid/{w}gridCol")[0].get(f"{w}w"), "2880")
+        self.assertEqual(root.find(f".//{w}tcW").get(f"{w}w"), "2880")
+        self.assertEqual(root.find(f".//{w}trHeight").get(f"{w}val"), "720")
+        self.assertEqual(root.find(f".//{w}shd").get(f"{w}fill"), "FFF2CC")
+
+    def test_apply_document_edits_writes_hwpx_run_paragraph_and_cell_style(self) -> None:
+        from xml.etree import ElementTree as ET
+
+        source_bytes = self._build_sample_styled_table_hwpx_bytes()
+        doc = DocIR.from_file(source_bytes, doc_type="hwpx")
+        paragraph = doc.paragraphs[0]
+        run = paragraph.runs[0]
+        cell = paragraph.tables[0].cells[0]
+
+        result = apply_document_edits(
+            document=DocumentInput(
+                source_bytes=source_bytes,
+                source_name="sample.hwpx",
+            ),
+            edits=[
+                StyleEdit(
+                    target_kind="run",
+                    target_id=run.node_id,
+                    bold=True,
+                    color="#445566",
+                    font_size_pt=16,
+                ),
+                StyleEdit(
+                    target_kind="paragraph",
+                    target_id=paragraph.node_id,
+                    paragraph_align="center",
+                    left_indent_pt=18,
+                ),
+                StyleEdit(
+                    target_kind="cell",
+                    target_id=cell.node_id,
+                    background="#FFF2CC",
+                    vertical_align="middle",
+                    horizontal_align="center",
+                    width_pt=120,
+                    height_pt=50,
+                    padding_left_pt=6,
+                    padding_right_pt=6,
+                    border_top="1pt single #445566",
+                    border_right="1pt single #445566",
+                    border_bottom="1pt single #445566",
+                    border_left="1pt single #445566",
+                ),
+            ],
+        )
+
+        self.assertTrue(result.ok, result.validation.issues)
+        self.assertEqual(result.styles_applied, 3)
+        with zipfile.ZipFile(BytesIO(result.output_bytes)) as archive:
+            header_root = ET.fromstring(archive.read("Contents/header.xml"))
+            section_root = ET.fromstring(archive.read("Contents/section0.xml"))
+        hh = "{http://www.hancom.co.kr/hwpml/2011/head}"
+        hp = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
+        hc = "{http://www.hancom.co.kr/hwpml/2011/core}"
+        updated_cell_el = section_root.find(f".//{hp}tc")
+        border_fill_id = updated_cell_el.get("borderFillIDRef")
+        border_fill = next(
+            element
+            for element in header_root.findall(f".//{hh}borderFill")
+            if element.get("id") == border_fill_id
+        )
+        fill_brushes = [child for child in list(border_fill) if child.tag.rsplit("}", 1)[-1] == "fillBrush"]
+        self.assertEqual(len(fill_brushes), 1)
+        self.assertEqual(fill_brushes[0].find(f"{hc}winBrush").get("faceColor"), "#FFF2CC")
+        cell_size = updated_cell_el.find(f"{hp}cellSz")
+        self.assertEqual(cell_size.get("width"), "12000")
+        self.assertEqual(cell_size.get("height"), "5000")
+        sub_list = updated_cell_el.find(f"{hp}subList")
+        self.assertEqual(sub_list.get("textWidth"), "10800")
+        self.assertEqual(sub_list.get("textHeight"), "5000")
+
+        reparsed = DocIR.from_file(result.output_bytes, doc_type="hwpx")
+        updated_run = reparsed.paragraphs[0].runs[0]
+        self.assertTrue(updated_run.run_style.bold)
+        self.assertEqual(updated_run.run_style.color, "#445566")
+        self.assertAlmostEqual(updated_run.run_style.size_pt, 16.0)
+
+        updated_paragraph = reparsed.paragraphs[0]
+        self.assertEqual(updated_paragraph.para_style.align, "center")
+        self.assertAlmostEqual(updated_paragraph.para_style.left_indent_pt, 18.0)
+
+        updated_cell = reparsed.paragraphs[0].tables[0].cells[0]
+        self.assertEqual(updated_cell.cell_style.background, "#FFF2CC")
+        self.assertEqual(updated_cell.cell_style.horizontal_align, "center")
+        self.assertEqual(updated_cell.cell_style.vertical_align, "center")
+        self.assertAlmostEqual(updated_cell.cell_style.width_pt, 120.0)
+        self.assertAlmostEqual(updated_cell.cell_style.height_pt, 50.0)
+        self.assertAlmostEqual(updated_cell.cell_style.padding_left_pt, 6.0)
+        self.assertAlmostEqual(updated_cell.cell_style.padding_right_pt, 6.0)
+        self.assertEqual(updated_cell.cell_style.border_top, "1px solid #445566")
+
     def test_apply_document_edits_writes_hwpx_table_placement_style(self) -> None:
         source_bytes = self._build_sample_table_hwpx_bytes()
         doc = DocIR.from_file(source_bytes, doc_type="hwpx")
@@ -345,7 +559,6 @@ class EditorApiTests(unittest.TestCase):
                 StyleEdit(
                     target_kind="table",
                     target_id=table.node_id,
-                    width_pt=200,
                     placement_mode="floating",
                     wrap="square",
                     x_relative_to="page",
@@ -361,7 +574,6 @@ class EditorApiTests(unittest.TestCase):
         with zipfile.ZipFile(BytesIO(result.output_bytes)) as archive:
             section_xml = archive.read("Contents/section0.xml").decode("utf-8")
         self.assertIn('textWrap="SQUARE"', section_xml)
-        self.assertIn('width="20000"', section_xml)
         self.assertIn('treatAsChar="0"', section_xml)
         self.assertIn('horzOffset="1000"', section_xml)
         self.assertIn('vertOffset="1200"', section_xml)
@@ -460,6 +672,17 @@ class EditorApiTests(unittest.TestCase):
             [
                 ("cell", "s1.p1.r1.tbl1.tr1.tc1", "Left"),
                 ("cell", "s1.p1.r1.tbl1.tr1.tc2", "Right"),
+            ],
+        )
+        table_id = doc.paragraphs[0].tables[0].node_id
+        self.assertEqual(
+            [
+                (target.parent_table_id, target.row_index, target.column_index, target.rowspan, target.colspan)
+                for target in result.targets
+            ],
+            [
+                (table_id, 1, 1, 1, 1),
+                (table_id, 1, 2, 1, 1),
             ],
         )
 

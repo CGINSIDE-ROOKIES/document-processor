@@ -577,7 +577,7 @@ Fields:
   `superscript`, `subscript`, `color`, `highlight`, `font_size_pt`
 - paragraph style fields: `paragraph_align`, `left_indent_pt`,
   `right_indent_pt`, `first_line_indent_pt`, `hanging_indent_pt`
-- cell/table/image size fields: `width_pt`, `height_pt`
+- cell/image size fields: `width_pt`, `height_pt`
 - cell style fields: `background`, `vertical_align`, `horizontal_align`,
   `padding_top_pt`, `padding_right_pt`, `padding_bottom_pt`,
   `padding_left_pt`, `border_top`, `border_right`, `border_bottom`,
@@ -594,11 +594,20 @@ means "set false".
 
 Native write-back notes:
 
-- DOCX supports common run, paragraph, cell, table width/placement, and image
+- DOCX supports common run, paragraph, cell, table placement, and image
   size/placement fields.
-- HWPX currently supports table/image size and placement plus direct cell size,
-  padding, and vertical alignment fields. HWPX run and paragraph style write-back
-  is rejected because safe write-back requires cloning header style records.
+- HWPX supports common run fields (`bold`, `italic`, `underline`,
+  `strikethrough`, `color`, `font_size_pt`), paragraph alignment/indent fields,
+  cell background/alignment/size/padding/border fields, table placement fields,
+  and image size/placement fields. Run, paragraph, and cell style write-back
+  clones header style records before updating target references.
+- Table style edits do not accept `width_pt` or `height_pt`. Set cell
+  `width_pt`/`height_pt` on the relevant cell targets instead. Use
+  `list_editable_targets(target_kinds=["cell"])` to get each cell's table id,
+  row index, column index, and span metadata.
+- In native DOCX/HWPX write-back, a cell `width_pt` edit updates the target
+  cell's logical column where the format stores width as column/grid geometry;
+  a cell `height_pt` edit updates the target row where height is row geometry.
 
 ### `TextAnnotation`
 
@@ -625,11 +634,23 @@ Fields:
 - `target_kind`
 - `target_id`
 - `parent_paragraph_id`
+- `parent_table_id`
+- `row_index`
+- `column_index`
+- `row_count`
+- `column_count`
+- `rowspan`
+- `colspan`
 - `current_text`
 - `page_number`
 - `native_anchor`
 - `writable`
 - `writable_reason`
+
+For `cell` targets, `parent_table_id`, `row_index`, `column_index`, `rowspan`,
+and `colspan` identify the cell's table coordinates. Row and column indexes are
+1-based. For `table` targets, `row_count` and `column_count` describe the
+current table shape.
 
 ### `DocumentRunContext`
 

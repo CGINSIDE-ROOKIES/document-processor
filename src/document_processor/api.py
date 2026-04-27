@@ -1405,18 +1405,31 @@ def _collect_editable_targets(
         for cell in _iter_doc_ir_cells(doc.paragraphs)
         for paragraph in cell.paragraphs
     }
+    cell_to_table = {
+        cell.node_id: table
+        for table in _iter_doc_ir_tables(doc.paragraphs)
+        for cell in table.cells
+    }
     emitted_cell_ids: set[str] = set()
     for paragraph in _iter_doc_ir_paragraphs(doc.paragraphs):
         parent_cell = paragraph_to_cell.get(paragraph.node_id)
         if parent_cell is not None and parent_cell.node_id not in emitted_cell_ids:
             cell_requested = exact_target_ids is None or parent_cell.node_id in exact_target_ids
             cell_writable, cell_writable_reason = _cell_writable(parent_cell)
+            parent_table = cell_to_table.get(parent_cell.node_id)
+            cell_style = parent_cell.cell_style
             if "cell" in target_kinds and cell_requested:
                 if not only_writable or cell_writable:
                     results.append(
                         EditableTarget(
                             target_kind="cell",
                             target_id=parent_cell.node_id,
+                            parent_paragraph_id=paragraph.node_id,
+                            parent_table_id=parent_table.node_id if parent_table is not None else None,
+                            row_index=parent_cell.row_index,
+                            column_index=parent_cell.col_index,
+                            rowspan=max(cell_style.rowspan, 1) if cell_style is not None else 1,
+                            colspan=max(cell_style.colspan, 1) if cell_style is not None else 1,
                             current_text=parent_cell.text,
                             page_number=paragraph.page_number,
                             native_anchor=parent_cell.native_anchor,
@@ -1472,6 +1485,8 @@ def _collect_editable_targets(
                             target_kind="table",
                             target_id=table.node_id,
                             parent_paragraph_id=paragraph.node_id,
+                            row_count=table.row_count,
+                            column_count=table.col_count,
                             current_text=table.markdown,
                             page_number=paragraph.page_number,
                             native_anchor=table.native_anchor,

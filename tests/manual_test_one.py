@@ -674,103 +674,51 @@ def build_style_edits(
         edits.append(edit)
         selected_targets.append(target.model_dump(mode="json"))
 
-    if source_doc_type == "docx":
-        add_target(
-            select_first_style_target(document, "run"),
-            {
-                "bold": True,
-                "color": "#445566",
-                "font_size_pt": 16,
-                "reason": "Manual run style smoke check.",
-            },
-        )
-        add_target(
-            select_first_style_target(document, "paragraph"),
-            {
-                "paragraph_align": "center",
-                "left_indent_pt": 18,
-                "reason": "Manual paragraph style smoke check.",
-            },
-        )
-    else:
-        skipped.append(
-            f"{source_doc_type.upper()} native style write-back currently skips run/paragraph style fields."
-        )
+    add_target(
+        select_first_style_target(document, "run"),
+        {
+            "bold": True,
+            "color": "#445566",
+            "font_size_pt": 32,
+            "reason": "Manual run style smoke check.",
+        },
+    )
+    add_target(
+        select_first_style_target(document, "paragraph"),
+        {
+            "paragraph_align": "right",
+            "left_indent_pt": 0,
+            "reason": "Manual paragraph style smoke check.",
+        },
+    )
 
     cell_target = select_first_style_target(document, "cell")
-    if source_doc_type == "docx":
-        add_target(
-            cell_target,
-            {
-                "background": "#FFF2CC",
-                "vertical_align": "middle",
-                "horizontal_align": "center",
-                "width_pt": 120,
-                "height_pt": 50,
-                "padding_left_pt": 6,
-                "padding_right_pt": 6,
-                "border_top": "1pt single #445566",
-                "border_right": "1pt single #445566",
-                "border_bottom": "1pt single #445566",
-                "border_left": "1pt single #445566",
-                "reason": "Manual DOCX cell style smoke check.",
-            },
-        )
-    else:
-        add_target(
-            cell_target,
-            {
-                "vertical_align": "middle",
-                "width_pt": 120,
-                "height_pt": 28,
-                "padding_left_pt": 6,
-                "padding_right_pt": 6,
-                "reason": "Manual HWPX-compatible cell style smoke check.",
-            },
-        )
-
-    table_placement = {
-        "width_pt": 360,
-        "wrap": "square",
-        "text_flow": "both_sides",
-        "x_relative_to": "page",
-        "y_relative_to": "paragraph",
-        "x_offset_pt": 18,
-        "y_offset_pt": 12,
-        "margin_top_pt": 4,
-        "margin_right_pt": 4,
-        "margin_bottom_pt": 4,
-        "margin_left_pt": 4,
-        "allow_overlap": False,
-        "flow_with_text": True,
-        "z_order": 1,
-        "reason": "Manual floating table style smoke check.",
-    }
-    add_target(select_first_style_target(document, "table"), table_placement)
+    add_target(
+        cell_target,
+        {
+            "background": "#FFF2CC",
+            "vertical_align": "bottom",
+            "horizontal_align": "right",
+            "width_pt": 50,
+            "height_pt": 100,
+            "padding_left_pt": 6,
+            "padding_right_pt": 6,
+            "border_top": "1pt single #445566",
+            "border_right": "1pt single #445566",
+            "border_bottom": "1pt single #445566",
+            "border_left": "1pt single #445566",
+            "reason": "Manual cell style smoke check.",
+        },
+    )
 
     image_placement = {
         "width_pt": 144,
-        "wrap": "square",
-        "text_flow": "both_sides",
-        "x_relative_to": "page",
-        "y_relative_to": "paragraph",
-        "x_offset_pt": 24,
-        "y_offset_pt": 24,
-        "margin_top_pt": 3,
-        "margin_right_pt": 3,
-        "margin_bottom_pt": 3,
-        "margin_left_pt": 3,
-        "allow_overlap": False,
-        "flow_with_text": True,
-        "z_order": 2,
-        "reason": "Manual floating image style smoke check.",
+        "reason": "Manual image size style smoke check.",
     }
     add_target(select_first_style_target(document, "image"), image_placement)
 
     if not any(edit.target_kind == "cell" for edit in edits):
         skipped.append("No table cell target was available for cell style testing.")
-    if not any(edit.target_kind == "table" for edit in edits):
-        skipped.append("No table target was available for floating table style testing.")
     if not any(edit.target_kind == "image" for edit in edits):
         skipped.append("No image target was available for floating image style testing.")
 
@@ -1387,6 +1335,7 @@ def main() -> int:
     )
 
     print("Manual file flow completed.")
+    print("Source file is left unchanged; inspect the generated output paths below.")
     print(f"Source: {summary['source']['path']}")
     print(f"Comprehensive edited output: {summary['paths']['comprehensive_output']}")
     print(f"Comprehensive bytes output: {summary['paths']['comprehensive_bytes_output']}")
@@ -1433,6 +1382,10 @@ def main() -> int:
     warnings = summary["comprehensive_edit_suite"]["native_file"]["warnings"]
     if warnings:
         print(f"Warnings: {'; '.join(warnings)}")
+    if not summary["style_edit_suite"]["skipped"]:
+        style_warnings = summary["style_edit_suite"]["native_file"]["warnings"]
+        if style_warnings:
+            print(f"Style warnings: {'; '.join(style_warnings)}")
     return 0
 
 

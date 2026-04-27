@@ -436,7 +436,8 @@ targets = list_editable_targets(
 )
 
 run_id = next(t.target_id for t in targets.targets if t.target_kind == "run")
-cell_id = next(t.target_id for t in targets.targets if t.target_kind == "cell")
+cell_target = next(t for t in targets.targets if t.target_kind == "cell")
+cell_id = cell_target.target_id
 table_id = next(t.target_id for t in targets.targets if t.target_kind == "table")
 
 result = apply_document_edits(
@@ -461,7 +462,6 @@ result = apply_document_edits(
         StyleEdit(
             target_kind="table",
             target_id=table_id,
-            width_pt=360,
             placement_mode="floating",
             wrap="square",
             x_relative_to="page",
@@ -486,19 +486,35 @@ Supported target-specific fields:
   `first_line_indent_pt`, `hanging_indent_pt`
 - cell: `background`, `vertical_align`, `horizontal_align`, padding, borders,
   `width_pt`, `height_pt`
-- table/image: `width_pt`, `height_pt`, `placement_mode`, `wrap`, `text_flow`,
+- table: `placement_mode`, `wrap`, `text_flow`, relative anchors, alignment,
+  offsets, outside margins, overlap, flow, and `z_order`
+- image: `width_pt`, `height_pt`, `placement_mode`, `wrap`, `text_flow`,
   relative anchors, alignment, offsets, outside margins, overlap, flow, and
   `z_order`
 
-DOCX native write-back supports common run, paragraph, cell, table size/placement,
-and image size/placement fields. HWPX native write-back currently supports
-table/image size and placement plus direct cell size, padding, and vertical
-alignment; HWPX run and paragraph style write-back is rejected.
+DOCX native write-back supports common run, paragraph, cell, table placement,
+and image size/placement fields. HWPX native write-back supports common run
+fields (`bold`, `italic`, `underline`, `strikethrough`, `color`,
+`font_size_pt`), paragraph alignment/indent fields, cell
+background/alignment/size/padding/border fields, table placement fields, and
+image size/placement fields.
+
+Cell targets returned by `list_editable_targets` include `parent_table_id`,
+`row_index`, `column_index`, `rowspan`, and `colspan`. Use those fields to find
+the cell id for a row/column coordinate before applying cell `width_pt` or
+`height_pt`.
 
 Floating placement write-back is native-format oriented. The edited DOCX/HWPX
 file receives placement XML, and the preview `updated_doc_ir` contains the
 requested placement object. Re-parsing native files and rendering HTML currently
 preserves dimensions more completely than floating placement/wrapping metadata.
+
+Table style edits do not accept `width_pt` or `height_pt`. Use cell style edits
+for table geometry.
+
+For native DOCX/HWPX write-back, a cell `width_pt` edit updates the target
+cell's logical column where the format stores width as column/grid geometry.
+A cell `height_pt` edit updates the target row where height is row geometry.
 
 ## 6. Inspect Context Before Editing
 

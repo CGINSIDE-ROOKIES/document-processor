@@ -185,7 +185,6 @@ _STYLE_FIELDS_BY_TARGET_KIND: dict[str, set[str]] = {
         "border_left",
     },
     "table": {
-        *_STYLE_COMMON_FIELDS,
         *_STYLE_PLACEMENT_FIELDS,
     },
     "image": {
@@ -221,8 +220,8 @@ class StyleEdit(BaseModel):
     first_line_indent_pt: float | None = Field(default=None, description="Paragraph first-line indent in points.")
     hanging_indent_pt: float | None = Field(default=None, ge=0, description="Paragraph hanging indent in points.")
 
-    width_pt: float | None = Field(default=None, ge=0, description="Cell, table, or image display width in points.")
-    height_pt: float | None = Field(default=None, ge=0, description="Cell, table, or image display height in points.")
+    width_pt: float | None = Field(default=None, ge=0, description="Cell or image display width in points.")
+    height_pt: float | None = Field(default=None, ge=0, description="Cell or image display height in points.")
 
     background: str | None = Field(default=None, description="Cell background color as #RRGGBB.")
     vertical_align: Literal["top", "middle", "bottom"] | None = Field(default=None, description="Cell vertical alignment.")
@@ -313,6 +312,13 @@ class EditableTarget(BaseModel):
     target_kind: TargetKind
     target_id: str
     parent_paragraph_id: str | None = None
+    parent_table_id: str | None = None
+    row_index: int | None = Field(default=None, description="1-based table row index for cell targets.")
+    column_index: int | None = Field(default=None, description="1-based table column index for cell targets.")
+    row_count: int | None = Field(default=None, description="Table row count for table targets.")
+    column_count: int | None = Field(default=None, description="Table column count for table targets.")
+    rowspan: int | None = Field(default=None, description="Cell row span for cell targets.")
+    colspan: int | None = Field(default=None, description="Cell column span for cell targets.")
     current_text: str
     page_number: int | None = None
     native_anchor: NativeAnchor | None = None
