@@ -27,6 +27,8 @@ from .api_types import (
     ReadDocumentResult,
     ResolvedTextAnnotation,
     ReviewHtmlResult,
+    StyleEdit,
+    StyleTargetKind,
     StructuralEdit,
     StructuralOperationKind,
     TargetKind,
@@ -38,7 +40,7 @@ from .builder import build_doc_ir_from_mapping
 from .diagram import create_model_diagram, draw_model_diagram
 from .hwpx import HwpxDocument
 from .models import DocIR, ImageAsset, ImageIR, NativeAnchor, NodeKind, PageInfo, ParagraphContentNode, ParagraphIR, RunIR, TableCellIR, TableIR
-from .style_types import CellStyleInfo, ColumnLayoutInfo, ListItemInfo, ParaStyleInfo, RunStyleInfo, StyleMap, TableStyleInfo
+from .style_types import CellStyleInfo, ColumnLayoutInfo, ListItemInfo, ObjectPlacementInfo, ParaStyleInfo, RunStyleInfo, StyleMap, TableStyleInfo
 
 __all__ = [
     "AnnotationTargetKind",
@@ -67,6 +69,7 @@ __all__ = [
     "NativeAnchor",
     "NodeKind",
     "PageInfo",
+    "ObjectPlacementInfo",
     "ParagraphContentNode",
     "ParagraphIR",
     "ParaStyleInfo",
@@ -78,6 +81,8 @@ __all__ = [
     "StructuralEdit",
     "StructuralOperationKind",
     "StyleMap",
+    "StyleEdit",
+    "StyleTargetKind",
     "TableCellIR",
     "TableIR",
     "TableStyleInfo",

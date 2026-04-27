@@ -14,11 +14,11 @@ import zipfile
 
 from pydantic import BaseModel, Field
 
-from .api_types import StructuralEdit, TextEdit
+from .api_types import StyleEdit, StructuralEdit, TextEdit
 from .core import convert_hwp_to_hwpx_bytes
 from .io_utils import SourceDocType, TemporarySourcePath, coerce_source_to_supported_value, infer_doc_type
 from .models import DocIR, ImageIR, NativeAnchor, NodeKind, ParagraphIR, RunIR, TableCellIR, TableIR, _anchored_node_id, _make_native_anchor
-from .style_types import CellStyleInfo, TableStyleInfo
+from .style_types import CellStyleInfo, ObjectPlacementInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
 
 
 class EditValidationError(ValueError):
@@ -52,6 +52,7 @@ class _EditEngineResult(BaseModel):
     updated_doc_ir: DocIR | None = None
     edits_applied: int = 0
     operations_applied: int = 0
+    styles_applied: int = 0
     modified_target_ids: list[str] = Field(default_factory=list)
     created_target_ids: list[str] = Field(default_factory=list)
     removed_target_ids: list[str] = Field(default_factory=list)
@@ -371,6 +372,27 @@ _HWPX_MIN_CELL_WIDTH = 6000
 _HWPX_DEFAULT_CELL_HEIGHT = 1800
 _HWPX_DEFAULT_CELL_MARGIN_X = 510
 _HWPX_DEFAULT_CELL_MARGIN_Y = 141
+_EMU_PER_PT = 12700.0
+_TWIPS_PER_PT = 20.0
+_HWPUNIT_PER_PT = 100.0
+
+
+def _pt_to_twips(value: float | int | None) -> int | None:
+    if value is None:
+        return None
+    return int(round(float(value) * _TWIPS_PER_PT))
+
+
+def _pt_to_emu(value: float | int | None) -> int | None:
+    if value is None:
+        return None
+    return int(round(float(value) * _EMU_PER_PT))
+
+
+def _pt_to_hwpunit(value: float | int | None) -> int | None:
+    if value is None:
+        return None
+    return int(round(float(value) * _HWPUNIT_PER_PT))
 
 
 @dataclass
@@ -939,6 +961,13 @@ class _DocIrTableLocation:
 
 
 @dataclass
+class _DocIrImageLocation:
+    node: ImageIR
+    paragraph: ParagraphIR
+    content_index: int
+
+
+@dataclass
 class _DocIrCellLocation:
     node: TableCellIR
     table: TableIR
@@ -949,6 +978,7 @@ class _StructuralDocIrIndex:
         self.paragraphs: dict[str, _DocIrParagraphLocation] = {}
         self.runs: dict[str, _DocIrRunLocation] = {}
         self.tables: dict[str, _DocIrTableLocation] = {}
+        self.images: dict[str, _DocIrImageLocation] = {}
         self.cells: dict[str, _DocIrCellLocation] = {}
 
 
@@ -971,6 +1001,12 @@ def _build_structural_doc_ir_index(doc: DocIR) -> _StructuralDocIrIndex:
                         paragraph=paragraph,
                         content_index=content_index,
                     )
+                elif isinstance(item, ImageIR):
+                    index.images[item.node_id] = _DocIrImageLocation(
+                        node=item,
+                        paragraph=paragraph,
+                        content_index=content_index,
+                    )
                 elif isinstance(item, TableIR):
                     index.tables[item.node_id] = _DocIrTableLocation(
                         node=item,
@@ -986,6 +1022,193 @@ def _build_structural_doc_ir_index(doc: DocIR) -> _StructuralDocIrIndex:
 
     walk_paragraphs(doc.paragraphs)
     return index
+
+
+_RUN_STYLE_FIELD_MAP = {
+    "bold": "bold",
+    "italic": "italic",
+    "underline": "underline",
+    "strikethrough": "strikethrough",
+    "superscript": "superscript",
+    "subscript": "subscript",
+    "color": "color",
+    "highlight": "highlight",
+    "font_size_pt": "size_pt",
+}
+_PARA_STYLE_FIELD_MAP = {
+    "paragraph_align": "align",
+    "left_indent_pt": "left_indent_pt",
+    "right_indent_pt": "right_indent_pt",
+    "first_line_indent_pt": "first_line_indent_pt",
+    "hanging_indent_pt": "hanging_indent_pt",
+}
+_CELL_STYLE_FIELDS = {
+    "background",
+    "vertical_align",
+    "horizontal_align",
+    "width_pt",
+    "height_pt",
+    "padding_top_pt",
+    "padding_right_pt",
+    "padding_bottom_pt",
+    "padding_left_pt",
+    "border_top",
+    "border_right",
+    "border_bottom",
+    "border_left",
+}
+_PLACEMENT_FIELD_MAP = {
+    "placement_mode": "mode",
+    "wrap": "wrap",
+    "text_flow": "text_flow",
+    "x_relative_to": "x_relative_to",
+    "y_relative_to": "y_relative_to",
+    "x_align": "x_align",
+    "y_align": "y_align",
+    "x_offset_pt": "x_offset_pt",
+    "y_offset_pt": "y_offset_pt",
+    "margin_top_pt": "margin_top_pt",
+    "margin_right_pt": "margin_right_pt",
+    "margin_bottom_pt": "margin_bottom_pt",
+    "margin_left_pt": "margin_left_pt",
+    "allow_overlap": "allow_overlap",
+    "flow_with_text": "flow_with_text",
+    "z_order": "z_order",
+}
+_STYLE_EDIT_FIELDS = set(_RUN_STYLE_FIELD_MAP) | set(_PARA_STYLE_FIELD_MAP) | _CELL_STYLE_FIELDS | {"width_pt", "height_pt"} | set(_PLACEMENT_FIELD_MAP)
+
+
+def _style_edit_supplied_fields(edit: StyleEdit) -> set[str]:
+    return {field for field in _STYLE_EDIT_FIELDS if getattr(edit, field) is not None} | set(edit.clear_fields)
+
+
+def _set_or_clear_field(obj: object, attr: str, value: object, *, clear: bool = False, clear_value: object = None) -> None:
+    setattr(obj, attr, clear_value if clear else value)
+
+
+def _apply_placement_edit(placement: ObjectPlacementInfo | None, edit: StyleEdit) -> ObjectPlacementInfo | None:
+    if placement is None:
+        placement = ObjectPlacementInfo()
+    for field_name, attr in _PLACEMENT_FIELD_MAP.items():
+        if field_name in edit.clear_fields:
+            _set_or_clear_field(placement, attr, None, clear=True)
+            continue
+        value = getattr(edit, field_name)
+        if value is not None:
+            setattr(placement, attr, value)
+    if not placement.model_dump(exclude_none=True):
+        return None
+    return placement
+
+
+def _style_target_kind_for_doc_ir_index(index: _StructuralDocIrIndex, target_id: str) -> str | None:
+    if target_id in index.paragraphs:
+        return "paragraph"
+    if target_id in index.runs:
+        return "run"
+    if target_id in index.cells:
+        return "cell"
+    if target_id in index.tables:
+        return "table"
+    if target_id in index.images:
+        return "image"
+    return None
+
+
+def _apply_style_edit_to_doc_ir_index(index: _StructuralDocIrIndex, edit: StyleEdit, result: _EditEngineResult) -> None:
+    actual_kind = _style_target_kind_for_doc_ir_index(index, edit.target_id)
+    if actual_kind is None:
+        raise EditValidationError(
+            f"Style target does not exist: {edit.target_id}.",
+            code="target_not_found",
+            target_kind=edit.target_kind,
+            target_id=edit.target_id,
+        )
+    if actual_kind != edit.target_kind:
+        raise EditValidationError(
+            f"{edit.target_id} is a {actual_kind} target, not a {edit.target_kind} target.",
+            code="target_kind_mismatch",
+            target_kind=edit.target_kind,
+            target_id=edit.target_id,
+        )
+
+    if edit.target_kind == "run":
+        run = index.runs[edit.target_id].node
+        style = run.run_style or RunStyleInfo()
+        for field_name, attr in _RUN_STYLE_FIELD_MAP.items():
+            if field_name in edit.clear_fields:
+                clear_value = False if attr in {"bold", "italic", "underline", "strikethrough", "superscript", "subscript"} else None
+                _set_or_clear_field(style, attr, None, clear=True, clear_value=clear_value)
+                continue
+            value = getattr(edit, field_name)
+            if value is not None:
+                setattr(style, attr, value)
+        run.run_style = style
+    elif edit.target_kind == "paragraph":
+        paragraph = index.paragraphs[edit.target_id].node
+        style = paragraph.para_style or ParaStyleInfo()
+        for field_name, attr in _PARA_STYLE_FIELD_MAP.items():
+            if field_name in edit.clear_fields:
+                _set_or_clear_field(style, attr, None, clear=True)
+                continue
+            value = getattr(edit, field_name)
+            if value is not None:
+                setattr(style, attr, value)
+        paragraph.para_style = style
+    elif edit.target_kind == "cell":
+        cell = index.cells[edit.target_id].node
+        style = cell.cell_style or CellStyleInfo()
+        for field_name in _CELL_STYLE_FIELDS:
+            if field_name in edit.clear_fields:
+                _set_or_clear_field(style, field_name, None, clear=True)
+                continue
+            value = getattr(edit, field_name)
+            if value is not None:
+                setattr(style, field_name, value)
+        cell.cell_style = style
+    elif edit.target_kind == "table":
+        table = index.tables[edit.target_id].node
+        style = table.table_style or TableStyleInfo(row_count=table.row_count, col_count=table.col_count)
+        for field_name in ("width_pt", "height_pt"):
+            if field_name in edit.clear_fields:
+                _set_or_clear_field(style, field_name, None, clear=True)
+                continue
+            value = getattr(edit, field_name)
+            if value is not None:
+                setattr(style, field_name, value)
+        style.placement = _apply_placement_edit(style.placement, edit)
+        table.table_style = style
+    elif edit.target_kind == "image":
+        image = index.images[edit.target_id].node
+        if "width_pt" in edit.clear_fields:
+            image.display_width_pt = None
+        elif edit.width_pt is not None:
+            image.display_width_pt = edit.width_pt
+        if "height_pt" in edit.clear_fields:
+            image.display_height_pt = None
+        elif edit.height_pt is not None:
+            image.display_height_pt = edit.height_pt
+        image.placement = _apply_placement_edit(image.placement, edit)
+    else:
+        raise EditValidationError(
+            f"Unsupported style target kind: {edit.target_kind!r}.",
+            code="invalid_style",
+            target_kind=edit.target_kind,
+            target_id=edit.target_id,
+        )
+
+    _append_unique(result.modified_target_ids, edit.target_id)
+    result.styles_applied += 1
+
+
+def _apply_style_edits_to_doc_ir(doc: DocIR, edits: list[StyleEdit]) -> _EditEngineResult:
+    updated = doc.model_copy(deep=True)
+    index = _build_structural_doc_ir_index(updated)
+    result = _EditEngineResult(source_doc_type=updated.source_doc_type)
+    for edit in edits:
+        _apply_style_edit_to_doc_ir_index(index, edit, result)
+    result.updated_doc_ir = updated
+    return result
 
 
 def _text_digest(text: str | None) -> str:
@@ -1978,6 +2201,12 @@ class _DocxTableLocation:
 
 
 @dataclass
+class _DocxImageLocation:
+    drawing_el: object
+    path: str
+
+
+@dataclass
 class _DocxCellLocation:
     cell: object
     table: object
@@ -1991,6 +2220,7 @@ class _DocxStructuralIndex:
         self.paragraphs: dict[str, _DocxParagraphLocation] = {}
         self.runs: dict[str, _DocxRunLocation] = {}
         self.tables: dict[str, _DocxTableLocation] = {}
+        self.images: dict[str, _DocxImageLocation] = {}
         self.cells: dict[str, _DocxCellLocation] = {}
 
 
@@ -2000,6 +2230,7 @@ def _build_docx_structural_index(doc) -> _DocxStructuralIndex:
     def register_paragraph(paragraph, paragraph_path: str) -> None:
         paragraph_id = _anchored_node_id("paragraph", paragraph_path)
         index.paragraphs[paragraph_id] = _DocxParagraphLocation(paragraph=paragraph, path=paragraph_path)
+        image_index = 0
         for run_index, run in enumerate(paragraph.runs, start=1):
             run_path = f"{paragraph_path}.r{run_index}"
             index.runs[_anchored_node_id("run", run_path)] = _DocxRunLocation(
@@ -2007,6 +2238,24 @@ def _build_docx_structural_index(doc) -> _DocxStructuralIndex:
                 paragraph=paragraph,
                 path=run_path,
             )
+            for element in run._r.iter():
+                tag = getattr(element, "tag", "")
+                if not isinstance(tag, str) or not tag.endswith("}blip"):
+                    continue
+                drawing_parent = element
+                while drawing_parent is not None and not (
+                    isinstance(getattr(drawing_parent, "tag", None), str)
+                    and drawing_parent.tag.rsplit("}", 1)[-1] in {"inline", "anchor"}
+                ):
+                    drawing_parent = drawing_parent.getparent()
+                if drawing_parent is None:
+                    continue
+                image_index += 1
+                image_path = f"{paragraph_path}.img{image_index}"
+                index.images[_anchored_node_id("image", image_path)] = _DocxImageLocation(
+                    drawing_el=drawing_parent,
+                    path=image_path,
+                )
 
     def walk_table(table, table_path: str) -> None:
         index.tables[_anchored_node_id("table", table_path)] = _DocxTableLocation(table=table, path=table_path)
@@ -2282,6 +2531,564 @@ def _resolve_docx_table_axis(
     )
 
 
+def _docx_get_or_add_child(parent, tag: str):
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    child = parent.find(qn(tag))
+    if child is None:
+        child = OxmlElement(tag)
+        parent.append(child)
+    return child
+
+
+def _docx_set_on_off(parent, tag: str, value: bool | None) -> None:
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    existing = parent.find(qn(tag))
+    if value is None:
+        if existing is not None:
+            parent.remove(existing)
+        return
+    if existing is None:
+        existing = OxmlElement(tag)
+        parent.append(existing)
+    existing.set(qn("w:val"), "1" if value else "0")
+
+
+def _docx_hex_color(value: str) -> str:
+    return value.strip().lstrip("#").upper()
+
+
+def _apply_docx_run_style(run, edit: StyleEdit, result: _EditEngineResult) -> None:
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.shared import Pt, RGBColor
+
+    if "bold" in edit.clear_fields:
+        run.bold = None
+    elif edit.bold is not None:
+        run.bold = edit.bold
+    if "italic" in edit.clear_fields:
+        run.italic = None
+    elif edit.italic is not None:
+        run.italic = edit.italic
+    if "underline" in edit.clear_fields:
+        run.underline = None
+    elif edit.underline is not None:
+        run.underline = edit.underline
+
+    font = run.font
+    for field_name, attr in (("strikethrough", "strike"), ("superscript", "superscript"), ("subscript", "subscript")):
+        if field_name in edit.clear_fields:
+            setattr(font, attr, None)
+        elif (value := getattr(edit, field_name)) is not None:
+            setattr(font, attr, value)
+    if edit.superscript:
+        font.subscript = False
+    if edit.subscript:
+        font.superscript = False
+
+    if "color" in edit.clear_fields:
+        r_pr = run._r.get_or_add_rPr()
+        color_el = r_pr.find(qn("w:color"))
+        if color_el is not None:
+            r_pr.remove(color_el)
+    elif edit.color is not None:
+        font.color.rgb = RGBColor.from_string(_docx_hex_color(edit.color))
+
+    if "font_size_pt" in edit.clear_fields:
+        font.size = None
+    elif edit.font_size_pt is not None:
+        font.size = Pt(edit.font_size_pt)
+
+    if "highlight" in edit.clear_fields:
+        r_pr = run._r.get_or_add_rPr()
+        highlight_el = r_pr.find(qn("w:highlight"))
+        if highlight_el is not None:
+            r_pr.remove(highlight_el)
+    elif edit.highlight is not None:
+        highlight = OxmlElement("w:highlight")
+        highlight.set(qn("w:val"), str(edit.highlight).lower().lstrip("#"))
+        r_pr = run._r.get_or_add_rPr()
+        old = r_pr.find(qn("w:highlight"))
+        if old is not None:
+            r_pr.remove(old)
+        r_pr.append(highlight)
+
+
+def _apply_docx_paragraph_style(paragraph, edit: StyleEdit) -> None:
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.shared import Pt
+
+    align_map = {
+        "left": WD_ALIGN_PARAGRAPH.LEFT,
+        "center": WD_ALIGN_PARAGRAPH.CENTER,
+        "right": WD_ALIGN_PARAGRAPH.RIGHT,
+        "justify": WD_ALIGN_PARAGRAPH.JUSTIFY,
+    }
+    if "paragraph_align" in edit.clear_fields:
+        paragraph.alignment = None
+    elif edit.paragraph_align is not None:
+        paragraph.alignment = align_map[edit.paragraph_align]
+
+    fmt = paragraph.paragraph_format
+    for field_name, attr in (
+        ("left_indent_pt", "left_indent"),
+        ("right_indent_pt", "right_indent"),
+    ):
+        if field_name in edit.clear_fields:
+            setattr(fmt, attr, None)
+        elif (value := getattr(edit, field_name)) is not None:
+            setattr(fmt, attr, Pt(value))
+
+    if "first_line_indent_pt" in edit.clear_fields or "hanging_indent_pt" in edit.clear_fields:
+        fmt.first_line_indent = None
+    if edit.first_line_indent_pt is not None:
+        fmt.first_line_indent = Pt(edit.first_line_indent_pt)
+    if edit.hanging_indent_pt is not None:
+        fmt.first_line_indent = Pt(-edit.hanging_indent_pt)
+
+
+def _docx_get_or_add_tbl_pr(table_el):
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    tbl_pr = table_el.find(qn("w:tblPr"))
+    if tbl_pr is None:
+        tbl_pr = OxmlElement("w:tblPr")
+        table_el.insert(0, tbl_pr)
+    return tbl_pr
+
+
+def _docx_get_or_add_tc_pr(cell_el):
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    tc_pr = cell_el.find(qn("w:tcPr"))
+    if tc_pr is None:
+        tc_pr = OxmlElement("w:tcPr")
+        cell_el.insert(0, tc_pr)
+    return tc_pr
+
+
+def _docx_set_width_el(parent, tag: str, value_pt: float | None, *, clear: bool = False) -> None:
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    existing = parent.find(qn(tag))
+    if clear:
+        if existing is not None:
+            parent.remove(existing)
+        return
+    width = _pt_to_twips(value_pt)
+    if width is None:
+        return
+    if existing is None:
+        existing = OxmlElement(tag)
+        parent.insert(0, existing)
+    existing.set(qn("w:type"), "dxa")
+    existing.set(qn("w:w"), str(width))
+
+
+def _docx_set_cell_padding(tc_pr, edit: StyleEdit) -> None:
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    margin_fields = {
+        "padding_top_pt": "top",
+        "padding_right_pt": "right",
+        "padding_bottom_pt": "bottom",
+        "padding_left_pt": "left",
+    }
+    if not any(getattr(edit, field) is not None or field in edit.clear_fields for field in margin_fields):
+        return
+    tc_mar = tc_pr.find(qn("w:tcMar"))
+    if tc_mar is None:
+        tc_mar = OxmlElement("w:tcMar")
+        tc_pr.append(tc_mar)
+    for field_name, side in margin_fields.items():
+        side_el = tc_mar.find(qn(f"w:{side}"))
+        if field_name in edit.clear_fields:
+            if side_el is not None:
+                tc_mar.remove(side_el)
+            continue
+        value = getattr(edit, field_name)
+        if value is None:
+            continue
+        if side_el is None:
+            side_el = OxmlElement(f"w:{side}")
+            tc_mar.append(side_el)
+        side_el.set(qn("w:type"), "dxa")
+        side_el.set(qn("w:w"), str(_pt_to_twips(value) or 0))
+
+
+def _docx_border_attrs(border_value: str) -> dict[str, str]:
+    color = "000000"
+    match = re.search(r"#([0-9A-Fa-f]{6})", border_value)
+    if match:
+        color = match.group(1).upper()
+    width_match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*pt", border_value)
+    size = str(max(2, int(round(float(width_match.group(1)) * 8)))) if width_match else _DOCX_DEFAULT_BORDER_SIZE
+    lowered = border_value.lower()
+    if "dashed" in lowered:
+        val = "dashed"
+    elif "dotted" in lowered:
+        val = "dotted"
+    elif "none" in lowered:
+        val = "nil"
+    else:
+        val = "single"
+    return {"val": val, "sz": size, "color": color}
+
+
+def _docx_set_cell_borders(tc_pr, edit: StyleEdit) -> None:
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    border_fields = {
+        "border_top": "top",
+        "border_right": "right",
+        "border_bottom": "bottom",
+        "border_left": "left",
+    }
+    if not any(getattr(edit, field) is not None or field in edit.clear_fields for field in border_fields):
+        return
+    borders = tc_pr.find(qn("w:tcBorders"))
+    if borders is None:
+        borders = OxmlElement("w:tcBorders")
+        tc_pr.append(borders)
+    for field_name, side in border_fields.items():
+        side_el = borders.find(qn(f"w:{side}"))
+        if field_name in edit.clear_fields:
+            if side_el is not None:
+                borders.remove(side_el)
+            continue
+        value = getattr(edit, field_name)
+        if value is None:
+            continue
+        if side_el is None:
+            side_el = OxmlElement(f"w:{side}")
+            borders.append(side_el)
+        attrs = _docx_border_attrs(value)
+        side_el.set(qn("w:val"), attrs["val"])
+        side_el.set(qn("w:sz"), attrs["sz"])
+        side_el.set(qn("w:space"), "0")
+        side_el.set(qn("w:color"), attrs["color"])
+
+
+def _apply_docx_cell_style(cell_location: _DocxCellLocation, edit: StyleEdit) -> None:
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    cell = cell_location.cell
+    tc_pr = _docx_get_or_add_tc_pr(cell._tc)
+    _docx_set_width_el(tc_pr, "w:tcW", edit.width_pt, clear="width_pt" in edit.clear_fields)
+
+    if "background" in edit.clear_fields:
+        shd = tc_pr.find(qn("w:shd"))
+        if shd is not None:
+            tc_pr.remove(shd)
+    elif edit.background is not None:
+        shd = tc_pr.find(qn("w:shd"))
+        if shd is None:
+            shd = OxmlElement("w:shd")
+            tc_pr.append(shd)
+        shd.set(qn("w:fill"), _docx_hex_color(edit.background))
+
+    if "vertical_align" in edit.clear_fields:
+        v_align = tc_pr.find(qn("w:vAlign"))
+        if v_align is not None:
+            tc_pr.remove(v_align)
+    elif edit.vertical_align is not None:
+        v_align = tc_pr.find(qn("w:vAlign"))
+        if v_align is None:
+            v_align = OxmlElement("w:vAlign")
+            tc_pr.append(v_align)
+        v_align.set(qn("w:val"), {"top": "top", "middle": "center", "bottom": "bottom"}[edit.vertical_align])
+
+    if "horizontal_align" in edit.clear_fields:
+        for paragraph in cell.paragraphs:
+            paragraph.alignment = None
+    elif edit.horizontal_align is not None:
+        align_map = {
+            "left": WD_ALIGN_PARAGRAPH.LEFT,
+            "center": WD_ALIGN_PARAGRAPH.CENTER,
+            "right": WD_ALIGN_PARAGRAPH.RIGHT,
+            "justify": WD_ALIGN_PARAGRAPH.JUSTIFY,
+        }
+        for paragraph in cell.paragraphs:
+            paragraph.alignment = align_map[edit.horizontal_align]
+
+    if "height_pt" in edit.clear_fields or edit.height_pt is not None:
+        row = cell._tc.getparent()
+        tr_pr = row.find(qn("w:trPr"))
+        if tr_pr is None:
+            tr_pr = OxmlElement("w:trPr")
+            row.insert(0, tr_pr)
+        tr_height = tr_pr.find(qn("w:trHeight"))
+        if "height_pt" in edit.clear_fields:
+            if tr_height is not None:
+                tr_pr.remove(tr_height)
+        elif edit.height_pt is not None:
+            if tr_height is None:
+                tr_height = OxmlElement("w:trHeight")
+                tr_pr.append(tr_height)
+            tr_height.set(qn("w:val"), str(_pt_to_twips(edit.height_pt) or 0))
+            tr_height.set(qn("w:hRule"), "atLeast")
+
+    _docx_set_cell_padding(tc_pr, edit)
+    _docx_set_cell_borders(tc_pr, edit)
+
+
+def _docx_set_table_placement(table_el, edit: StyleEdit) -> None:
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    placement_fields = set(_PLACEMENT_FIELD_MAP)
+    if not any(getattr(edit, field) is not None or field in edit.clear_fields for field in placement_fields):
+        return
+
+    tbl_pr = _docx_get_or_add_tbl_pr(table_el)
+    tblp = tbl_pr.find(qn("w:tblpPr"))
+    if edit.placement_mode == "inline":
+        if tblp is not None:
+            tbl_pr.remove(tblp)
+        return
+    if tblp is None:
+        tblp = OxmlElement("w:tblpPr")
+        tbl_pr.insert(0, tblp)
+
+    if edit.x_relative_to is not None:
+        tblp.set(qn("w:horzAnchor"), {"page": "page", "margin": "margin", "column": "text", "paragraph": "text", "character": "text"}[edit.x_relative_to])
+    if edit.y_relative_to is not None:
+        tblp.set(qn("w:vertAnchor"), {"page": "page", "margin": "margin", "paragraph": "text", "line": "text"}[edit.y_relative_to])
+    if edit.x_align is not None:
+        tblp.set(qn("w:tblpXSpec"), edit.x_align)
+    elif edit.x_offset_pt is not None:
+        tblp.set(qn("w:tblpX"), str(_pt_to_twips(edit.x_offset_pt) or 0))
+    if edit.y_align is not None:
+        tblp.set(qn("w:tblpYSpec"), edit.y_align)
+    elif edit.y_offset_pt is not None:
+        tblp.set(qn("w:tblpY"), str(_pt_to_twips(edit.y_offset_pt) or 0))
+    for field_name, attr in (
+        ("margin_top_pt", "topFromText"),
+        ("margin_right_pt", "rightFromText"),
+        ("margin_bottom_pt", "bottomFromText"),
+        ("margin_left_pt", "leftFromText"),
+    ):
+        if field_name in edit.clear_fields:
+            tblp.attrib.pop(qn(f"w:{attr}"), None)
+        elif (value := getattr(edit, field_name)) is not None:
+            tblp.set(qn(f"w:{attr}"), str(_pt_to_twips(value) or 0))
+
+
+def _apply_docx_table_style(table_location: _DocxTableLocation, edit: StyleEdit) -> None:
+    table_el = table_location.table._tbl
+    tbl_pr = _docx_get_or_add_tbl_pr(table_el)
+    _docx_set_width_el(tbl_pr, "w:tblW", edit.width_pt, clear="width_pt" in edit.clear_fields)
+    _docx_set_table_placement(table_el, edit)
+
+
+def _local_name(element) -> str:
+    tag = getattr(element, "tag", "")
+    return tag.rsplit("}", 1)[-1] if isinstance(tag, str) else ""
+
+
+def _docx_child_by_local_name(parent, name: str):
+    for child in list(parent):
+        if _local_name(child) == name:
+            return child
+    return None
+
+
+def _docx_set_drawing_extent(drawing_el, edit: StyleEdit) -> None:
+    width = None if "width_pt" in edit.clear_fields else _pt_to_emu(edit.width_pt)
+    height = None if "height_pt" in edit.clear_fields else _pt_to_emu(edit.height_pt)
+    if width is None and height is None:
+        return
+    for element in drawing_el.iter():
+        if _local_name(element) in {"extent", "ext"} and element.get("cx") is not None and element.get("cy") is not None:
+            if width is not None:
+                element.set("cx", str(width))
+            if height is not None:
+                element.set("cy", str(height))
+
+
+def _docx_new_position_el(axis: str, *, relative_to: str | None, align: str | None, offset_pt: float | None):
+    from docx.oxml import OxmlElement
+
+    element = OxmlElement(f"wp:position{axis}")
+    element.set("relativeFrom", relative_to or ("column" if axis == "H" else "paragraph"))
+    if offset_pt is not None:
+        child = OxmlElement("wp:posOffset")
+        child.text = str(_pt_to_emu(offset_pt) or 0)
+    else:
+        child = OxmlElement("wp:align")
+        child.text = align or ("left" if axis == "H" else "top")
+    element.append(child)
+    return element
+
+
+def _docx_new_wrap_el(edit: StyleEdit):
+    from docx.oxml import OxmlElement
+
+    wrap = edit.wrap or "square"
+    wrap_tag = {
+        "none": "wrapNone",
+        "square": "wrapSquare",
+        "tight": "wrapTight",
+        "through": "wrapThrough",
+        "top_bottom": "wrapTopAndBottom",
+        "behind_text": "wrapNone",
+        "in_front_of_text": "wrapNone",
+    }[wrap]
+    element = OxmlElement(f"wp:{wrap_tag}")
+    if wrap_tag in {"wrapSquare", "wrapTight", "wrapThrough"}:
+        element.set("wrapText", {"both_sides": "bothSides", "left": "left", "right": "right", "largest": "largest"}.get(edit.text_flow or "both_sides", "bothSides"))
+    for field_name, attr in (
+        ("margin_top_pt", "distT"),
+        ("margin_right_pt", "distR"),
+        ("margin_bottom_pt", "distB"),
+        ("margin_left_pt", "distL"),
+    ):
+        value = getattr(edit, field_name)
+        if value is not None and wrap_tag in {"wrapSquare", "wrapTight", "wrapThrough", "wrapTopAndBottom"}:
+            element.set(attr, str(_pt_to_emu(value) or 0))
+    if wrap_tag in {"wrapTight", "wrapThrough"}:
+        polygon = OxmlElement("wp:wrapPolygon")
+        polygon.set("edited", "0")
+        start = OxmlElement("wp:start")
+        start.set("x", "0")
+        start.set("y", "0")
+        polygon.append(start)
+        for x, y in (("0", "21600"), ("21600", "21600"), ("21600", "0")):
+            point = OxmlElement("wp:lineTo")
+            point.set("x", x)
+            point.set("y", y)
+            polygon.append(point)
+        element.append(polygon)
+    return element
+
+
+def _docx_convert_inline_to_anchor(inline_el, edit: StyleEdit):
+    from docx.oxml import OxmlElement
+
+    anchor = OxmlElement("wp:anchor")
+    anchor.set("simplePos", "0")
+    anchor.set("relativeHeight", str(edit.z_order if edit.z_order is not None else 0))
+    anchor.set("behindDoc", "1" if edit.wrap == "behind_text" else "0")
+    anchor.set("locked", "0")
+    anchor.set("layoutInCell", "1")
+    anchor.set("allowOverlap", "1" if edit.allow_overlap else "0")
+    for field_name, attr in (
+        ("margin_top_pt", "distT"),
+        ("margin_right_pt", "distR"),
+        ("margin_bottom_pt", "distB"),
+        ("margin_left_pt", "distL"),
+    ):
+        value = getattr(edit, field_name)
+        anchor.set(attr, str(_pt_to_emu(value) or 0))
+
+    simple_pos = OxmlElement("wp:simplePos")
+    simple_pos.set("x", "0")
+    simple_pos.set("y", "0")
+    anchor.append(simple_pos)
+    anchor.append(_docx_new_position_el("H", relative_to=edit.x_relative_to, align=edit.x_align, offset_pt=edit.x_offset_pt))
+    anchor.append(_docx_new_position_el("V", relative_to=edit.y_relative_to, align=edit.y_align, offset_pt=edit.y_offset_pt))
+
+    for child_name in ("extent", "effectExtent"):
+        child = _docx_child_by_local_name(inline_el, child_name)
+        if child is not None:
+            anchor.append(deepcopy(child))
+    anchor.append(_docx_new_wrap_el(edit))
+    for child_name in ("docPr", "cNvGraphicFramePr", "graphic"):
+        child = _docx_child_by_local_name(inline_el, child_name)
+        if child is not None:
+            anchor.append(deepcopy(child))
+
+    parent = inline_el.getparent()
+    parent.replace(inline_el, anchor)
+    return anchor
+
+
+def _docx_convert_anchor_to_inline(anchor_el):
+    from docx.oxml import OxmlElement
+
+    inline = OxmlElement("wp:inline")
+    for child_name in ("extent", "effectExtent", "docPr", "cNvGraphicFramePr", "graphic"):
+        child = _docx_child_by_local_name(anchor_el, child_name)
+        if child is not None:
+            inline.append(deepcopy(child))
+    parent = anchor_el.getparent()
+    parent.replace(anchor_el, inline)
+    return inline
+
+
+def _docx_update_anchor_position(anchor_el, edit: StyleEdit) -> None:
+    for old in list(anchor_el):
+        if _local_name(old) in {"positionH", "positionV", "wrapNone", "wrapSquare", "wrapTight", "wrapThrough", "wrapTopAndBottom"}:
+            anchor_el.remove(old)
+    simple_pos = _docx_child_by_local_name(anchor_el, "simplePos")
+    insert_at = list(anchor_el).index(simple_pos) + 1 if simple_pos is not None else 0
+    anchor_el.insert(insert_at, _docx_new_position_el("H", relative_to=edit.x_relative_to, align=edit.x_align, offset_pt=edit.x_offset_pt))
+    anchor_el.insert(insert_at + 1, _docx_new_position_el("V", relative_to=edit.y_relative_to, align=edit.y_align, offset_pt=edit.y_offset_pt))
+    effect_extent = _docx_child_by_local_name(anchor_el, "effectExtent")
+    extent = _docx_child_by_local_name(anchor_el, "extent")
+    wrap_anchor = effect_extent or extent
+    wrap_index = list(anchor_el).index(wrap_anchor) + 1 if wrap_anchor is not None else insert_at + 2
+    anchor_el.insert(wrap_index, _docx_new_wrap_el(edit))
+    if edit.z_order is not None:
+        anchor_el.set("relativeHeight", str(edit.z_order))
+    if edit.allow_overlap is not None:
+        anchor_el.set("allowOverlap", "1" if edit.allow_overlap else "0")
+    if edit.wrap in {"behind_text", "in_front_of_text"}:
+        anchor_el.set("behindDoc", "1" if edit.wrap == "behind_text" else "0")
+
+
+def _apply_docx_image_style(image_location: _DocxImageLocation, edit: StyleEdit) -> None:
+    drawing_el = image_location.drawing_el
+    if edit.placement_mode == "floating" and _local_name(drawing_el) == "inline":
+        drawing_el = _docx_convert_inline_to_anchor(drawing_el, edit)
+        image_location.drawing_el = drawing_el
+    elif edit.placement_mode == "inline" and _local_name(drawing_el) == "anchor":
+        drawing_el = _docx_convert_anchor_to_inline(drawing_el)
+        image_location.drawing_el = drawing_el
+
+    _docx_set_drawing_extent(drawing_el, edit)
+    if _local_name(drawing_el) == "anchor" and any(
+        getattr(edit, field) is not None
+        for field in _PLACEMENT_FIELD_MAP
+        if field not in {"placement_mode"}
+    ):
+        _docx_update_anchor_position(drawing_el, edit)
+
+
+def _apply_docx_style_edit(doc, edit: StyleEdit, result: _EditEngineResult) -> None:
+    index = _build_docx_structural_index(doc)
+    if edit.target_kind == "run" and (location := index.runs.get(edit.target_id)):
+        _apply_docx_run_style(location.run, edit, result)
+    elif edit.target_kind == "paragraph" and (location := index.paragraphs.get(edit.target_id)):
+        _apply_docx_paragraph_style(location.paragraph, edit)
+    elif edit.target_kind == "cell" and (location := index.cells.get(edit.target_id)):
+        _apply_docx_cell_style(location, edit)
+    elif edit.target_kind == "table" and (location := index.tables.get(edit.target_id)):
+        _apply_docx_table_style(location, edit)
+    elif edit.target_kind == "image" and (location := index.images.get(edit.target_id)):
+        _apply_docx_image_style(location, edit)
+    else:
+        raise EditValidationError(
+            f"{edit.target_kind.capitalize()} style target does not exist: {edit.target_id}.",
+            code="target_not_found",
+            target_kind=edit.target_kind,
+            target_id=edit.target_id,
+        )
+    _append_unique(result.modified_target_ids, edit.target_id)
+    result.styles_applied += 1
+
+
 def _apply_docx_structural_operation(doc, operation: StructuralEdit, result: _EditEngineResult) -> None:
     from docx.oxml.ns import qn
 
@@ -2482,6 +3289,13 @@ class _HwpxTableLocation:
 
 
 @dataclass
+class _HwpxImageLocation:
+    element: ET.Element
+    parent: ET.Element
+    path: str
+
+
+@dataclass
 class _HwpxCellLocation:
     element: ET.Element
     table: ET.Element
@@ -2495,6 +3309,7 @@ class _HwpxStructuralIndex:
         self.paragraphs: dict[str, _HwpxParagraphLocation] = {}
         self.runs: dict[str, _HwpxRunLocation] = {}
         self.tables: dict[str, _HwpxTableLocation] = {}
+        self.images: dict[str, _HwpxImageLocation] = {}
         self.cells: dict[str, _HwpxCellLocation] = {}
 
 
@@ -2507,6 +3322,7 @@ def _build_hwpx_structural_index(archive: _EditableHwpxArchive) -> _HwpxStructur
             parent=parent_el,
             path=paragraph_path,
         )
+        image_index = 0
         for run_index, run_el in enumerate(paragraph_el.findall(f"{_HP}run"), start=1):
             run_path = f"{paragraph_path}.r{run_index}"
             index.runs[_anchored_node_id("run", run_path)] = _HwpxRunLocation(
@@ -2514,6 +3330,14 @@ def _build_hwpx_structural_index(archive: _EditableHwpxArchive) -> _HwpxStructur
                 parent=paragraph_el,
                 path=run_path,
             )
+            for pic_el in run_el.findall(f"{_HP}pic"):
+                image_index += 1
+                image_path = f"{paragraph_path}.img{image_index}"
+                index.images[_anchored_node_id("image", image_path)] = _HwpxImageLocation(
+                    element=pic_el,
+                    parent=run_el,
+                    path=image_path,
+                )
 
     def walk_table(table_el: ET.Element, parent_el: ET.Element, table_path: str) -> None:
         index.tables[_anchored_node_id("table", table_path)] = _HwpxTableLocation(
@@ -2548,6 +3372,260 @@ def _build_hwpx_structural_index(archive: _EditableHwpxArchive) -> _HwpxStructur
                 walk_table(table_el, paragraph_el, f"{paragraph_path}.r1.tbl{table_index}")
 
     return index
+
+
+def _hwpx_find_or_create_child(parent: ET.Element, name: str) -> ET.Element:
+    child = parent.find(f"{_HP}{name}")
+    if child is None:
+        child = ET.Element(f"{_HP}{name}")
+        if name in {"sz", "pos", "outMargin"}:
+            order = {"sz": 0, "pos": 1, "outMargin": 2}
+            insert_at = len(parent)
+            for index, existing in enumerate(list(parent)):
+                existing_name = existing.tag.rsplit("}", 1)[-1]
+                existing_order = order.get(existing_name)
+                if existing_order is None or existing_order > order[name]:
+                    insert_at = index
+                    break
+            parent.insert(insert_at, child)
+        else:
+            parent.append(child)
+    return child
+
+
+def _hwpx_style_unsupported_fields(edit: StyleEdit) -> set[str]:
+    supplied = _style_edit_supplied_fields(edit)
+    if edit.target_kind == "cell":
+        supported = {
+            "width_pt",
+            "height_pt",
+            "vertical_align",
+            "padding_top_pt",
+            "padding_right_pt",
+            "padding_bottom_pt",
+            "padding_left_pt",
+        }
+        return supplied - supported
+    if edit.target_kind in {"table", "image"}:
+        return supplied - ({"width_pt", "height_pt"} | set(_PLACEMENT_FIELD_MAP))
+    return supplied
+
+
+def _hwpx_set_size_el(object_el: ET.Element, edit: StyleEdit) -> None:
+    if not any(field in _style_edit_supplied_fields(edit) for field in ("width_pt", "height_pt")):
+        return
+    size_el = _hwpx_find_or_create_child(object_el, "sz")
+    if "width_pt" in edit.clear_fields:
+        size_el.attrib.pop("width", None)
+    elif edit.width_pt is not None:
+        size_el.set("width", str(_pt_to_hwpunit(edit.width_pt) or 0))
+        size_el.set("widthRelTo", "ABSOLUTE")
+    if "height_pt" in edit.clear_fields:
+        size_el.attrib.pop("height", None)
+    elif edit.height_pt is not None:
+        size_el.set("height", str(_pt_to_hwpunit(edit.height_pt) or 0))
+        size_el.set("heightRelTo", "ABSOLUTE")
+    if "protect" not in size_el.attrib:
+        size_el.set("protect", "0")
+
+
+def _hwpx_set_cell_size_el(cell_el: ET.Element, edit: StyleEdit) -> None:
+    if not any(field in _style_edit_supplied_fields(edit) for field in ("width_pt", "height_pt")):
+        return
+    size_el = _hwpx_find_or_create_child(cell_el, "cellSz")
+    if "width_pt" in edit.clear_fields:
+        size_el.attrib.pop("width", None)
+    elif edit.width_pt is not None:
+        size_el.set("width", str(_pt_to_hwpunit(edit.width_pt) or 0))
+    if "height_pt" in edit.clear_fields:
+        size_el.attrib.pop("height", None)
+    elif edit.height_pt is not None:
+        size_el.set("height", str(_pt_to_hwpunit(edit.height_pt) or 0))
+
+
+def _hwpx_set_cell_margin_el(cell_el: ET.Element, edit: StyleEdit) -> None:
+    margin_fields = {
+        "padding_top_pt": "top",
+        "padding_right_pt": "right",
+        "padding_bottom_pt": "bottom",
+        "padding_left_pt": "left",
+    }
+    if not any(field in _style_edit_supplied_fields(edit) for field in margin_fields):
+        return
+    margin_el = _hwpx_find_or_create_child(cell_el, "cellMargin")
+    for field_name, attr in margin_fields.items():
+        if field_name in edit.clear_fields:
+            margin_el.attrib.pop(attr, None)
+        elif (value := getattr(edit, field_name)) is not None:
+            margin_el.set(attr, str(_pt_to_hwpunit(value) or 0))
+
+
+def _hwpx_apply_cell_style(location: _HwpxCellLocation, edit: StyleEdit) -> None:
+    cell_el = location.element
+    _hwpx_set_cell_size_el(cell_el, edit)
+    _hwpx_set_cell_margin_el(cell_el, edit)
+    if "vertical_align" in edit.clear_fields:
+        sub_list = cell_el.find(f"{_HP}subList")
+        if sub_list is not None:
+            sub_list.attrib.pop("vertAlign", None)
+    elif edit.vertical_align is not None:
+        sub_list = _hwpx_find_or_create_child(cell_el, "subList")
+        sub_list.set("vertAlign", {"top": "TOP", "middle": "CENTER", "bottom": "BOTTOM"}[edit.vertical_align])
+    _update_hwpx_table_size_from_cells(location.table)
+
+
+def _hwpx_wrap_value(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return {
+        "none": "TOP_AND_BOTTOM",
+        "square": "SQUARE",
+        "tight": "TIGHT",
+        "through": "THROUGH",
+        "top_bottom": "TOP_AND_BOTTOM",
+        "behind_text": "BEHIND_TEXT",
+        "in_front_of_text": "IN_FRONT_OF_TEXT",
+    }[value]
+
+
+def _hwpx_text_flow_value(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return {
+        "both_sides": "BOTH_SIDES",
+        "left": "LEFT_ONLY",
+        "right": "RIGHT_ONLY",
+        "largest": "LARGEST_ONLY",
+    }[value]
+
+
+def _hwpx_rel_to_x(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return {
+        "page": "PAPER",
+        "margin": "PAGE",
+        "column": "COLUMN",
+        "paragraph": "PARA",
+        "character": "PARA",
+    }[value]
+
+
+def _hwpx_rel_to_y(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return {
+        "page": "PAPER",
+        "margin": "PAGE",
+        "paragraph": "PARA",
+        "line": "PARA",
+    }[value]
+
+
+def _hwpx_apply_object_placement(object_el: ET.Element, edit: StyleEdit) -> None:
+    supplied = _style_edit_supplied_fields(edit)
+    if not supplied.intersection(_PLACEMENT_FIELD_MAP):
+        return
+
+    if "wrap" in edit.clear_fields:
+        object_el.attrib.pop("textWrap", None)
+    elif edit.wrap is not None:
+        object_el.set("textWrap", _hwpx_wrap_value(edit.wrap) or "")
+    if "text_flow" in edit.clear_fields:
+        object_el.attrib.pop("textFlow", None)
+    elif edit.text_flow is not None:
+        object_el.set("textFlow", _hwpx_text_flow_value(edit.text_flow) or "")
+    if "z_order" in edit.clear_fields:
+        object_el.attrib.pop("zOrder", None)
+    elif edit.z_order is not None:
+        object_el.set("zOrder", str(edit.z_order))
+
+    pos_el = _hwpx_find_or_create_child(object_el, "pos")
+    if "placement_mode" in edit.clear_fields:
+        pos_el.attrib.pop("treatAsChar", None)
+    elif edit.placement_mode is not None:
+        pos_el.set("treatAsChar", "1" if edit.placement_mode == "inline" else "0")
+    if "flow_with_text" in edit.clear_fields:
+        pos_el.attrib.pop("flowWithText", None)
+    elif edit.flow_with_text is not None:
+        pos_el.set("flowWithText", "1" if edit.flow_with_text else "0")
+    if "allow_overlap" in edit.clear_fields:
+        pos_el.attrib.pop("allowOverlap", None)
+    elif edit.allow_overlap is not None:
+        pos_el.set("allowOverlap", "1" if edit.allow_overlap else "0")
+    if edit.x_relative_to is not None:
+        pos_el.set("horzRelTo", _hwpx_rel_to_x(edit.x_relative_to) or "PARA")
+    if edit.y_relative_to is not None:
+        pos_el.set("vertRelTo", _hwpx_rel_to_y(edit.y_relative_to) or "PARA")
+    if edit.x_align is not None:
+        pos_el.set("horzAlign", edit.x_align.upper())
+    if edit.y_align is not None:
+        pos_el.set("vertAlign", edit.y_align.upper())
+    if "x_offset_pt" in edit.clear_fields:
+        pos_el.attrib.pop("horzOffset", None)
+    elif edit.x_offset_pt is not None:
+        pos_el.set("horzOffset", str(_pt_to_hwpunit(edit.x_offset_pt) or 0))
+    if "y_offset_pt" in edit.clear_fields:
+        pos_el.attrib.pop("vertOffset", None)
+    elif edit.y_offset_pt is not None:
+        pos_el.set("vertOffset", str(_pt_to_hwpunit(edit.y_offset_pt) or 0))
+    for attr, default in (
+        ("affectLSpacing", "0"),
+        ("holdAnchorAndSO", "0"),
+        ("flowWithText", "1"),
+        ("allowOverlap", "0"),
+        ("vertRelTo", "PARA"),
+        ("horzRelTo", "PARA"),
+        ("vertAlign", "TOP"),
+        ("horzAlign", "LEFT"),
+        ("vertOffset", "0"),
+        ("horzOffset", "0"),
+    ):
+        if attr not in pos_el.attrib:
+            pos_el.set(attr, default)
+
+    out_margin = _hwpx_find_or_create_child(object_el, "outMargin")
+    for field_name, attr in (
+        ("margin_top_pt", "top"),
+        ("margin_right_pt", "right"),
+        ("margin_bottom_pt", "bottom"),
+        ("margin_left_pt", "left"),
+    ):
+        if field_name in edit.clear_fields:
+            out_margin.attrib.pop(attr, None)
+        elif (value := getattr(edit, field_name)) is not None:
+            out_margin.set(attr, str(_pt_to_hwpunit(value) or 0))
+
+
+def _apply_hwpx_style_edit(archive: _EditableHwpxArchive, edit: StyleEdit, result: _EditEngineResult) -> None:
+    unsupported = _hwpx_style_unsupported_fields(edit)
+    if unsupported:
+        raise EditValidationError(
+            f"HWPX native style write-back does not support {edit.target_kind} field(s): {sorted(unsupported)}.",
+            code="invalid_style",
+            target_kind=edit.target_kind,
+            target_id=edit.target_id,
+        )
+
+    index = _build_hwpx_structural_index(archive)
+    if edit.target_kind == "cell" and (location := index.cells.get(edit.target_id)):
+        _hwpx_apply_cell_style(location, edit)
+    elif edit.target_kind == "table" and (location := index.tables.get(edit.target_id)):
+        _hwpx_set_size_el(location.element, edit)
+        _hwpx_apply_object_placement(location.element, edit)
+    elif edit.target_kind == "image" and (location := index.images.get(edit.target_id)):
+        _hwpx_set_size_el(location.element, edit)
+        _hwpx_apply_object_placement(location.element, edit)
+    else:
+        raise EditValidationError(
+            f"{edit.target_kind.capitalize()} style target does not exist: {edit.target_id}.",
+            code="target_not_found",
+            target_kind=edit.target_kind,
+            target_id=edit.target_id,
+        )
+
+    _append_unique(result.modified_target_ids, edit.target_id)
+    result.styles_applied += 1
 
 
 def _hwpx_el(name: str, attrs: dict[str, str] | None = None) -> ET.Element:
@@ -3218,6 +4296,129 @@ def _apply_document_edits_to_source(
     return _apply_document_edits_to_bytes(
         source_bytes,
         operations,
+        doc_type=doc_type,
+        source_name=source_name,
+        output_filename=output_filename,
+    )
+
+
+def _apply_style_edits_to_file(
+    source_path: str | Path,
+    edits: list[StyleEdit],
+    *,
+    output_path: str | Path | None = None,
+) -> _EditEngineResult:
+    source = Path(source_path)
+    doc = DocIR.from_file(source)
+    result = _EditEngineResult(source_doc_type=doc.source_doc_type)
+    target_suffix = ".hwpx" if doc.source_doc_type == "hwp" else None
+    target_path = (
+        Path(output_path)
+        if output_path is not None
+        else _default_output_path(source, output_suffix=target_suffix)
+    )
+    target_path = _normalize_output_path_for_source_doc_type(
+        target_path,
+        source_doc_type=doc.source_doc_type,
+        result=result,
+    )
+
+    if _same_path(source, target_path):
+        raise EditValidationError(
+            f"Refusing to overwrite source file {source}; choose a different output path.",
+            code="output_path_conflicts_with_source",
+        )
+
+    if doc.source_doc_type == "docx":
+        from docx import Document as load_docx
+
+        native_doc = load_docx(str(source))
+        for edit in edits:
+            _apply_docx_style_edit(native_doc, edit, result)
+        native_doc.save(str(target_path))
+    elif doc.source_doc_type == "hwpx":
+        archive = _EditableHwpxArchive.open(source)
+        for edit in edits:
+            _apply_hwpx_style_edit(archive, edit, result)
+        archive.write_to(target_path)
+    elif doc.source_doc_type == "hwp":
+        archive = _EditableHwpxArchive.from_bytes(
+            convert_hwp_to_hwpx_bytes(source),
+            source_path=source.with_suffix(".hwpx"),
+        )
+        for edit in edits:
+            _apply_hwpx_style_edit(archive, edit, result)
+        archive.write_to(target_path)
+    else:
+        raise EditValidationError(
+            f"Native style write-back is currently supported only for docx/hwp/hwpx, got {doc.source_doc_type!r}.",
+            code="unsupported_source_doc_type",
+        )
+
+    result.output_path = str(target_path)
+    result.output_filename = target_path.name
+    return result
+
+
+def _apply_style_edits_to_bytes(
+    source_bytes: bytes,
+    edits: list[StyleEdit],
+    *,
+    doc_type: SourceDocType = "auto",
+    source_name: str | None = None,
+    output_filename: str | None = None,
+) -> _EditEngineResult:
+    resolved_doc_type = _resolve_bytes_doc_type(
+        source_bytes,
+        doc_type=doc_type,
+        source_name=source_name,
+    )
+    with TemporarySourcePath(source_bytes, suffix=_source_suffix_for_doc_type(resolved_doc_type)) as source_path:
+        default_filename = _default_output_filename(
+            source_name=source_name,
+            source_doc_type=resolved_doc_type,
+        )
+        chosen_filename = output_filename or default_filename
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            target_path = Path(tmp_dir) / chosen_filename
+            result = _apply_style_edits_to_file(source_path, edits, output_path=target_path)
+            output_path = Path(result.output_path) if result.output_path is not None else target_path
+            result.output_bytes = output_path.read_bytes()
+            result.output_filename = output_path.name
+            result.output_path = None
+            return result
+
+
+def _apply_style_edits_to_source(
+    source: DocIR | str | Path | bytes | BinaryIO,
+    edits: list[StyleEdit],
+    *,
+    doc_type: SourceDocType = "auto",
+    source_name: str | None = None,
+    output_path: str | Path | None = None,
+    output_filename: str | None = None,
+) -> _EditEngineResult:
+    if isinstance(source, DocIR):
+        return _apply_style_edits_to_doc_ir(source, edits)
+
+    if output_path is not None and output_filename is not None:
+        raise ValueError("Specify either output_path or output_filename, not both.")
+
+    if isinstance(source, (str, Path)):
+        resolved_output_path = output_path
+        if resolved_output_path is None and output_filename is not None:
+            resolved_output_path = Path(source).with_name(output_filename)
+        result = _apply_style_edits_to_file(source, edits, output_path=resolved_output_path)
+        if result.output_path is not None:
+            result.output_filename = Path(result.output_path).name
+        return result
+
+    source_bytes = coerce_source_to_supported_value(source, doc_type=infer_doc_type(source, doc_type))
+    if not isinstance(source_bytes, bytes):
+        raise TypeError("Expected bytes-like source after coercion.")
+    return _apply_style_edits_to_bytes(
+        source_bytes,
+        edits,
         doc_type=doc_type,
         source_name=source_name,
         output_filename=output_filename,

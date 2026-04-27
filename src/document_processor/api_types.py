@@ -8,8 +8,9 @@ from .io_utils import SourceDocType
 from .models import DocIR, NativeAnchor
 from .style_types import ListItemInfo
 
-TargetKind = Literal["paragraph", "run", "cell", "table"]
+TargetKind = Literal["paragraph", "run", "cell", "table", "image"]
 TextTargetKind = Literal["paragraph", "run", "cell"]
+StyleTargetKind = Literal["paragraph", "run", "cell", "table", "image"]
 AnnotationTargetKind = Literal["paragraph", "run"]
 StructuralOperationKind = Literal[
     "insert_paragraph",
@@ -38,6 +39,7 @@ EditValidationCode = Literal[
     "unsupported_source_doc_type",
     "output_path_conflicts_with_source",
     "native_source_required",
+    "invalid_style",
 ]
 AnnotationValidationCode = Literal[
     "target_not_found",
@@ -127,7 +129,159 @@ class StructuralEdit(BaseModel):
     reason: str = Field(default="", description="Short rationale for the change.")
 
 
-DocumentEdit: TypeAlias = Annotated[TextEdit | StructuralEdit, Field(discriminator="edit_type")]
+_STYLE_COMMON_FIELDS = {
+    "width_pt",
+    "height_pt",
+}
+_STYLE_PLACEMENT_FIELDS = {
+    "placement_mode",
+    "wrap",
+    "text_flow",
+    "x_relative_to",
+    "y_relative_to",
+    "x_align",
+    "y_align",
+    "x_offset_pt",
+    "y_offset_pt",
+    "margin_top_pt",
+    "margin_right_pt",
+    "margin_bottom_pt",
+    "margin_left_pt",
+    "allow_overlap",
+    "flow_with_text",
+    "z_order",
+}
+_STYLE_FIELDS_BY_TARGET_KIND: dict[str, set[str]] = {
+    "run": {
+        "bold",
+        "italic",
+        "underline",
+        "strikethrough",
+        "superscript",
+        "subscript",
+        "color",
+        "highlight",
+        "font_size_pt",
+    },
+    "paragraph": {
+        "paragraph_align",
+        "left_indent_pt",
+        "right_indent_pt",
+        "first_line_indent_pt",
+        "hanging_indent_pt",
+    },
+    "cell": {
+        *_STYLE_COMMON_FIELDS,
+        "background",
+        "vertical_align",
+        "horizontal_align",
+        "padding_top_pt",
+        "padding_right_pt",
+        "padding_bottom_pt",
+        "padding_left_pt",
+        "border_top",
+        "border_right",
+        "border_bottom",
+        "border_left",
+    },
+    "table": {
+        *_STYLE_COMMON_FIELDS,
+        *_STYLE_PLACEMENT_FIELDS,
+    },
+    "image": {
+        *_STYLE_COMMON_FIELDS,
+        *_STYLE_PLACEMENT_FIELDS,
+    },
+}
+
+
+class StyleEdit(BaseModel):
+    """Flat style mutation model designed to be used directly as an LLM tool schema."""
+
+    model_config = {"extra": "forbid"}
+
+    edit_type: Literal["style"] = Field(default="style", description="Discriminator for mixed edit batches.")
+    target_kind: StyleTargetKind = Field(description="Whether this style edit targets a paragraph, run, cell, table, or image.")
+    target_id: str = Field(description="Stable opaque node id from the parsed document.")
+    reason: str = Field(default="", description="Short rationale for the change.")
+
+    bold: bool | None = Field(default=None, description="Run bold state. None leaves the current value unchanged.")
+    italic: bool | None = Field(default=None, description="Run italic state. None leaves the current value unchanged.")
+    underline: bool | None = Field(default=None, description="Run underline state. None leaves the current value unchanged.")
+    strikethrough: bool | None = Field(default=None, description="Run strikethrough state. None leaves the current value unchanged.")
+    superscript: bool | None = Field(default=None, description="Run superscript state. None leaves the current value unchanged.")
+    subscript: bool | None = Field(default=None, description="Run subscript state. None leaves the current value unchanged.")
+    color: str | None = Field(default=None, description="Run text color as #RRGGBB. None leaves the current value unchanged.")
+    highlight: str | None = Field(default=None, description="Run highlight color/name. None leaves the current value unchanged.")
+    font_size_pt: float | None = Field(default=None, gt=0, description="Run font size in points.")
+
+    paragraph_align: Literal["left", "center", "right", "justify"] | None = Field(default=None, description="Paragraph horizontal alignment.")
+    left_indent_pt: float | None = Field(default=None, description="Paragraph left indent in points.")
+    right_indent_pt: float | None = Field(default=None, description="Paragraph right indent in points.")
+    first_line_indent_pt: float | None = Field(default=None, description="Paragraph first-line indent in points.")
+    hanging_indent_pt: float | None = Field(default=None, ge=0, description="Paragraph hanging indent in points.")
+
+    width_pt: float | None = Field(default=None, ge=0, description="Cell, table, or image display width in points.")
+    height_pt: float | None = Field(default=None, ge=0, description="Cell, table, or image display height in points.")
+
+    background: str | None = Field(default=None, description="Cell background color as #RRGGBB.")
+    vertical_align: Literal["top", "middle", "bottom"] | None = Field(default=None, description="Cell vertical alignment.")
+    horizontal_align: Literal["left", "center", "right", "justify"] | None = Field(default=None, description="Cell horizontal alignment.")
+    padding_top_pt: float | None = Field(default=None, ge=0, description="Cell top padding in points.")
+    padding_right_pt: float | None = Field(default=None, ge=0, description="Cell right padding in points.")
+    padding_bottom_pt: float | None = Field(default=None, ge=0, description="Cell bottom padding in points.")
+    padding_left_pt: float | None = Field(default=None, ge=0, description="Cell left padding in points.")
+    border_top: str | None = Field(default=None, description="Cell top border style.")
+    border_right: str | None = Field(default=None, description="Cell right border style.")
+    border_bottom: str | None = Field(default=None, description="Cell bottom border style.")
+    border_left: str | None = Field(default=None, description="Cell left border style.")
+
+    placement_mode: Literal["inline", "floating"] | None = Field(default=None, description="Object placement mode for tables/images.")
+    wrap: Literal["none", "square", "tight", "through", "top_bottom", "behind_text", "in_front_of_text"] | None = Field(
+        default=None,
+        description="Text wrapping mode for floating tables/images.",
+    )
+    text_flow: Literal["both_sides", "left", "right", "largest"] | None = Field(default=None, description="Side(s) where text may flow around the object.")
+    x_relative_to: Literal["page", "margin", "column", "paragraph", "character"] | None = Field(default=None, description="Horizontal positioning base.")
+    y_relative_to: Literal["page", "margin", "paragraph", "line"] | None = Field(default=None, description="Vertical positioning base.")
+    x_align: Literal["left", "center", "right", "inside", "outside"] | None = Field(default=None, description="Horizontal alignment relative to x_relative_to.")
+    y_align: Literal["top", "center", "bottom", "inside", "outside"] | None = Field(default=None, description="Vertical alignment relative to y_relative_to.")
+    x_offset_pt: float | None = Field(default=None, description="Horizontal offset in points.")
+    y_offset_pt: float | None = Field(default=None, description="Vertical offset in points.")
+    margin_top_pt: float | None = Field(default=None, ge=0, description="Object top text distance/margin in points.")
+    margin_right_pt: float | None = Field(default=None, ge=0, description="Object right text distance/margin in points.")
+    margin_bottom_pt: float | None = Field(default=None, ge=0, description="Object bottom text distance/margin in points.")
+    margin_left_pt: float | None = Field(default=None, ge=0, description="Object left text distance/margin in points.")
+    allow_overlap: bool | None = Field(default=None, description="Whether this floating object may overlap other objects.")
+    flow_with_text: bool | None = Field(default=None, description="Whether this floating object follows text flow where supported.")
+    z_order: int | None = Field(default=None, description="Object z-order where supported.")
+
+    clear_fields: list[str] = Field(default_factory=list, description="Style field names to clear. None means unchanged, so clearing is explicit.")
+
+    @model_validator(mode="after")
+    def _validate_style_fields(self) -> "StyleEdit":
+        allowed = _STYLE_FIELDS_BY_TARGET_KIND[self.target_kind]
+        style_fields = set().union(*_STYLE_FIELDS_BY_TARGET_KIND.values())
+        supplied = {
+            name
+            for name in style_fields
+            if getattr(self, name) is not None
+        }
+        clear_fields = set(self.clear_fields)
+        unknown_clear_fields = clear_fields - style_fields
+        if unknown_clear_fields:
+            raise ValueError(f"clear_fields contains unknown style fields: {sorted(unknown_clear_fields)}.")
+        illegal = (supplied | clear_fields) - allowed
+        if illegal:
+            raise ValueError(f"{self.target_kind} style edits do not support fields: {sorted(illegal)}.")
+        if not supplied and not clear_fields:
+            raise ValueError("StyleEdit must set or clear at least one style field.")
+        if self.superscript and self.subscript:
+            raise ValueError("superscript and subscript cannot both be true.")
+        return self
+
+
+DocumentEdit: TypeAlias = Annotated[TextEdit | StructuralEdit | StyleEdit, Field(discriminator="edit_type")]
 
 
 class TextAnnotation(BaseModel):
@@ -193,6 +347,7 @@ class ApplyDocumentEditsResult(BaseModel):
     updated_doc_ir: DocIR | None = None
     edits_applied: int = 0
     operations_applied: int = 0
+    styles_applied: int = 0
     modified_target_ids: list[str] = Field(default_factory=list)
     created_target_ids: list[str] = Field(default_factory=list)
     removed_target_ids: list[str] = Field(default_factory=list)
@@ -303,6 +458,8 @@ __all__ = [
     "ListEditableTargetsResult",
     "ResolvedTextAnnotation",
     "ReviewHtmlResult",
+    "StyleEdit",
+    "StyleTargetKind",
     "TargetKind",
     "TextTargetKind",
     "TextAnnotation",

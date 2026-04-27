@@ -14,6 +14,8 @@ from document_processor import (
     HwpxDocument,
     NativeAnchor,
     NodeKind,
+    ObjectPlacementInfo,
+    StyleEdit,
     StructuralEdit,
     TextAnnotation,
     TextEdit,
@@ -167,6 +169,7 @@ Computed helper:
 - `CellStyleInfo`
 - `ColumnLayoutInfo`
 - `ListItemInfo`
+- `ObjectPlacementInfo`
 - `ParaStyleInfo`
 - `RunStyleInfo`
 - `TableStyleInfo`
@@ -267,6 +270,30 @@ For DOCX, this is resolved from `w:numPr` and `word/numbering.xml`. For HWPX,
 this is resolved from `hh:paraPr/hh:heading` and header `hh:numbering` or
 `hh:bullet` definitions.
 
+#### `ObjectPlacementInfo`
+
+Format-agnostic placement metadata for floating tables and images.
+
+Important fields:
+
+- `mode`: `inline` or `floating`
+- `wrap`: text wrapping behavior such as `square`, `tight`, `top_bottom`,
+  `behind_text`, or `in_front_of_text`
+- `text_flow`: side selection for text around the object
+- `x_relative_to`, `y_relative_to`
+- `x_align`, `y_align`
+- `x_offset_pt`, `y_offset_pt`
+- `margin_top_pt`, `margin_right_pt`, `margin_bottom_pt`, `margin_left_pt`
+- `allow_overlap`
+- `flow_with_text`
+- `z_order`
+
+This model is attached as `TableStyleInfo.placement` and `ImageIR.placement`.
+Style edits can write these fields to native DOCX/HWPX. Full extraction from
+native floating placement and HTML rendering of wrapping/absolute placement are
+still limited; dimensions render to HTML, but placement currently remains
+primarily native-write-back metadata.
+
 ## Source/Input Models
 
 ### `DocumentInput`
@@ -348,7 +375,7 @@ Response fields:
 
 ### `list_editable_targets(*, document=None, source_path=None, target_ids=None, target_kinds=None, include_child_runs=False, only_writable=True, max_targets=200) -> ListEditableTargetsResult`
 
-Enumerate paragraph, run, cell, and table targets that can be edited safely.
+Enumerate paragraph, run, cell, table, and image targets that can be edited safely.
 
 Input fields:
 
@@ -370,7 +397,7 @@ Response fields:
 
 ### `validate_document_edits(*, document=None, source_path=None, edits) -> EditValidationResult`
 
-Validate text and structural edit operations against the current document state.
+Validate text, structural, and style edit operations against the current document state.
 
 Validation checks include:
 
@@ -382,14 +409,18 @@ Validation checks include:
 - optional `expected_text` guards match
 - inserted table rows are rectangular
 - inserted row/column values match the target table shape
+- style targets exist and match `target_kind`
+- style fields are valid for the selected target kind
 - native write-back type is supported when native source data is present
 
 ### `apply_document_edits(*, document=None, source_path=None, edits, dry_run=False, output_path=None, output_filename=None, return_doc_ir=False) -> ApplyDocumentEditsResult`
 
-Validate and apply text and structural edits in one ordered batch.
+Validate and apply text, structural, and style edits in one ordered batch.
 
-The `edits` list accepts `TextEdit` and `StructuralEdit` objects. Text edits
-perform exact replacements. Structural edit operations include:
+The `edits` list accepts `TextEdit`, `StructuralEdit`, and `StyleEdit` objects.
+Text edits perform exact replacements. Style edits use a flat optional-field
+schema so the same model can be exposed directly as an LLM tool schema. Structural
+edit operations include:
 
 - `insert_paragraph`
 - `remove_paragraph`
@@ -424,6 +455,7 @@ Response fields:
 - `updated_doc_ir`
 - `edits_applied`
 - `operations_applied`
+- `styles_applied`
 - `modified_target_ids`
 - `created_target_ids`
 - `removed_target_ids`
@@ -533,6 +565,41 @@ treats them as inline tables rather than floating wrapped objects. Inserted
 rows and columns clone the nearest row/cell properties when available and fall
 back to the same defaults only when the target table lacks usable properties.
 
+### `StyleEdit`
+
+Fields:
+
+- `edit_type: Literal["style"] = "style"`
+- `target_kind: Literal["paragraph", "run", "cell", "table", "image"]`
+- `target_id`
+- `reason`
+- run style fields: `bold`, `italic`, `underline`, `strikethrough`,
+  `superscript`, `subscript`, `color`, `highlight`, `font_size_pt`
+- paragraph style fields: `paragraph_align`, `left_indent_pt`,
+  `right_indent_pt`, `first_line_indent_pt`, `hanging_indent_pt`
+- cell/table/image size fields: `width_pt`, `height_pt`
+- cell style fields: `background`, `vertical_align`, `horizontal_align`,
+  `padding_top_pt`, `padding_right_pt`, `padding_bottom_pt`,
+  `padding_left_pt`, `border_top`, `border_right`, `border_bottom`,
+  `border_left`
+- table/image placement fields: `placement_mode`, `wrap`, `text_flow`,
+  `x_relative_to`, `y_relative_to`, `x_align`, `y_align`, `x_offset_pt`,
+  `y_offset_pt`, `margin_top_pt`, `margin_right_pt`, `margin_bottom_pt`,
+  `margin_left_pt`, `allow_overlap`, `flow_with_text`, `z_order`
+- `clear_fields: list[str]`
+
+All style fields default to `None`, and `None` means "leave unchanged".
+Use `clear_fields` to remove a nullable style value. For booleans, `False`
+means "set false".
+
+Native write-back notes:
+
+- DOCX supports common run, paragraph, cell, table width/placement, and image
+  size/placement fields.
+- HWPX currently supports table/image size and placement plus direct cell size,
+  padding, and vertical alignment fields. HWPX run and paragraph style write-back
+  is rejected because safe write-back requires cloning header style records.
+
 ### `TextAnnotation`
 
 Fields:
@@ -579,14 +646,15 @@ Fields:
 
 ## Edit API Boundary
 
-Use `TextEdit` for exact text replacements and `StructuralEdit` for
-insert/remove/table operations. Pass both through `validate_document_edits` and
-`apply_document_edits` with flattened keyword arguments:
+Use `TextEdit` for exact text replacements, `StructuralEdit` for
+insert/remove/table operations, and `StyleEdit` for flattened style mutations.
+Pass them through `validate_document_edits` and `apply_document_edits` with
+flattened keyword arguments:
 
 ```python
 result = apply_document_edits(
     document=document,
-    edits=[TextEdit(...), StructuralEdit(...)],
+    edits=[TextEdit(...), StructuralEdit(...), StyleEdit(...)],
     return_doc_ir=True,
 )
 ```
@@ -626,3 +694,6 @@ Return the generated diagram object.
 - Exact text paragraph edits are blocked when the paragraph contains tables or images.
 - Native write-back is limited to same-format `docx`, `hwpx`, and `hwp -> hwpx`.
 - Annotation matching is exact-string based within the selected paragraph or run.
+- Floating table/image placement write-back exists for DOCX/HWPX, but native
+  placement extraction and HTML rendering of wrapping/absolute placement are not
+  complete yet.

@@ -4,7 +4,8 @@ This package's LLM-facing API uses stable `node_id` values as edit and annotatio
 targets. A PDF parser that builds `DocIR` should therefore generate `node_id`
 directly for every addressable paragraph, run, table, cell, and image node.
 Structured public calls should use `TextEdit`, `StructuralEdit`, and
-`TextAnnotation` with those `node_id` values as `target_id`.
+`StyleEdit` for edits, and `TextAnnotation` for annotations, with those
+`node_id` values as `target_id`.
 
 Core IR nodes no longer carry a separate structural ID field. Parser/native paths
 belong in `NativeAnchor`; public operations use `node_id`.

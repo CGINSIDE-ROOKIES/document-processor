@@ -9,6 +9,7 @@ import zipfile
 from document_processor import (
     DocumentInput,
     DocIR,
+    StyleEdit,
     StructuralEdit,
     TextAnnotation,
     TextEdit,
@@ -270,6 +271,100 @@ class EditorApiTests(unittest.TestCase):
         self.assertIsNone(result.output_bytes)
         self.assertIsNotNone(result.updated_doc_ir)
         self.assertEqual(result.updated_doc_ir.paragraphs[0].text, "Hello Contract World")
+
+    def test_apply_document_edits_applies_flat_style_edit_to_doc_ir(self) -> None:
+        doc = DocIR.from_mapping(
+            {
+                "s1.p1.r1": "Hello",
+            },
+            source_doc_type="docx",
+        )
+        run_id = doc.paragraphs[0].runs[0].node_id
+
+        result = apply_document_edits(
+            document=DocumentInput(doc_ir=doc),
+            edits=[
+                StyleEdit(
+                    target_kind="run",
+                    target_id=run_id,
+                    bold=True,
+                    color="#112233",
+                    font_size_pt=14,
+                )
+            ],
+            return_doc_ir=True,
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.styles_applied, 1)
+        updated_run = result.updated_doc_ir.paragraphs[0].runs[0]
+        self.assertTrue(updated_run.run_style.bold)
+        self.assertEqual(updated_run.run_style.color, "#112233")
+        self.assertEqual(updated_run.run_style.size_pt, 14)
+
+    def test_apply_document_edits_writes_docx_run_style(self) -> None:
+        source_bytes = self._build_sample_docx_bytes()
+        doc = DocIR.from_file(source_bytes, doc_type="docx")
+        run_id = doc.paragraphs[0].runs[1].node_id
+
+        result = apply_document_edits(
+            document=DocumentInput(
+                source_bytes=source_bytes,
+                source_name="sample.docx",
+            ),
+            edits=[
+                StyleEdit(
+                    target_kind="run",
+                    target_id=run_id,
+                    bold=True,
+                    color="#445566",
+                    font_size_pt=16,
+                )
+            ],
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.styles_applied, 1)
+        reparsed = DocIR.from_file(result.output_bytes, doc_type="docx")
+        updated_run = reparsed.paragraphs[0].runs[1]
+        self.assertTrue(updated_run.run_style.bold)
+        self.assertEqual(updated_run.run_style.color, "#445566")
+        self.assertAlmostEqual(updated_run.run_style.size_pt, 16.0)
+
+    def test_apply_document_edits_writes_hwpx_table_placement_style(self) -> None:
+        source_bytes = self._build_sample_table_hwpx_bytes()
+        doc = DocIR.from_file(source_bytes, doc_type="hwpx")
+        table = doc.paragraphs[0].tables[0]
+
+        result = apply_document_edits(
+            document=DocumentInput(
+                source_bytes=source_bytes,
+                source_name="sample.hwpx",
+            ),
+            edits=[
+                StyleEdit(
+                    target_kind="table",
+                    target_id=table.node_id,
+                    width_pt=200,
+                    placement_mode="floating",
+                    wrap="square",
+                    x_relative_to="page",
+                    y_relative_to="paragraph",
+                    x_offset_pt=10,
+                    y_offset_pt=12,
+                )
+            ],
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.styles_applied, 1)
+        with zipfile.ZipFile(BytesIO(result.output_bytes)) as archive:
+            section_xml = archive.read("Contents/section0.xml").decode("utf-8")
+        self.assertIn('textWrap="SQUARE"', section_xml)
+        self.assertIn('width="20000"', section_xml)
+        self.assertIn('treatAsChar="0"', section_xml)
+        self.assertIn('horzOffset="1000"', section_xml)
+        self.assertIn('vertOffset="1200"', section_xml)
 
     def test_apply_document_edits_accepts_stable_target_id_for_text_edit(self) -> None:
         doc = DocIR.from_mapping(
