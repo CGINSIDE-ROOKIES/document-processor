@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 import re
@@ -10,7 +11,7 @@ from xml.etree import ElementTree as ET
 import zipfile
 
 from ..io_utils import infer_doc_type
-from ..style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo, StyleMap, TableStyleInfo
+from ..style_types import CellStyleInfo, ColumnLayoutInfo, ListItemInfo, ParaStyleInfo, RunStyleInfo, StyleMap, TableStyleInfo
 from .hwp_converter import convert_hwp_to_hwpx_bytes
 
 if TYPE_CHECKING:
@@ -69,6 +70,210 @@ _HWPX_VISIBLE_LINE_SHAPES = {
     "SLIM_THICK_SLIM",
 }
 
+_XML_1_0_INVALID_CHAR_RE = re.compile(
+    r"[\x00-\x08\x0B\x0C\x0E-\x1F\uD800-\uDFFF\uFFFE\uFFFF]"
+)
+_BARE_XML_AMPERSAND_RE = re.compile(
+    r"&(?!#\d+;|#x[0-9A-Fa-f]+;|[A-Za-z][A-Za-z0-9]*;)"
+)
+
+
+@dataclass(frozen=True)
+class _ListLevelDefinition:
+    list_id: str
+    level: int
+    marker_type: str | None = None
+    marker_text: str | None = None
+    start: int = 1
+    bullet_char: str | None = None
+    left_indent_pt: float | None = None
+    first_line_indent_pt: float | None = None
+    hanging_indent_pt: float | None = None
+
+
+@dataclass
+class _ListCounterState:
+    counters: dict[str, dict[int, int]]
+
+    @classmethod
+    def create(cls) -> "_ListCounterState":
+        return cls(counters={})
+
+
+def _alpha_counter(value: int, *, uppercase: bool) -> str:
+    if value <= 0:
+        return str(value)
+    chars: list[str] = []
+    current = value
+    while current:
+        current -= 1
+        chars.append(chr(ord("A") + current % 26))
+        current //= 26
+    text = "".join(reversed(chars))
+    return text if uppercase else text.lower()
+
+
+def _roman_counter(value: int, *, uppercase: bool) -> str:
+    if value <= 0 or value >= 4000:
+        return str(value)
+    numerals = (
+        (1000, "M"),
+        (900, "CM"),
+        (500, "D"),
+        (400, "CD"),
+        (100, "C"),
+        (90, "XC"),
+        (50, "L"),
+        (40, "XL"),
+        (10, "X"),
+        (9, "IX"),
+        (5, "V"),
+        (4, "IV"),
+        (1, "I"),
+    )
+    parts: list[str] = []
+    remaining = value
+    for number, marker in numerals:
+        while remaining >= number:
+            parts.append(marker)
+            remaining -= number
+    text = "".join(parts)
+    return text if uppercase else text.lower()
+
+
+def _hangul_syllable_counter(value: int) -> str:
+    sequence = ("가", "나", "다", "라", "마", "바", "사", "아", "자", "차", "카", "타", "파", "하")
+    if 1 <= value <= len(sequence):
+        return sequence[value - 1]
+    return str(value)
+
+
+def _circled_digit_counter(value: int) -> str:
+    if 1 <= value <= 20:
+        return chr(0x2460 + value - 1)
+    return str(value)
+
+
+def _normalize_bullet_marker(value: str | None) -> str:
+    if not value:
+        return "\u2022"
+    return {
+        "\uf0b7": "\u2022",
+        "\uf0a7": "\u25aa",
+        "\uf0d8": "\u25e6",
+    }.get(value, value)
+
+
+def _format_counter(value: int, marker_type: str | None) -> str:
+    normalized = (marker_type or "decimal").lower()
+    if normalized in {"lowerletter", "lower_letter", "lower-alpha", "loweralpha"}:
+        return _alpha_counter(value, uppercase=False)
+    if normalized in {"upperletter", "upper_letter", "upper-alpha", "upperalpha"}:
+        return _alpha_counter(value, uppercase=True)
+    if normalized in {"lowerroman", "lower_roman"}:
+        return _roman_counter(value, uppercase=False)
+    if normalized in {"upperroman", "upper_roman"}:
+        return _roman_counter(value, uppercase=True)
+    if normalized in {"decimalzero", "decimal_zero"}:
+        return f"{value:02d}"
+    if normalized in {"hangul_syllable", "hangulsyllable"}:
+        return _hangul_syllable_counter(value)
+    if normalized in {"circled_digit", "decimalenclosedcircle"}:
+        return _circled_digit_counter(value)
+    return str(value)
+
+
+def _list_marker_from_pattern(
+    marker_text: str | None,
+    *,
+    current_level: int,
+    level_definitions: dict[int, _ListLevelDefinition],
+    level_counters: dict[int, int],
+    fallback: str,
+    source: Literal["docx", "hwpx"],
+) -> str:
+    if not marker_text:
+        return fallback
+
+    def marker_type_for_level(level: int) -> str | None:
+        definition = level_definitions.get(level) or level_definitions.get(current_level)
+        return definition.marker_type if definition is not None else None
+
+    if source == "docx":
+        def replace_docx(match: re.Match[str]) -> str:
+            level = int(match.group(1)) - 1
+            value = level_counters.get(level)
+            if value is None:
+                value = level_definitions.get(level, _ListLevelDefinition("", level)).start
+            return _format_counter(value, marker_type_for_level(level))
+
+        return re.sub(r"%([1-9])", replace_docx, marker_text)
+
+    def replace_hwpx(match: re.Match[str]) -> str:
+        token = match.group(1)
+        if token in {"n", "N"}:
+            numbers = [
+                _format_counter(
+                    level_counters.get(level, definition.start),
+                    definition.marker_type,
+                )
+                for level, definition in sorted(level_definitions.items())
+                if level <= current_level
+            ]
+            text = ".".join(numbers)
+            return f"{text}." if token == "N" and text else text
+
+        level = int(token) - 1
+        value = level_counters.get(level)
+        if value is None:
+            value = level_definitions.get(level, _ListLevelDefinition("", level)).start
+        return _format_counter(value, marker_type_for_level(level))
+
+    return re.sub(r"\^([1-7nN])", replace_hwpx, marker_text)
+
+
+def _advance_list_counter(
+    state: _ListCounterState,
+    definition: _ListLevelDefinition,
+    *,
+    level_definitions: dict[int, _ListLevelDefinition],
+    source: Literal["docx", "hwpx"],
+) -> ListItemInfo:
+    list_counters = state.counters.setdefault(definition.list_id, {})
+    if definition.marker_type and definition.marker_type.lower() == "bullet":
+        marker = _normalize_bullet_marker(definition.bullet_char or definition.marker_text)
+        return ListItemInfo(
+            list_id=definition.list_id,
+            level=max(definition.level, 0),
+            marker=marker,
+            marker_type="bullet",
+            marker_text=definition.marker_text,
+        )
+
+    previous = list_counters.get(definition.level)
+    list_counters[definition.level] = definition.start if previous is None else previous + 1
+    for level in list(list_counters):
+        if level > definition.level:
+            del list_counters[level]
+
+    current_value = list_counters[definition.level]
+    fallback = _format_counter(current_value, definition.marker_type)
+    marker = _list_marker_from_pattern(
+        definition.marker_text,
+        current_level=definition.level,
+        level_definitions=level_definitions,
+        level_counters=list_counters,
+        fallback=fallback,
+        source=source,
+    )
+    return ListItemInfo(
+        list_id=definition.list_id,
+        level=max(definition.level, 0),
+        marker=marker,
+        marker_type=definition.marker_type,
+        marker_text=definition.marker_text,
+    )
+
 
 def _has_para_style(info: ParaStyleInfo) -> bool:
     return any(
@@ -79,6 +284,8 @@ def _has_para_style(info: ParaStyleInfo) -> bool:
             info.right_indent_pt,
             info.first_line_indent_pt,
             info.hanging_indent_pt,
+            info.column_layout,
+            info.list_info,
         )
     )
 
@@ -90,6 +297,20 @@ def _safe_int(value: str | None) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _xml_attr(el: ET.Element | None, *names: str) -> str | None:
+    if el is None:
+        return None
+    for name in names:
+        value = el.get(name)
+        if value is not None:
+            return value
+    lower_names = {name.lower() for name in names}
+    for key, value in el.attrib.items():
+        if key.lower() in lower_names:
+            return value
+    return None
 
 
 def _length_to_pt(value) -> float | None:
@@ -262,7 +483,153 @@ def _map_by_id(root: ET.Element | None, tag: str) -> dict[str, ET.Element]:
     return out
 
 
-def _hwpx_para_style_from_pr(para_pr_el: ET.Element | None) -> ParaStyleInfo | None:
+def _normalize_hwpx_marker_type(value: str | None) -> str | None:
+    normalized = (value or "").strip().upper()
+    return {
+        "DIGIT": "decimal",
+        "DECIMAL": "decimal",
+        "HANGUL_SYLLABLE": "hangul_syllable",
+        "CIRCLED_DIGIT": "circled_digit",
+        "ROMAN_CAPITAL": "upperRoman",
+        "ROMAN_SMALL": "lowerRoman",
+        "LATIN_CAPITAL": "upperLetter",
+        "LATIN_SMALL": "lowerLetter",
+    }.get(normalized, normalized.lower() or None)
+
+
+def _hwpx_para_head_text(para_head_el: ET.Element | None) -> str | None:
+    if para_head_el is None:
+        return None
+    text = "".join(para_head_el.itertext())
+    return text or None
+
+
+def _hwpx_list_level_from_para_head(para_head_el: ET.Element | None) -> int:
+    raw_level = _safe_int(_xml_attr(para_head_el, "level")) or 0
+    if raw_level <= 0:
+        return 0
+    return raw_level - 1
+
+
+def _hwpx_numbering_definitions(header_root: ET.Element | None) -> dict[str, dict[int, _ListLevelDefinition]]:
+    if header_root is None:
+        return {}
+
+    definitions: dict[str, dict[int, _ListLevelDefinition]] = {}
+    for numbering_el in header_root.findall(f".//{{{_NS_HH}}}numbering"):
+        native_id = _xml_attr(numbering_el, "id")
+        if not native_id:
+            continue
+        list_id = f"hwpx_number_{native_id}"
+        start = _safe_int(_xml_attr(numbering_el, "start")) or 1
+        levels: dict[int, _ListLevelDefinition] = {}
+        for para_head_el in numbering_el.findall(f"{{{_NS_HH}}}paraHead"):
+            level = _hwpx_list_level_from_para_head(para_head_el)
+            levels[level] = _ListLevelDefinition(
+                list_id=list_id,
+                level=level,
+                marker_type=_normalize_hwpx_marker_type(_xml_attr(para_head_el, "numFormat", "numformat")),
+                marker_text=_hwpx_para_head_text(para_head_el),
+                start=_safe_int(_xml_attr(para_head_el, "start")) or start,
+            )
+        if levels:
+            definitions[native_id] = levels
+    return definitions
+
+
+def _hwpx_bullet_definitions(header_root: ET.Element | None) -> dict[str, dict[int, _ListLevelDefinition]]:
+    if header_root is None:
+        return {}
+
+    definitions: dict[str, dict[int, _ListLevelDefinition]] = {}
+    for bullet_el in header_root.findall(f".//{{{_NS_HH}}}bullet"):
+        native_id = _xml_attr(bullet_el, "id")
+        if not native_id:
+            continue
+        list_id = f"hwpx_bullet_{native_id}"
+        bullet_char = _xml_attr(bullet_el, "char", "checkedChar") or "\u2022"
+        levels: dict[int, _ListLevelDefinition] = {}
+        para_head_els = bullet_el.findall(f"{{{_NS_HH}}}paraHead")
+        if not para_head_els:
+            levels[0] = _ListLevelDefinition(
+                list_id=list_id,
+                level=0,
+                marker_type="bullet",
+                marker_text=bullet_char,
+                bullet_char=bullet_char,
+            )
+        for para_head_el in para_head_els:
+            level = _hwpx_list_level_from_para_head(para_head_el)
+            levels[level] = _ListLevelDefinition(
+                list_id=list_id,
+                level=level,
+                marker_type="bullet",
+                marker_text=_hwpx_para_head_text(para_head_el),
+                bullet_char=bullet_char,
+            )
+        definitions[native_id] = levels
+    return definitions
+
+
+def _hwpx_resolve_list_info(
+    para_pr_el: ET.Element,
+    *,
+    numbering_definitions: dict[str, dict[int, _ListLevelDefinition]],
+    bullet_definitions: dict[str, dict[int, _ListLevelDefinition]],
+    list_counter_state: _ListCounterState,
+) -> ListItemInfo | None:
+    heading_el = para_pr_el.find(f"{{{_NS_HH}}}heading")
+    if heading_el is None:
+        return None
+
+    heading_type = (_xml_attr(heading_el, "type") or "NONE").upper()
+    if heading_type not in {"NUMBER", "BULLET"}:
+        return None
+
+    native_id = _xml_attr(heading_el, "idRef", "idref")
+    if not native_id:
+        return None
+
+    level = _safe_int(_xml_attr(heading_el, "level")) or 0
+    level = max(level, 0)
+    definitions = numbering_definitions.get(native_id) if heading_type == "NUMBER" else bullet_definitions.get(native_id)
+    if not definitions:
+        return None
+
+    definition = definitions.get(level)
+    if definition is None and level > 0:
+        definition = definitions.get(level - 1)
+    if definition is None:
+        definition = definitions.get(0) or next(iter(definitions.values()))
+
+    if definition.level != level:
+        definition = _ListLevelDefinition(
+            list_id=definition.list_id,
+            level=level,
+            marker_type=definition.marker_type,
+            marker_text=definition.marker_text,
+            start=definition.start,
+            bullet_char=definition.bullet_char,
+            left_indent_pt=definition.left_indent_pt,
+            first_line_indent_pt=definition.first_line_indent_pt,
+            hanging_indent_pt=definition.hanging_indent_pt,
+        )
+
+    return _advance_list_counter(
+        list_counter_state,
+        definition,
+        level_definitions=definitions,
+        source="hwpx",
+    )
+
+
+def _hwpx_para_style_from_pr(
+    para_pr_el: ET.Element | None,
+    *,
+    numbering_definitions: dict[str, dict[int, _ListLevelDefinition]] | None = None,
+    bullet_definitions: dict[str, dict[int, _ListLevelDefinition]] | None = None,
+    list_counter_state: _ListCounterState | None = None,
+) -> ParaStyleInfo | None:
     if para_pr_el is None:
         return None
 
@@ -282,6 +649,14 @@ def _hwpx_para_style_from_pr(para_pr_el: ET.Element | None) -> ParaStyleInfo | N
         info.right_indent_pt = _hwp_margin_value_to_pt(margin_el.find(f"{{{_NS_HC}}}right"))
         if first_line is not None and first_line < 0:
             info.hanging_indent_pt = abs(first_line)
+
+    if list_counter_state is not None:
+        info.list_info = _hwpx_resolve_list_info(
+            para_pr_el,
+            numbering_definitions=numbering_definitions or {},
+            bullet_definitions=bullet_definitions or {},
+            list_counter_state=list_counter_state,
+        )
 
     return info if _has_para_style(info) else None
 
@@ -389,6 +764,9 @@ def _extract_hwpx_table_styles(
     para_pr_map: dict[str, ET.Element],
     char_pr_map: dict[str, ET.Element],
     border_fill_map: dict[str, ET.Element],
+    numbering_definitions: dict[str, dict[int, _ListLevelDefinition]],
+    bullet_definitions: dict[str, dict[int, _ListLevelDefinition]],
+    list_counter_state: _ListCounterState,
 ) -> None:
     row_count, col_count = _hwpx_table_dimensions(table_el)
     width_pt, height_pt = _hwpx_table_size(table_el)
@@ -419,7 +797,12 @@ def _extract_hwpx_table_styles(
                 cell_paragraph_id = f"{cell_id}.p{cp_idx}"
                 cell_para_pr_ref = cell_para_el.get("paraPrIDRef")
                 if cell_para_pr_ref and cell_para_pr_ref in para_pr_map:
-                    cp_style = _hwpx_para_style_from_pr(para_pr_map[cell_para_pr_ref])
+                    cp_style = _hwpx_para_style_from_pr(
+                        para_pr_map[cell_para_pr_ref],
+                        numbering_definitions=numbering_definitions,
+                        bullet_definitions=bullet_definitions,
+                        list_counter_state=list_counter_state,
+                    )
                     if cp_style is not None:
                         style_map.paragraphs[cell_paragraph_id] = cp_style
 
@@ -443,6 +826,9 @@ def _extract_hwpx_table_styles(
                         para_pr_map=para_pr_map,
                         char_pr_map=char_pr_map,
                         border_fill_map=border_fill_map,
+                        numbering_definitions=numbering_definitions,
+                        bullet_definitions=bullet_definitions,
+                        list_counter_state=list_counter_state,
                     )
 
 
@@ -458,13 +844,66 @@ def _section_roots_from_bytes(source: bytes) -> list[ET.Element]:
             (name for name in zf.namelist() if section_name_pattern.match(name)),
             key=_section_order,
         )
-        return [ET.fromstring(zf.read(name)) for name in names]
+        return [_parse_hwpx_xml_part(zf.read(name)) for name in names]
+
+
+def _parse_hwpx_xml_part(data: bytes) -> ET.Element:
+    try:
+        return ET.fromstring(data)
+    except ET.ParseError as parse_error:
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            raise parse_error from None
+        cleaned = _repair_hwpx_xml_text(text)
+        if cleaned == text:
+            raise
+        return ET.fromstring(cleaned.encode("utf-8"))
+
+
+def _repair_hwpx_xml_text(text: str) -> str:
+    cleaned = _XML_1_0_INVALID_CHAR_RE.sub("", text)
+    cleaned = _BARE_XML_AMPERSAND_RE.sub("&amp;", cleaned)
+    return _escape_attribute_angle_brackets(cleaned)
+
+
+def _escape_attribute_angle_brackets(text: str) -> str:
+    out: list[str] = []
+    in_tag = False
+    quote: str | None = None
+
+    for ch in text:
+        if not in_tag:
+            if ch == "<":
+                in_tag = True
+            out.append(ch)
+            continue
+
+        if quote is not None:
+            if ch == quote:
+                quote = None
+                out.append(ch)
+            elif ch == "<":
+                out.append("&lt;")
+            elif ch == ">":
+                out.append("&gt;")
+            else:
+                out.append(ch)
+            continue
+
+        if ch in ("'", '"'):
+            quote = ch
+        elif ch == ">":
+            in_tag = False
+        out.append(ch)
+
+    return "".join(out)
 
 
 def _header_root_from_bytes(source: bytes) -> ET.Element | None:
     with zipfile.ZipFile(BytesIO(source)) as zf:
         try:
-            return ET.fromstring(zf.read("Contents/header.xml"))
+            return _parse_hwpx_xml_part(zf.read("Contents/header.xml"))
         except KeyError:
             return None
 
@@ -545,6 +984,9 @@ def _extract_styles_hwpx_from_roots(
     para_pr_map = _map_by_id(header_root, "paraPr")
     char_pr_map = _map_by_id(header_root, "charPr")
     border_fill_map = _map_by_id(header_root, "borderFill")
+    numbering_definitions = _hwpx_numbering_definitions(header_root)
+    bullet_definitions = _hwpx_bullet_definitions(header_root)
+    list_counter_state = _ListCounterState.create()
 
     for s_idx, section_root in enumerate(section_roots, start=1):
         for p_idx, para_el in enumerate(_iter_section_paragraphs(section_root), start=1):
@@ -552,7 +994,12 @@ def _extract_styles_hwpx_from_roots(
 
             para_pr_ref = para_el.get("paraPrIDRef")
             if para_pr_ref and para_pr_ref in para_pr_map:
-                para_style = _hwpx_para_style_from_pr(para_pr_map[para_pr_ref])
+                para_style = _hwpx_para_style_from_pr(
+                    para_pr_map[para_pr_ref],
+                    numbering_definitions=numbering_definitions,
+                    bullet_definitions=bullet_definitions,
+                    list_counter_state=list_counter_state,
+                )
                 if para_style is not None:
                     style_map.paragraphs[paragraph_id] = para_style
 
@@ -576,6 +1023,9 @@ def _extract_styles_hwpx_from_roots(
                     para_pr_map=para_pr_map,
                     char_pr_map=char_pr_map,
                     border_fill_map=border_fill_map,
+                    numbering_definitions=numbering_definitions,
+                    bullet_definitions=bullet_definitions,
+                    list_counter_state=list_counter_state,
                 )
 
     return style_map
@@ -634,7 +1084,273 @@ def _docx_run_style(run) -> RunStyleInfo:
     return info
 
 
-def _docx_para_style(paragraph) -> ParaStyleInfo | None:
+def _docx_numbering_root(doc):
+    try:
+        numbering_part = getattr(doc.part, "numbering_part", None)
+    except (AttributeError, KeyError, NotImplementedError, ValueError):
+        return None
+    return getattr(numbering_part, "element", None)
+
+
+def _docx_val(el, name: str = "w:val") -> str | None:
+    if el is None:
+        return None
+    from docx.oxml.ns import qn
+
+    return el.get(qn(name))
+
+
+def _docx_num_pr_values(num_pr) -> tuple[str | None, int | None]:
+    if num_pr is None:
+        return None, None
+    from docx.oxml.ns import qn
+
+    ilvl_el = num_pr.find(qn("w:ilvl"))
+    num_id_el = num_pr.find(qn("w:numId"))
+    return _docx_val(num_id_el), _safe_int(_docx_val(ilvl_el))
+
+
+def _merge_docx_numbering_values(
+    primary: tuple[str | None, int | None],
+    fallback: tuple[str | None, int | None],
+) -> tuple[str | None, int | None]:
+    return (
+        primary[0] if primary[0] is not None else fallback[0],
+        primary[1] if primary[1] is not None else fallback[1],
+    )
+
+
+def _docx_style_numbering_values(
+    style_id: str | None,
+    *,
+    style_elements: dict[str, object],
+    cache: dict[str, tuple[str | None, int | None]],
+) -> tuple[str | None, int | None]:
+    from docx.oxml.ns import qn
+
+    if not style_id:
+        return None, None
+    cached = cache.get(style_id)
+    if cached is not None:
+        return cached
+
+    style_el = style_elements.get(style_id)
+    if style_el is None:
+        cache[style_id] = (None, None)
+        return None, None
+
+    based_on_el = style_el.find(qn("w:basedOn"))
+    base_style_id = _docx_val(based_on_el)
+    base_values = _docx_style_numbering_values(
+        base_style_id,
+        style_elements=style_elements,
+        cache=cache,
+    )
+
+    p_pr = style_el.find(qn("w:pPr"))
+    num_pr = p_pr.find(qn("w:numPr")) if p_pr is not None else None
+    values = _merge_docx_numbering_values(_docx_num_pr_values(num_pr), base_values)
+    cache[style_id] = values
+    return values
+
+
+def _docx_paragraph_numbering_values(
+    paragraph,
+    *,
+    style_elements: dict[str, object],
+    style_numbering_cache: dict[str, tuple[str | None, int | None]],
+) -> tuple[str | None, int | None]:
+    from docx.oxml.ns import qn
+
+    style_id = paragraph.style.style_id if paragraph.style is not None else None
+    style_values = _docx_style_numbering_values(
+        style_id,
+        style_elements=style_elements,
+        cache=style_numbering_cache,
+    )
+    p_pr = paragraph._p.find(qn("w:pPr"))
+    num_pr = p_pr.find(qn("w:numPr")) if p_pr is not None else None
+    return _merge_docx_numbering_values(_docx_num_pr_values(num_pr), style_values)
+
+
+def _docx_indentation_from_p_pr(p_pr) -> tuple[float | None, float | None, float | None]:
+    from docx.oxml.ns import qn
+
+    if p_pr is None:
+        return None, None, None
+    ind_el = p_pr.find(qn("w:ind"))
+    if ind_el is None:
+        return None, None, None
+
+    left_indent = _docx_measure_to_pt(
+        ind_el.get(qn("w:left")) or ind_el.get(qn("w:start")),
+        "dxa",
+    )
+    first_line_indent = _docx_measure_to_pt(ind_el.get(qn("w:firstLine")), "dxa")
+    hanging_indent = _docx_measure_to_pt(ind_el.get(qn("w:hanging")), "dxa")
+    if hanging_indent is not None:
+        first_line_indent = -hanging_indent
+    return left_indent, first_line_indent, hanging_indent
+
+
+def _docx_level_definition(
+    lvl_el,
+    *,
+    list_id: str,
+    level: int,
+    default_start: int = 1,
+) -> _ListLevelDefinition:
+    from docx.oxml.ns import qn
+
+    start_el = lvl_el.find(qn("w:start")) if lvl_el is not None else None
+    num_fmt_el = lvl_el.find(qn("w:numFmt")) if lvl_el is not None else None
+    lvl_text_el = lvl_el.find(qn("w:lvlText")) if lvl_el is not None else None
+    p_pr = lvl_el.find(qn("w:pPr")) if lvl_el is not None else None
+    left_indent, first_line_indent, hanging_indent = _docx_indentation_from_p_pr(p_pr)
+    marker_type = _docx_val(num_fmt_el) or "decimal"
+    marker_text = _docx_val(lvl_text_el)
+    return _ListLevelDefinition(
+        list_id=list_id,
+        level=level,
+        marker_type=marker_type,
+        marker_text=marker_text,
+        start=_safe_int(_docx_val(start_el)) or default_start,
+        bullet_char=marker_text if marker_type == "bullet" else None,
+        left_indent_pt=left_indent,
+        first_line_indent_pt=first_line_indent,
+        hanging_indent_pt=hanging_indent,
+    )
+
+
+def _docx_numbering_definitions(doc) -> dict[str, dict[int, _ListLevelDefinition]]:
+    from docx.oxml.ns import qn
+
+    numbering_root = _docx_numbering_root(doc)
+    if numbering_root is None:
+        return {}
+
+    abstract_levels: dict[str, dict[int, _ListLevelDefinition]] = {}
+    for abstract_el in numbering_root.findall(qn("w:abstractNum")):
+        abstract_id = abstract_el.get(qn("w:abstractNumId"))
+        if abstract_id is None:
+            continue
+        levels: dict[int, _ListLevelDefinition] = {}
+        for lvl_el in abstract_el.findall(qn("w:lvl")):
+            level = _safe_int(lvl_el.get(qn("w:ilvl"))) or 0
+            levels[level] = _docx_level_definition(
+                lvl_el,
+                list_id=f"docx_abstract_{abstract_id}",
+                level=level,
+            )
+        abstract_levels[abstract_id] = levels
+
+    definitions: dict[str, dict[int, _ListLevelDefinition]] = {}
+    for num_el in numbering_root.findall(qn("w:num")):
+        num_id = num_el.get(qn("w:numId"))
+        if num_id is None:
+            continue
+        abstract_id_el = num_el.find(qn("w:abstractNumId"))
+        abstract_id = _docx_val(abstract_id_el)
+        inherited = abstract_levels.get(abstract_id or "", {})
+        list_id = f"docx_num_{num_id}"
+        levels = {
+            level: _ListLevelDefinition(
+                list_id=list_id,
+                level=definition.level,
+                marker_type=definition.marker_type,
+                marker_text=definition.marker_text,
+                start=definition.start,
+                bullet_char=definition.bullet_char,
+                left_indent_pt=definition.left_indent_pt,
+                first_line_indent_pt=definition.first_line_indent_pt,
+                hanging_indent_pt=definition.hanging_indent_pt,
+            )
+            for level, definition in inherited.items()
+        }
+
+        for override_el in num_el.findall(qn("w:lvlOverride")):
+            level = _safe_int(override_el.get(qn("w:ilvl"))) or 0
+            start_override_el = override_el.find(qn("w:startOverride"))
+            default_start = _safe_int(_docx_val(start_override_el)) or levels.get(
+                level,
+                _ListLevelDefinition(list_id, level),
+            ).start
+            lvl_el = override_el.find(qn("w:lvl"))
+            if lvl_el is not None:
+                levels[level] = _docx_level_definition(
+                    lvl_el,
+                    list_id=list_id,
+                    level=level,
+                    default_start=default_start,
+                )
+            elif level in levels:
+                previous = levels[level]
+                levels[level] = _ListLevelDefinition(
+                    list_id=list_id,
+                    level=previous.level,
+                    marker_type=previous.marker_type,
+                    marker_text=previous.marker_text,
+                    start=default_start,
+                    bullet_char=previous.bullet_char,
+                    left_indent_pt=previous.left_indent_pt,
+                    first_line_indent_pt=previous.first_line_indent_pt,
+                    hanging_indent_pt=previous.hanging_indent_pt,
+                )
+        if levels:
+            definitions[num_id] = levels
+    return definitions
+
+
+def _docx_resolve_list_info(
+    paragraph,
+    *,
+    numbering_definitions: dict[str, dict[int, _ListLevelDefinition]],
+    style_elements: dict[str, object],
+    style_numbering_cache: dict[str, tuple[str | None, int | None]],
+    list_counter_state: _ListCounterState,
+) -> tuple[ListItemInfo | None, _ListLevelDefinition | None]:
+    num_id, level = _docx_paragraph_numbering_values(
+        paragraph,
+        style_elements=style_elements,
+        style_numbering_cache=style_numbering_cache,
+    )
+    if not num_id or num_id == "0":
+        return None, None
+
+    level = max(level or 0, 0)
+    definitions = numbering_definitions.get(num_id)
+    if not definitions:
+        return None, None
+    definition = definitions.get(level) or definitions.get(0) or next(iter(definitions.values()))
+    if definition.level != level:
+        definition = _ListLevelDefinition(
+            list_id=definition.list_id,
+            level=level,
+            marker_type=definition.marker_type,
+            marker_text=definition.marker_text,
+            start=definition.start,
+            bullet_char=definition.bullet_char,
+            left_indent_pt=definition.left_indent_pt,
+            first_line_indent_pt=definition.first_line_indent_pt,
+            hanging_indent_pt=definition.hanging_indent_pt,
+        )
+    list_info = _advance_list_counter(
+        list_counter_state,
+        definition,
+        level_definitions=definitions,
+        source="docx",
+    )
+    return list_info, definition
+
+
+def _docx_para_style(
+    paragraph,
+    *,
+    numbering_definitions: dict[str, dict[int, _ListLevelDefinition]] | None = None,
+    style_elements: dict[str, object] | None = None,
+    style_numbering_cache: dict[str, tuple[str | None, int | None]] | None = None,
+    list_counter_state: _ListCounterState | None = None,
+) -> ParaStyleInfo | None:
     info = ParaStyleInfo()
 
     if paragraph.alignment is not None:
@@ -649,6 +1365,23 @@ def _docx_para_style(paragraph) -> ParaStyleInfo | None:
         info.first_line_indent_pt = first_line
         if first_line is not None and first_line < 0:
             info.hanging_indent_pt = abs(first_line)
+
+    list_definition = None
+    if list_counter_state is not None:
+        info.list_info, list_definition = _docx_resolve_list_info(
+            paragraph,
+            numbering_definitions=numbering_definitions or {},
+            style_elements={} if style_elements is None else style_elements,
+            style_numbering_cache={} if style_numbering_cache is None else style_numbering_cache,
+            list_counter_state=list_counter_state,
+        )
+    if list_definition is not None:
+        if info.left_indent_pt is None:
+            info.left_indent_pt = list_definition.left_indent_pt
+        if info.first_line_indent_pt is None:
+            info.first_line_indent_pt = list_definition.first_line_indent_pt
+        if info.hanging_indent_pt is None:
+            info.hanging_indent_pt = list_definition.hanging_indent_pt
 
     return info if _has_para_style(info) else None
 
@@ -798,6 +1531,29 @@ def _docx_default_cell_border(
     if side == "right":
         return table_border_defaults.get("right") if col_index == col_count else table_border_defaults.get("inside_v")
     return None
+
+
+def _docx_table_direct_border_defaults(table) -> dict[str, str | None]:
+    from docx.oxml.ns import qn
+
+    tbl_pr = table._tbl.find(qn("w:tblPr"))
+    tbl_borders = tbl_pr.find(qn("w:tblBorders")) if tbl_pr is not None else None
+    if tbl_borders is None:
+        return {}
+
+    defaults: dict[str, str | None] = {}
+    for border_name, border_key in (
+        ("top", "top"),
+        ("bottom", "bottom"),
+        ("left", "left"),
+        ("right", "right"),
+        ("insideH", "inside_h"),
+        ("insideV", "inside_v"),
+    ):
+        border_css = _docx_border_css(tbl_borders, border_name)
+        if border_css is not None:
+            defaults[border_key] = border_css
+    return defaults
 
 
 def _docx_table_size(table) -> tuple[float | None, float | None]:
@@ -968,15 +1724,19 @@ def extract_styles_docx(
 
     style_map = StyleMap()
     style_elements: dict[str, object] = {}
+    table_style_elements: dict[str, object] = {}
     border_defaults_cache: dict[str, dict[str, str | None]] = {}
     cell_padding_defaults_cache: dict[str, dict[str, float]] = {}
+    style_numbering_cache: dict[str, tuple[str | None, int | None]] = {}
+    numbering_definitions = _docx_numbering_definitions(doc)
+    list_counter_state = _ListCounterState.create()
 
     for style_el in doc.styles.element.findall(qn("w:style")):
-        if style_el.get(qn("w:type")) != "table":
-            continue
         style_id = style_el.get(qn("w:styleId"))
         if style_id:
             style_elements[style_id] = style_el
+            if style_el.get(qn("w:type")) == "table":
+                table_style_elements[style_id] = style_el
 
     p_idx = 0
     tbl_counter = 0
@@ -986,13 +1746,14 @@ def extract_styles_docx(
         table_style_id = table.style.style_id if table.style is not None else None
         table_border_defaults = _docx_table_style_border_defaults(
             table_style_id,
-            style_elements=style_elements,
+            style_elements=table_style_elements,
             cache=border_defaults_cache,
         )
+        table_border_defaults.update(_docx_table_direct_border_defaults(table))
         table_cell_padding_defaults = _docx_table_cell_padding_defaults(
             table,
             table_style_id,
-            style_elements=style_elements,
+            style_elements=table_style_elements,
             cache=cell_padding_defaults_cache,
         )
         table_width_pt, table_height_pt = _docx_table_size(table)
@@ -1059,7 +1820,13 @@ def extract_styles_docx(
                     if isinstance(block, Paragraph):
                         cp_idx += 1
                         current_paragraph_id = f"{cell_id}.p{cp_idx}"
-                        cp_style = _docx_para_style(block)
+                        cp_style = _docx_para_style(
+                            block,
+                            numbering_definitions=numbering_definitions,
+                            style_elements=style_elements,
+                            style_numbering_cache=style_numbering_cache,
+                            list_counter_state=list_counter_state,
+                        )
                         if cp_style is not None:
                             style_map.paragraphs[current_paragraph_id] = cp_style
 
@@ -1093,7 +1860,13 @@ def extract_styles_docx(
             p_idx += 1
             paragraph_id = f"s1.p{p_idx}"
 
-            pstyle = _docx_para_style(block)
+            pstyle = _docx_para_style(
+                block,
+                numbering_definitions=numbering_definitions,
+                style_elements=style_elements,
+                style_numbering_cache=style_numbering_cache,
+                list_counter_state=list_counter_state,
+            )
             if pstyle is not None:
                 style_map.paragraphs[paragraph_id] = pstyle
 

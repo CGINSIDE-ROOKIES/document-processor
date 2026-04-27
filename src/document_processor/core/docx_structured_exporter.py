@@ -132,7 +132,7 @@ def export_docx_structured_mapping(
     include_tables: bool = True,
     skip_empty: bool = False,
 ) -> dict[str, str]:
-    """Export DOCX text fragments keyed by HWPX-compatible unit IDs."""
+    """Export DOCX text fragments keyed by HWPX-compatible structural paths."""
     from docx.oxml.table import CT_Tbl
     from docx.oxml.text.paragraph import CT_P
     from docx.table import Table

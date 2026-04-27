@@ -176,7 +176,7 @@ def export_hwpx_structured_mapping(
     *,
     skip_empty: bool = False,
 ) -> dict[str, str]:
-    """Export HWPX text fragments keyed by structural unit IDs."""
+    """Export HWPX text fragments keyed by structural paths."""
     from ..hwpx import HwpxDocument
 
     if isinstance(source, HwpxDocument):
