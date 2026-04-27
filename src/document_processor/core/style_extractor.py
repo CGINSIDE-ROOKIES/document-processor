@@ -70,6 +70,13 @@ _HWPX_VISIBLE_LINE_SHAPES = {
     "SLIM_THICK_SLIM",
 }
 
+_XML_1_0_INVALID_CHAR_RE = re.compile(
+    "[^\u0009\u000A\u000D\u0020-\uD7FF\uE000-\uFFFD\U00010000-\U0010FFFF]"
+)
+_BARE_XML_AMPERSAND_RE = re.compile(
+    r"&(?!#\d+;|#x[0-9A-Fa-f]+;|[A-Za-z][A-Za-z0-9]*;)"
+)
+
 
 @dataclass(frozen=True)
 class _ListLevelDefinition:
@@ -837,13 +844,66 @@ def _section_roots_from_bytes(source: bytes) -> list[ET.Element]:
             (name for name in zf.namelist() if section_name_pattern.match(name)),
             key=_section_order,
         )
-        return [ET.fromstring(zf.read(name)) for name in names]
+        return [_parse_hwpx_xml_part(zf.read(name)) for name in names]
+
+
+def _parse_hwpx_xml_part(data: bytes) -> ET.Element:
+    try:
+        return ET.fromstring(data)
+    except ET.ParseError as parse_error:
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            raise parse_error from None
+        cleaned = _repair_hwpx_xml_text(text)
+        if cleaned == text:
+            raise
+        return ET.fromstring(cleaned.encode("utf-8"))
+
+
+def _repair_hwpx_xml_text(text: str) -> str:
+    cleaned = _XML_1_0_INVALID_CHAR_RE.sub("", text)
+    cleaned = _BARE_XML_AMPERSAND_RE.sub("&amp;", cleaned)
+    return _escape_attribute_angle_brackets(cleaned)
+
+
+def _escape_attribute_angle_brackets(text: str) -> str:
+    out: list[str] = []
+    in_tag = False
+    quote: str | None = None
+
+    for ch in text:
+        if not in_tag:
+            if ch == "<":
+                in_tag = True
+            out.append(ch)
+            continue
+
+        if quote is not None:
+            if ch == quote:
+                quote = None
+                out.append(ch)
+            elif ch == "<":
+                out.append("&lt;")
+            elif ch == ">":
+                out.append("&gt;")
+            else:
+                out.append(ch)
+            continue
+
+        if ch in ("'", '"'):
+            quote = ch
+        elif ch == ">":
+            in_tag = False
+        out.append(ch)
+
+    return "".join(out)
 
 
 def _header_root_from_bytes(source: bytes) -> ET.Element | None:
     with zipfile.ZipFile(BytesIO(source)) as zf:
         try:
-            return ET.fromstring(zf.read("Contents/header.xml"))
+            return _parse_hwpx_xml_part(zf.read("Contents/header.xml"))
         except KeyError:
             return None
 

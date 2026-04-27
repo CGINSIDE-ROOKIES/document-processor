@@ -110,6 +110,45 @@ class StyleExtractorTests(unittest.TestCase):
         self.assertEqual(rstyle.color, "#112233")
         self.assertAlmostEqual(rstyle.size_pt or 0.0, 12.0, places=3)
 
+    def test_extract_hwpx_repairs_malformed_header_style_attrs(self) -> None:
+        header_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core">
+  <hh:paraProperties itemCnt="1">
+    <hh:paraPr id="1">
+      <hh:align horizontal="CENTER" />
+    </hh:paraPr>
+  </hh:paraProperties>
+  <hh:charProperties itemCnt="1">
+    <hh:charPr id="1" height="1200" />
+  </hh:charProperties>
+  <hh:styles itemCnt="1">
+    <hh:style id="1" type="PARA" name="<bad\x01name>" engName="bad&\x02name" paraPrIDRef="1" charPrIDRef="1" />
+  </hh:styles>
+</hh:head>
+"""
+
+        section_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec
+  xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section"
+  xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p paraPrIDRef="1">
+    <hp:run charPrIDRef="1">
+      <hp:t>Hello</hp:t>
+    </hp:run>
+  </hp:p>
+</hs:sec>
+"""
+
+        hwpx_bytes_io = BytesIO()
+        with zipfile.ZipFile(hwpx_bytes_io, "w") as zf:
+            zf.writestr("Contents/header.xml", header_xml)
+            zf.writestr("Contents/section0.xml", section_xml)
+
+        style_map = extract_styles_hwpx(hwpx_bytes_io.getvalue())
+
+        self.assertEqual(style_map.paragraphs["s1.p1"].align, "center")
+        self.assertAlmostEqual(style_map.runs["s1.p1.r1"].size_pt or 0.0, 12.0, places=3)
+
     def test_extract_hwpx_styles_from_hwpx_document(self) -> None:
         header_xml = """<?xml version="1.0" encoding="UTF-8"?>
 <hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core">
