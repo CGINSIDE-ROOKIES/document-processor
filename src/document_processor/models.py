@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import base64
 from collections import OrderedDict
+import hashlib
 from pathlib import Path
-from typing import Any, BinaryIO, Generic, TypeAlias, TypeVar
+from typing import Any, BinaryIO, Generic, Literal, TypeAlias, TypeVar
 
 from pydantic import BaseModel, Field, computed_field
 
@@ -13,6 +14,84 @@ from .io_utils import TemporarySourcePath, coerce_source_to_supported_value, get
 from .style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
 
 T = TypeVar("T", bound=BaseModel)
+NodeKind: TypeAlias = Literal["paragraph", "run", "image", "table", "cell"]
+
+
+_NODE_ID_PREFIXES: dict[NodeKind, str] = {
+    "paragraph": "p",
+    "run": "r",
+    "image": "img",
+    "table": "tbl",
+    "cell": "cell",
+}
+
+
+def _stable_node_id(kind: NodeKind, structural_path: str) -> str:
+    digest = hashlib.sha1(f"{kind}:{structural_path}".encode("utf-8")).hexdigest()[:16]
+    return f"{_NODE_ID_PREFIXES[kind]}_{digest}"
+
+
+def _text_hash(text: str | None) -> str | None:
+    if text is None:
+        return None
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
+
+class NativeAnchor(BaseModel):
+    """Original native-document location for a stable DocIR node."""
+
+    source_doc_type: str | None = None
+    node_kind: NodeKind
+    debug_path: str
+    parent_debug_path: str | None = None
+    part_name: str | None = None
+    structural_path: str | None = None
+    text_hash: str | None = None
+
+
+def _node_anchor_path(node) -> str:
+    anchor = getattr(node, "native_anchor", None)
+    if anchor is not None:
+        if anchor.structural_path:
+            return anchor.structural_path
+        if anchor.debug_path:
+            return anchor.debug_path
+    node_id = getattr(node, "node_id", None)
+    if node_id:
+        return node_id
+    raise ValueError("Node has no node_id or native anchor path.")
+
+
+def _node_debug_path(node) -> str:
+    anchor = getattr(node, "native_anchor", None)
+    if anchor is not None and anchor.debug_path:
+        return anchor.debug_path
+    node_id = getattr(node, "node_id", None)
+    return node_id or ""
+
+
+def _make_native_anchor(
+    kind: NodeKind,
+    structural_path: str,
+    *,
+    source_doc_type: str | None = None,
+    parent_debug_path: str | None = None,
+    part_name: str | None = None,
+    text: str | None = None,
+) -> NativeAnchor:
+    return NativeAnchor(
+        source_doc_type=source_doc_type,
+        node_kind=kind,
+        debug_path=structural_path,
+        parent_debug_path=parent_debug_path,
+        part_name=part_name,
+        structural_path=structural_path,
+        text_hash=_text_hash(text),
+    )
+
+
+def _anchored_node_id(kind: NodeKind, structural_path: str) -> str:
+    return _stable_node_id(kind, structural_path)
 
 
 class BoundingBox(BaseModel):
@@ -27,19 +106,24 @@ class BoundingBox(BaseModel):
 class RunIR(BaseModel, Generic[T]):
     """Smallest style-preserving text unit."""
 
-    model_config = {"validate_assignment": True}
+    model_config = {"validate_assignment": True, "extra": "forbid"}
     meta: T | None = None
 
-    unit_id: str
+    node_id: str | None = None
     text: str = ""
     bbox: BoundingBox | None = None
     run_style: RunStyleInfo | None = None
+    native_anchor: NativeAnchor | None = None
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.node_id is None and self.native_anchor is not None:
+            self.node_id = _stable_node_id("run", _node_anchor_path(self))
 
 
 class ImageAsset(BaseModel, Generic[T]):
     """Binary image asset stored once per document."""
 
-    model_config = {"validate_assignment": True}
+    model_config = {"validate_assignment": True, "extra": "forbid"}
     meta: T | None = None
 
     mime_type: str
@@ -85,45 +169,42 @@ class PageInfo(BaseModel):
     margin_bottom_pt: float | None = None
 
 
-class ColumnLayoutInfo(BaseModel):
-    """Active text-column layout for a paragraph or section."""
-
-    count: int = 1
-    column_index: int | None = None
-    gap_pt: float | None = None
-    widths_pt: list[float] = Field(default_factory=list)
-    gaps_pt: list[float] = Field(default_factory=list)
-    equal_width: bool | None = None
-
-
 class ImageIR(BaseModel, Generic[T]):
     """Image placement node inside paragraph-like content."""
 
-    model_config = {"validate_assignment": True}
-    meta: T | None = None
+    model_config = {"validate_assignment": True, "extra": "forbid"}
 
-    unit_id: str
+    node_id: str | None = None
     image_id: str
     alt_text: str | None = None
     title: str | None = None
     bbox: BoundingBox | None = None
     display_width_pt: float | None = None
     display_height_pt: float | None = None
+    native_anchor: NativeAnchor | None = None
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.node_id is None and self.native_anchor is not None:
+            self.node_id = _stable_node_id("image", _node_anchor_path(self))
 
 
 class ParagraphIR(BaseModel, Generic[T]):
     """Structural paragraph unit used both at the document level and inside table cells."""
 
-    model_config = {"validate_assignment": True}
+    model_config = {"validate_assignment": True, "extra": "forbid"}
     meta: T | None = None
 
-    unit_id: str
+    node_id: str | None = None
     text: str = ""
     page_number: int | None = None
     bbox: BoundingBox | None = None
-    column_layout: ColumnLayoutInfo | None = None
     para_style: ParaStyleInfo | None = None
     content: list["ParagraphContentNode"] = Field(default_factory=list)
+    native_anchor: NativeAnchor | None = None
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.node_id is None and self.native_anchor is not None:
+            self.node_id = _stable_node_id("paragraph", _node_anchor_path(self))
 
     @property
     def runs(self) -> list[RunIR]:
@@ -170,16 +251,21 @@ class ParagraphIR(BaseModel, Generic[T]):
 class TableCellIR(BaseModel, Generic[T]):
     """Table cell node."""
 
-    model_config = {"validate_assignment": True}
+    model_config = {"validate_assignment": True, "extra": "forbid"}
     meta: T | None = None
 
-    unit_id: str
+    node_id: str | None = None
     row_index: int
     col_index: int
     text: str = ""
     bbox: BoundingBox | None = None
     cell_style: CellStyleInfo | None = None
     paragraphs: list["ParagraphIR"] = Field(default_factory=list)
+    native_anchor: NativeAnchor | None = None
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.node_id is None and self.native_anchor is not None:
+            self.node_id = _stable_node_id("cell", _node_anchor_path(self))
 
     def recompute_text(self) -> None:
         self.text = "\n".join(p.text for p in self.paragraphs)
@@ -191,12 +277,17 @@ class TableIR(BaseModel, Generic[T]):
     model_config = {"validate_assignment": True}
     meta: T | None = None
 
-    unit_id: str
+    node_id: str | None = None
     row_count: int = 0
     col_count: int = 0
     bbox: BoundingBox | None = None
     table_style: TableStyleInfo | None = None
     cells: list[TableCellIR] = Field(default_factory=list)
+    native_anchor: NativeAnchor | None = None
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.node_id is None and self.native_anchor is not None:
+            self.node_id = _stable_node_id("table", _node_anchor_path(self))
 
     @computed_field
     def markdown(self) -> str:
@@ -208,12 +299,16 @@ class DocIR(BaseModel, Generic[T]):
 
     meta: T | None = None
 
+    identity_version: int = 1
     doc_id: str | None = None
     source_path: str | None = None
     source_doc_type: str | None = None
     assets: dict[str, ImageAsset[T]] = Field(default_factory=dict)
     pages: list[PageInfo] = Field(default_factory=list)
     paragraphs: list[ParagraphIR] = Field(default_factory=list)
+
+    def model_post_init(self, __context: Any) -> None:
+        self.ensure_node_identity()
 
     @computed_field
     @property
@@ -223,6 +318,100 @@ class DocIR(BaseModel, Generic[T]):
     def get_image_asset(self, image_or_id: ImageIR | str) -> ImageAsset[T] | None:
         image_id = image_or_id if isinstance(image_or_id, str) else image_or_id.image_id
         return self.assets.get(image_id)
+
+    def ensure_node_identity(self) -> "DocIR":
+        """Populate stable node IDs and native anchors for all addressable nodes."""
+
+        def ensure(
+            node,
+            kind: NodeKind,
+            *,
+            fallback_path: str,
+            parent_debug_path: str | None,
+            text: str | None = None,
+        ) -> None:
+            anchor_path = fallback_path
+            if node.native_anchor is not None:
+                anchor_path = node.native_anchor.structural_path or node.native_anchor.debug_path or fallback_path
+            if node.node_id is None:
+                node.node_id = _stable_node_id(kind, anchor_path)
+            if node.native_anchor is None:
+                node.native_anchor = NativeAnchor(
+                    source_doc_type=self.source_doc_type,
+                    node_kind=kind,
+                    debug_path=anchor_path,
+                    parent_debug_path=parent_debug_path,
+                    structural_path=anchor_path,
+                    text_hash=_text_hash(text),
+                )
+                return
+
+            if not node.native_anchor.debug_path:
+                node.native_anchor.debug_path = anchor_path
+            if node.native_anchor.structural_path is None:
+                node.native_anchor.structural_path = anchor_path
+            if node.native_anchor.source_doc_type is None:
+                node.native_anchor.source_doc_type = self.source_doc_type
+            if node.native_anchor.parent_debug_path is None:
+                node.native_anchor.parent_debug_path = parent_debug_path
+            if node.native_anchor.text_hash is None:
+                node.native_anchor.text_hash = _text_hash(text)
+
+        def walk_paragraph(paragraph: ParagraphIR, *, fallback_path: str, parent_debug_path: str | None) -> None:
+            ensure(
+                paragraph,
+                "paragraph",
+                fallback_path=fallback_path,
+                parent_debug_path=parent_debug_path,
+                text=paragraph.text,
+            )
+            paragraph_path = _node_anchor_path(paragraph)
+            run_index = 0
+            image_index = 0
+            table_index = 0
+            for item in paragraph.content:
+                if isinstance(item, RunIR):
+                    run_index += 1
+                    ensure(
+                        item,
+                        "run",
+                        fallback_path=f"{paragraph_path}.r{run_index}",
+                        parent_debug_path=paragraph_path,
+                        text=item.text,
+                    )
+                elif isinstance(item, ImageIR):
+                    image_index += 1
+                    ensure(
+                        item,
+                        "image",
+                        fallback_path=f"{paragraph_path}.img{image_index}",
+                        parent_debug_path=paragraph_path,
+                    )
+                elif isinstance(item, TableIR):
+                    table_index += 1
+                    walk_table(
+                        item,
+                        fallback_path=f"{paragraph_path}.r1.tbl{table_index}",
+                        parent_debug_path=paragraph_path,
+                    )
+
+        def walk_table(table: TableIR, *, fallback_path: str, parent_debug_path: str | None) -> None:
+            ensure(table, "table", fallback_path=fallback_path, parent_debug_path=parent_debug_path)
+            table_path = _node_anchor_path(table)
+            for cell in table.cells:
+                cell_path = f"{table_path}.tr{cell.row_index}.tc{cell.col_index}"
+                ensure(cell, "cell", fallback_path=cell_path, parent_debug_path=table_path, text=cell.text)
+                resolved_cell_path = _node_anchor_path(cell)
+                for paragraph_index, paragraph in enumerate(cell.paragraphs, start=1):
+                    walk_paragraph(
+                        paragraph,
+                        fallback_path=f"{resolved_cell_path}.p{paragraph_index}",
+                        parent_debug_path=resolved_cell_path,
+                    )
+
+        for paragraph_index, paragraph in enumerate(self.paragraphs, start=1):
+            walk_paragraph(paragraph, fallback_path=f"s1.p{paragraph_index}", parent_debug_path=None)
+        return self
 
     @classmethod
     def from_file(
@@ -288,7 +477,7 @@ class DocIR(BaseModel, Generic[T]):
         doc_ir.source_doc_type = resolved_doc_type
         if resolved_source_path is not None:
             doc_ir.source_path = resolved_source_path
-        return doc_ir
+        return doc_ir.ensure_node_identity()
 
     @classmethod
     def from_mapping(
@@ -305,7 +494,7 @@ class DocIR(BaseModel, Generic[T]):
         """Build document IR from a run-level mapping."""
         from .builder import build_doc_ir_from_mapping
 
-        return build_doc_ir_from_mapping(
+        doc_ir = build_doc_ir_from_mapping(
             mapping,
             style_map=style_map,
             source_path=source_path,
@@ -315,6 +504,7 @@ class DocIR(BaseModel, Generic[T]):
             doc_cls=cls,
             **doc_kwargs,
         )
+        return doc_ir.ensure_node_identity()
 
     def to_html(self, *, title: str | None = None, debug_layout: bool = False) -> str:
         """Render this document IR as styled HTML."""
@@ -353,6 +543,15 @@ def _image_markdown_placeholder(image: ImageIR) -> str:
     return f"[image:{label}]"
 
 
+def _paragraph_list_marker_prefix(paragraph: ParagraphIR) -> str:
+    style = paragraph.para_style
+    list_info = style.list_info if style is not None else None
+    if list_info is None or not list_info.marker:
+        return ""
+    indent = "  " * max(list_info.level, 0)
+    return f"{indent}{list_info.marker} "
+
+
 def _paragraph_markdown_text(
     paragraph: ParagraphIR,
     *,
@@ -365,9 +564,13 @@ def _paragraph_markdown_text(
         elif isinstance(node, ImageIR):
             parts.append(_image_markdown_placeholder(node))
         elif isinstance(node, TableIR):
-            nested_tables.setdefault(node.unit_id, node)
-            parts.append(f"[tbl:{node.unit_id}]")
-    return "".join(parts).strip()
+            table_path = _node_debug_path(node)
+            nested_tables.setdefault(table_path, node)
+            parts.append(f"[tbl:{table_path}]")
+    text = "".join(parts).strip()
+    if not text:
+        return text
+    return f"{_paragraph_list_marker_prefix(paragraph)}{text}"
 
 
 def _escape_markdown_cell_text(value: str) -> str:
@@ -395,7 +598,7 @@ def _table_grid(table: TableIR) -> tuple[list[list[TableCellIR | None]], int, in
     max_col = max(cell.col_index + _cell_colspan(cell) - 1 for cell in table.cells)
     grid: list[list[TableCellIR | None]] = [[None for _ in range(max_col)] for _ in range(max_row)]
 
-    for cell in sorted(table.cells, key=lambda c: (c.row_index, c.col_index, c.unit_id)):
+    for cell in sorted(table.cells, key=lambda c: (c.row_index, c.col_index, _node_debug_path(c))):
         for row in range(cell.row_index - 1, cell.row_index - 1 + _cell_rowspan(cell)):
             for col in range(cell.col_index - 1, cell.col_index - 1 + _cell_colspan(cell)):
                 grid[row][col] = cell
@@ -409,9 +612,10 @@ def _render_table_markdown(
     visited: set[str] | None = None,
 ) -> str:
     seen = visited if visited is not None else set()
-    if table.unit_id in seen:
-        return f"[tbl:{table.unit_id}]"
-    seen.add(table.unit_id)
+    table_path = _node_debug_path(table)
+    if table_path in seen:
+        return f"[tbl:{table_path}]"
+    seen.add(table_path)
 
     grid, _max_row, max_col = _table_grid(table)
     if max_col == 0:
@@ -435,19 +639,18 @@ def _render_table_markdown(
     for nested_table in nested_tables.values():
         nested_markdown = _render_table_markdown(nested_table, visited=seen)
         if nested_markdown:
-            sections.append(f"[tbl:{nested_table.unit_id}]\n{nested_markdown}")
+            sections.append(f"[tbl:{_node_debug_path(nested_table)}]\n{nested_markdown}")
 
     return "\n\n".join(section for section in sections if section)
 
 
 __all__ = [
     "BoundingBox",
-    "ColumnLayoutInfo",
-    "BoundingBox",
-    "ColumnLayoutInfo",
     "DocIR",
     "ImageAsset",
     "ImageIR",
+    "NativeAnchor",
+    "NodeKind",
     "PageInfo",
     "ParagraphContentNode",
     "ParagraphIR",

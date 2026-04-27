@@ -6,19 +6,65 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .models import DocIR, ParagraphIR, RunIR, TableCellIR, TableIR
+from .models import (
+    DocIR,
+    ParagraphIR,
+    RunIR,
+    TableCellIR,
+    TableIR,
+    _anchored_node_id,
+    _make_native_anchor,
+    _node_anchor_path,
+)
 
 if TYPE_CHECKING:
-    from .style_types import StyleMap
+    from .style_types import ParaStyleInfo, StyleMap
 
 
-_LEGACY_NUM_RE = re.compile(r"\d+")
+_STRUCTURAL_NUM_RE = re.compile(r"\d+")
 _PARAGRAPH_KEY_RE = re.compile(r"^(s\d+\.p\d+)")
 
 
-def _legacy_id_sort_key(unit_id: str) -> tuple[tuple[int, ...], str]:
-    nums = tuple(int(v) for v in _LEGACY_NUM_RE.findall(unit_id))
-    return nums, unit_id
+def _structural_path_sort_key(structural_path: str) -> tuple[tuple[int, ...], str]:
+    nums = tuple(int(v) for v in _STRUCTURAL_NUM_RE.findall(structural_path))
+    return nums, structural_path
+
+
+def _new_paragraph(path: str, *, para_style=None) -> ParagraphIR:
+    return ParagraphIR(
+        node_id=_anchored_node_id("paragraph", path),
+        para_style=para_style,
+        native_anchor=_make_native_anchor("paragraph", path),
+    )
+
+
+def _new_run(path: str, *, text: str, run_style=None) -> RunIR:
+    return RunIR(
+        node_id=_anchored_node_id("run", path),
+        text=text,
+        run_style=run_style,
+        native_anchor=_make_native_anchor("run", path, text=text),
+    )
+
+
+def _new_table(path: str, *, table_style=None) -> TableIR:
+    return TableIR(
+        node_id=_anchored_node_id("table", path),
+        row_count=table_style.row_count if table_style else 0,
+        col_count=table_style.col_count if table_style else 0,
+        table_style=table_style,
+        native_anchor=_make_native_anchor("table", path),
+    )
+
+
+def _new_cell(path: str, *, row_index: int, col_index: int, cell_style=None) -> TableCellIR:
+    return TableCellIR(
+        node_id=_anchored_node_id("cell", path),
+        row_index=row_index,
+        col_index=col_index,
+        cell_style=cell_style,
+        native_anchor=_make_native_anchor("cell", path),
+    )
 
 
 def _safe_para_for_id(
@@ -32,9 +78,26 @@ def _safe_para_for_id(
         return paragraph
 
     para_style = style_map.paragraphs.get(paragraph_id) if style_map else None
-    paragraph = ParagraphIR(unit_id=paragraph_id, para_style=para_style)
+    paragraph = _new_paragraph(paragraph_id, para_style=para_style)
     paragraph_map[paragraph_id] = paragraph
     return paragraph
+
+
+def _merge_para_style(
+    existing_style: "ParaStyleInfo | None",
+    incoming_style: "ParaStyleInfo | None",
+) -> "ParaStyleInfo | None":
+    if incoming_style is None:
+        return existing_style
+    if existing_style is None:
+        return incoming_style
+
+    merged_style = incoming_style.model_copy(deep=True)
+    if merged_style.column_layout is None and existing_style.column_layout is not None:
+        merged_style.column_layout = existing_style.column_layout.model_copy(deep=True)
+    if merged_style.list_info is None and existing_style.list_info is not None:
+        merged_style.list_info = existing_style.list_info.model_copy(deep=True)
+    return merged_style
 
 
 def _is_token(token: str, prefix: str) -> bool:
@@ -53,12 +116,7 @@ def _get_or_create_table(
         return table
 
     table_style = style_map.tables.get(table_id) if style_map else None
-    table = TableIR(
-        unit_id=table_id,
-        row_count=table_style.row_count if table_style else 0,
-        col_count=table_style.col_count if table_style else 0,
-        table_style=table_style,
-    )
+    table = _new_table(table_id, table_style=table_style)
     table_map[table_id] = table
     parent.append_content(table)
     return table
@@ -80,12 +138,7 @@ def _get_or_create_cell(
 
     cell_id = f"{table_id}.tr{row_index}.tc{col_index}"
     cell_style = style_map.cells.get(cell_id) if style_map else None
-    cell = TableCellIR(
-        unit_id=cell_id,
-        row_index=row_index,
-        col_index=col_index,
-        cell_style=cell_style,
-    )
+    cell = _new_cell(cell_id, row_index=row_index, col_index=col_index, cell_style=cell_style)
     cell_map[cell_bucket_key] = cell
     table.cells.append(cell)
     return cell
@@ -108,10 +161,7 @@ def _get_or_create_cell_paragraph(
 
     cell_paragraph_id = f"{table_id}.tr{row_index}.tc{col_index}.p{paragraph_index}"
     para_style = style_map.paragraphs.get(cell_paragraph_id) if style_map else None
-    cell_paragraph = ParagraphIR(
-        unit_id=cell_paragraph_id,
-        para_style=para_style,
-    )
+    cell_paragraph = _new_paragraph(cell_paragraph_id, para_style=para_style)
     cell_paragraph_map[cell_paragraph_bucket_key] = cell_paragraph
     cell.paragraphs.append(cell_paragraph)
     return cell_paragraph
@@ -127,13 +177,7 @@ def _attach_run(
 ) -> None:
     run_id = f"{container_id}.{run_token}"
     run_style = style_map.runs.get(run_id) if style_map else None
-    container.append_content(
-        RunIR(
-            unit_id=run_id,
-            text=text,
-            run_style=run_style,
-        )
-    )
+    container.append_content(_new_run(run_id, text=text, run_style=run_style))
 
 
 def _ingest_table_tokens(
@@ -173,14 +217,14 @@ def _ingest_table_tokens(
     )
     _ingest_paragraph_like_tokens(
         cell_paragraph,
-        cell_paragraph.unit_id,
+        _node_anchor_path(cell_paragraph),
         tokens[3:],
         text,
         style_map=style_map,
         table_map=table_map,
         cell_map=cell_map,
         cell_paragraph_map=cell_paragraph_map,
-        allow_legacy_table_anchor=False,
+        allow_run_anchored_table=False,
     )
 
 
@@ -194,7 +238,7 @@ def _ingest_paragraph_like_tokens(
     table_map: dict[str, TableIR],
     cell_map: dict[tuple[str, int, int], TableCellIR],
     cell_paragraph_map: dict[tuple[str, int, int, int], ParagraphIR],
-    allow_legacy_table_anchor: bool,
+    allow_run_anchored_table: bool,
 ) -> None:
     if not tokens:
         return
@@ -211,7 +255,7 @@ def _ingest_paragraph_like_tokens(
             )
             return
 
-        if allow_legacy_table_anchor and len(tokens) >= 2 and _is_token(tokens[1], "tbl"):
+        if allow_run_anchored_table and len(tokens) >= 2 and _is_token(tokens[1], "tbl"):
             table_id = f"{container_id}.{token}.{tokens[1]}"
             table = _get_or_create_table(
                 container,
@@ -262,9 +306,9 @@ def _finalize_table(
         max_row = max(max_row, cell.row_index)
         max_col = max(max_col, cell.col_index)
 
-        cell.paragraphs.sort(key=lambda cp: _legacy_id_sort_key(cp.unit_id))
+        cell.paragraphs.sort(key=lambda cp: _structural_path_sort_key(_node_anchor_path(cp)))
         for cell_paragraph in cell.paragraphs:
-            cell_paragraph.sort_content(key=lambda node: _legacy_id_sort_key(node.unit_id))
+            cell_paragraph.sort_content(key=lambda node: _structural_path_sort_key(_node_anchor_path(node)))
             for nested_table in cell_paragraph.tables:
                 _finalize_table(nested_table)
             cell_paragraph.recompute_text()
@@ -292,8 +336,9 @@ def apply_style_map_to_doc_ir(doc_ir: "DocIR", style_map: "StyleMap | None") -> 
         return doc_ir
 
     def _apply_table_styles(table: TableIR) -> None:
-        if table.unit_id in style_map.tables:
-            table_style = style_map.tables[table.unit_id]
+        table_path = _node_anchor_path(table)
+        if table_path in style_map.tables:
+            table_style = style_map.tables[table_path]
             table.table_style = table_style
             if table.row_count <= 0:
                 table.row_count = table_style.row_count
@@ -301,23 +346,34 @@ def apply_style_map_to_doc_ir(doc_ir: "DocIR", style_map: "StyleMap | None") -> 
                 table.col_count = table_style.col_count
 
         for cell in table.cells:
-            if cell.unit_id in style_map.cells:
-                cell.cell_style = style_map.cells[cell.unit_id]
+            cell_path = _node_anchor_path(cell)
+            if cell_path in style_map.cells:
+                cell.cell_style = style_map.cells[cell_path]
             for paragraph in cell.paragraphs:
-                if paragraph.unit_id in style_map.paragraphs:
-                    paragraph.para_style = style_map.paragraphs[paragraph.unit_id]
+                paragraph_path = _node_anchor_path(paragraph)
+                if paragraph_path in style_map.paragraphs:
+                    paragraph.para_style = _merge_para_style(
+                        paragraph.para_style,
+                        style_map.paragraphs[paragraph_path],
+                    )
                 for run in paragraph.runs:
-                    if run.unit_id in style_map.runs:
-                        run.run_style = style_map.runs[run.unit_id]
+                    run_path = _node_anchor_path(run)
+                    if run_path in style_map.runs:
+                        run.run_style = style_map.runs[run_path]
                 for nested_table in paragraph.tables:
                     _apply_table_styles(nested_table)
 
     for paragraph in doc_ir.paragraphs:
-        if paragraph.unit_id in style_map.paragraphs:
-            paragraph.para_style = style_map.paragraphs[paragraph.unit_id]
+        paragraph_path = _node_anchor_path(paragraph)
+        if paragraph_path in style_map.paragraphs:
+            paragraph.para_style = _merge_para_style(
+                paragraph.para_style,
+                style_map.paragraphs[paragraph_path],
+            )
         for run in paragraph.runs:
-            if run.unit_id in style_map.runs:
-                run.run_style = style_map.runs[run.unit_id]
+            run_path = _node_anchor_path(run)
+            if run_path in style_map.runs:
+                run.run_style = style_map.runs[run_path]
         for table in paragraph.tables:
             _apply_table_styles(table)
 
@@ -335,17 +391,17 @@ def build_doc_ir_from_mapping(
     doc_cls: type["DocIR"] | None = None,
     **doc_kwargs: Any,
 ) -> "DocIR":
-    """Build document IR from a legacy run-level structural mapping."""
+    """Build document IR from a run-level structural mapping."""
 
     paragraph_map: dict[str, ParagraphIR] = {}
     table_map: dict[str, TableIR] = {}
     cell_map: dict[tuple[str, int, int], TableCellIR] = {}
     cell_paragraph_map: dict[tuple[str, int, int, int], ParagraphIR] = {}
 
-    sorted_items = sorted(mapping.items(), key=lambda kv: _legacy_id_sort_key(kv[0]))
+    sorted_items = sorted(mapping.items(), key=lambda kv: _structural_path_sort_key(kv[0]))
 
-    for unit_id, text in sorted_items:
-        paragraph_match = _PARAGRAPH_KEY_RE.match(unit_id)
+    for structural_path, text in sorted_items:
+        paragraph_match = _PARAGRAPH_KEY_RE.match(structural_path)
         if not paragraph_match:
             continue
 
@@ -355,19 +411,19 @@ def build_doc_ir_from_mapping(
         _ingest_paragraph_like_tokens(
             paragraph,
             paragraph_id,
-            unit_id.split(".")[2:],
+            structural_path.split(".")[2:],
             text,
             style_map=style_map,
             table_map=table_map,
             cell_map=cell_map,
             cell_paragraph_map=cell_paragraph_map,
-            allow_legacy_table_anchor=True,
+            allow_run_anchored_table=True,
         )
 
-    paragraphs = sorted(paragraph_map.values(), key=lambda p: _legacy_id_sort_key(p.unit_id))
+    paragraphs = sorted(paragraph_map.values(), key=lambda p: _structural_path_sort_key(_node_anchor_path(p)))
 
     for paragraph in paragraphs:
-        paragraph.sort_content(key=lambda node: _legacy_id_sort_key(node.unit_id))
+        paragraph.sort_content(key=lambda node: _structural_path_sort_key(_node_anchor_path(node)))
 
         for table in paragraph.tables:
             _finalize_table(table)
