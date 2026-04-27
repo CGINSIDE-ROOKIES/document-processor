@@ -11,7 +11,6 @@ if str(SRC_ROOT) not in sys.path:
 
 from document_processor import Annotation, DocIR, render_annotated_html
 from document_processor.models import ColumnLayoutInfo, ImageAsset, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
-from document_processor.pdf.meta import PdfBoundingBox, PdfNodeMeta
 from document_processor.style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
 
 
@@ -312,7 +311,6 @@ class HtmlExporterTests(unittest.TestCase):
                     content=[
                         TableIR(
                             unit_id="s1.p1.r1.tbl1",
-                            meta=PdfNodeMeta(),
                             table_style=TableStyleInfo(preview_grid=True),
                             cells=[
                                 TableCellIR(
@@ -358,15 +356,6 @@ class HtmlExporterTests(unittest.TestCase):
                 ParagraphIR(
                     unit_id="s1.p1",
                     para_style=ParaStyleInfo(render_tag="h2"),
-                    meta=PdfNodeMeta(
-                        page_number=1,
-                        bounding_box=PdfBoundingBox(
-                            left_pt=10.0,
-                            bottom_pt=20.0,
-                            right_pt=30.0,
-                            top_pt=40.0,
-                        ),
-                    ),
                     content=[RunIR(unit_id="x", text="Heading")],
                 )
             ],
@@ -409,7 +398,7 @@ class HtmlExporterTests(unittest.TestCase):
         self.assertIn("width:72.0pt", html)
         self.assertIn("height:36.0pt", html)
 
-    def test_export_html_renders_multi_image_paragraph_as_zero_gap_stack(self) -> None:
+    def test_export_html_renders_multi_image_paragraph_inline(self) -> None:
         doc = DocIR(
             assets={
                 "img1": ImageAsset(mime_type="image/png", filename="a.png", data_base64="AAAA"),
@@ -430,8 +419,8 @@ class HtmlExporterTests(unittest.TestCase):
 
         html = doc.to_html()
 
-        self.assertIn("line-height:0", html)
-        self.assertIn("display:block", html)
+        self.assertNotIn("line-height:0", html)
+        self.assertNotIn("display:block", html)
         self.assertEqual(html.count("<img "), 3)
 
     def test_export_html_renders_bordered_page_frames_when_page_metadata_exists(self) -> None:

@@ -1,11 +1,21 @@
-"""PDF preview normalization helpers."""
+"""PDF preview용 DocIR 보정 단계.
+
+공통 HTML 렌더러는 PDF 세부 사정을 몰라야 하므로, PDF에서만 얻는 힌트는
+여기서 DocIR에 반영한다. 현재 담당하는 일은 다음과 같다.
+
+- ODL/pdfium 시각 박스를 도식 보존용 layout `TableIR`로 승격
+- ODL `left-page/right-page` 모아찍기를 synthetic page로 분리
+- ODL `left-column/right-column`을 `ColumnLayoutInfo.column_index`로 반영
+- 같은 줄에 놓인 image/table block을 1행 N열 `TableIR`로 묶기
+- ODL table grid boundary를 기존 `TableIR` geometry에 보강
+"""
 
 from __future__ import annotations
 
 from typing import Any
 
-from ...models import DocIR, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
-from ...style_types import CellStyleInfo, TableStyleInfo
+from ...models import ColumnLayoutInfo, DocIR, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
+from ...style_types import CellStyleInfo, ParaStyleInfo, TableStyleInfo
 from ..enhancement import enrich_pdf_table_backgrounds, enrich_pdf_table_borders
 from ..meta import PdfBoundingBox
 from .models import (
@@ -16,62 +26,38 @@ from .models import (
     _AssignedCandidate,
     _AssignedCandidateGroup,
     _CANDIDATE_ASSIGN_TOLERANCE_PT,
-    _COLUMN_BAND_CENTER_OFFSET_RATIO,
-    _COLUMN_BAND_GUTTER_MIN_WIDTH_PT,
-    _COLUMN_BAND_GUTTER_MIN_WIDTH_RATIO,
-    _COLUMN_BAND_MIN_HEIGHT_PT,
-    _COLUMN_BAND_SPLIT_MERGE_TOLERANCE_PT,
-    _IMAGE_STRIP_MAX_CENTER_DELTA_RATIO,
-    _IMAGE_STRIP_MAX_GAP_PT,
-    _IMAGE_STRIP_MAX_HEIGHT_RATIO,
-    _IMAGE_STRIP_MIN_GROUP_SIZE,
-    _IMAGE_STRIP_MIN_SPAN_OVERLAP_RATIO,
     _LAYOUT_TABLE_ALIGNMENT_OVERLAP_RATIO,
     _LAYOUT_TABLE_BOUNDARY_TOLERANCE_PT,
     _LAYOUT_TABLE_GROUP_GAP_TOLERANCE_PT,
-    _LOGICAL_PAGE_NUMBER_FOOTER_TOP_RATIO,
-    _LOGICAL_PAGE_NUMBER_MAX_WIDTH_RATIO,
-    _LOGICAL_PAGE_NUMBER_TEXT_RE,
-    _LogicalPage,
-    _LogicalPageComposition,
-    _PreviewCompositionEntry,
     _PreviewRenderNode,
 )
 from .shared import (
     _bbox_area,
     _bbox_center,
     _bbox_contains,
-    _bbox_from_bounds,
     _bbox_intersection,
     _bbox_touches_or_near,
     _shared_bbox_distance,
-    _shared_page_content_margins,
-    _union_box_bounds,
 )
 
-def _paragraph_region_id(paragraph: ParagraphIR) -> str | None:
-    if paragraph.meta is None:
-        return None
-    return getattr(paragraph.meta, "layout_region_id", None)
 
+# ---------- bbox / region helpers ----------
+# ODL region과 DocIR bbox를 매칭하기 위한 작은 좌표 유틸들이다.
+# `left-page/right-page`와 `left-column/right-column`은 여기서는 둘 다
+# left/right role로 정규화하고, 실제 의미 차이는 아래 normalize 단계에서 나눈다.
 
 def _paragraph_bbox(paragraph: ParagraphIR) -> PdfBoundingBox | None:
-    return getattr(paragraph, "bbox", None) or getattr(paragraph.meta, "bounding_box", None)
+    return getattr(paragraph, "bbox", None)
 
 
-def _page_bbox(page: PageInfo) -> PdfBoundingBox | None:
-    if page.width_pt is None or page.height_pt is None:
-        return None
-    return PdfBoundingBox(
-        left_pt=0.0,
-        bottom_pt=0.0,
-        right_pt=page.width_pt,
-        top_pt=page.height_pt,
-    )
-
-
-def _bbox_vertical_overlap(left: PdfBoundingBox, right: PdfBoundingBox) -> float:
-    return max(0.0, min(left.top_pt, right.top_pt) - max(left.bottom_pt, right.bottom_pt))
+def _region_role(region_type: str | None) -> str | None:
+    if region_type in {"left-page", "left-column"}:
+        return "left"
+    if region_type in {"right-page", "right-column"}:
+        return "right"
+    if region_type == "main":
+        return "main"
+    return None
 
 
 def _bbox_region_type(
@@ -81,805 +67,39 @@ def _bbox_region_type(
     page_regions: list[PdfLayoutRegion],
     explicit_region_type: str | None = None,
 ) -> str:
-    has_side_regions = any(item.region_type in {"left", "right"} for item in page_regions)
-    if explicit_region_type is not None and (
-        explicit_region_type not in {"main", "full"} or not has_side_regions
-    ):
-        return explicit_region_type
-    if bbox is None:
-        return explicit_region_type or "main"
+    """bbox가 page region 중 main/left/right 어디에 가장 잘 들어맞는지 고른다."""
+    normalized_explicit = _region_role(explicit_region_type)
+    if normalized_explicit is not None:
+        return normalized_explicit
+    if bbox is None or not page_regions:
+        return "main"
 
-    left_regions = [item for item in page_regions if item.region_type == "left" and item.bounding_box is not None]
-    right_regions = [item for item in page_regions if item.region_type == "right" and item.bounding_box is not None]
-    overlapping_left_regions = [
-        item
-        for item in left_regions
-        if item.bounding_box is not None and _bbox_vertical_overlap(item.bounding_box, bbox) > 0.0
-    ]
-    overlapping_right_regions = [
-        item
-        for item in right_regions
-        if item.bounding_box is not None and _bbox_vertical_overlap(item.bounding_box, bbox) > 0.0
-    ]
-    if overlapping_left_regions and overlapping_right_regions:
-        left_regions = overlapping_left_regions
-        right_regions = overlapping_right_regions
-    if not left_regions or not right_regions:
-        return explicit_region_type or "main"
-
-    left_edge = max(item.bounding_box.right_pt for item in left_regions if item.bounding_box is not None)
-    right_edge = min(item.bounding_box.left_pt for item in right_regions if item.bounding_box is not None)
-    spans_gutter = bbox.left_pt <= left_edge and bbox.right_pt >= right_edge
-    if page.width_pt is not None and (bbox.right_pt - bbox.left_pt) >= page.width_pt * 0.70:
-        spans_gutter = True
-
-    if explicit_region_type == "full":
-        if spans_gutter:
-            return "full"
-    elif spans_gutter:
-        return "full"
-
-    bbox_center_x = (bbox.left_pt + bbox.right_pt) / 2.0
-    split_x = (left_edge + right_edge) / 2.0
-    return "left" if bbox_center_x <= split_x else "right"
-
-
-def _paragraph_region_type(
-    paragraph: ParagraphIR,
-    *,
-    page: PageInfo,
-    page_regions: list[PdfLayoutRegion],
-    region_by_id: dict[str, PdfLayoutRegion],
-) -> str:
-    region = region_by_id.get(_paragraph_region_id(paragraph) or "")
-    bbox = _paragraph_bbox(paragraph)
-    return _bbox_region_type(
-        bbox,
-        page=page,
-        page_regions=page_regions,
-        explicit_region_type=region.region_type if region is not None else None,
-    )
-
-
-def _union_bboxes(boxes: list[PdfBoundingBox]) -> PdfBoundingBox | None:
-    return _bbox_from_bounds(
-        _union_box_bounds(
-            [
-                (box.left_pt, box.bottom_pt, box.right_pt, box.top_pt)
-                for box in boxes
-            ]
-        )
-    )
-
-
-def _paragraph_union_bbox(paragraphs: list[ParagraphIR]) -> PdfBoundingBox | None:
-    boxes = [bbox for paragraph in paragraphs if (bbox := _paragraph_bbox(paragraph)) is not None]
-    return _union_bboxes(boxes)
-
-
-def _build_logical_pages_for_page(
-    page: PageInfo,
-    page_regions: list[PdfLayoutRegion],
-    *,
-    page_paragraphs: list[ParagraphIR] | None = None,
-    starting_page_number: int = 1,
-) -> list[_LogicalPage]:
-    split_x = _spread_split_x(page, page_regions, page_paragraphs=page_paragraphs or [])
-    if split_x is not None and page.height_pt is not None and page.width_pt is not None:
-        left_regions = [region for region in page_regions if region.region_type == "left" and region.bounding_box is not None]
-        right_regions = [region for region in page_regions if region.region_type == "right" and region.bounding_box is not None]
-        left_region = max(left_regions, key=lambda region: _bbox_area(region.bounding_box) if region.bounding_box is not None else 0.0)
-        right_region = max(right_regions, key=lambda region: _bbox_area(region.bounding_box) if region.bounding_box is not None else 0.0)
-        left_bbox = PdfBoundingBox(
-            left_pt=0.0,
-            bottom_pt=0.0,
-            right_pt=split_x,
-            top_pt=page.height_pt,
-        )
-        right_bbox = PdfBoundingBox(
-            left_pt=split_x,
-            bottom_pt=0.0,
-            right_pt=page.width_pt,
-            top_pt=page.height_pt,
-        )
-        target_width_pt = page.height_pt
-        left_width = max(left_bbox.right_pt - left_bbox.left_pt, 1.0)
-        right_width = max(right_bbox.right_pt - right_bbox.left_pt, 1.0)
-        left_scale_factor = target_width_pt / left_width
-        right_scale_factor = target_width_pt / right_width
-        return [
-            _LogicalPage(
-                page_number=starting_page_number,
-                physical_page_number=page.page_number,
-                logical_page_type="left",
-                bounding_box=left_bbox,
-                source_region_ids=[left_region.region_id],
-                scale_factor=left_scale_factor,
-                target_width_pt=target_width_pt,
-                target_height_pt=page.height_pt * left_scale_factor,
-            ),
-            _LogicalPage(
-                page_number=starting_page_number + 1,
-                physical_page_number=page.page_number,
-                logical_page_type="right",
-                bounding_box=right_bbox,
-                source_region_ids=[right_region.region_id],
-                scale_factor=right_scale_factor,
-                target_width_pt=target_width_pt,
-                target_height_pt=page.height_pt * right_scale_factor,
-            ),
-        ]
-
-    page_bbox = _page_bbox(page)
-    if page_bbox is None:
-        return []
-    source_region_ids = [
-        region.region_id
-        for region in page_regions
-        if region.region_type not in {"left", "right"}
-    ]
-    return [
-        _LogicalPage(
-            page_number=starting_page_number,
-            physical_page_number=page.page_number,
-            logical_page_type="single",
-            bounding_box=page_bbox,
-            source_region_ids=source_region_ids,
-        )
-    ]
-
-
-def _region_split_x(
-    page: PageInfo,
-    page_regions: list[PdfLayoutRegion],
-) -> float | None:
-    if page.width_pt is None or page.height_pt is None:
-        return None
-    if page.width_pt <= page.height_pt:
-        return None
-
-    left_regions = [region for region in page_regions if region.region_type == "left" and region.bounding_box is not None]
-    right_regions = [region for region in page_regions if region.region_type == "right" and region.bounding_box is not None]
-    if not left_regions or not right_regions:
-        return None
-
-    left_edge = max(region.bounding_box.right_pt for region in left_regions if region.bounding_box is not None)
-    right_edge = min(region.bounding_box.left_pt for region in right_regions if region.bounding_box is not None)
-    gutter_width = right_edge - left_edge
-    if gutter_width <= 0.0:
-        return None
-
-    split_x = (left_edge + right_edge) / 2.0
-    if split_x <= page.width_pt * 0.20 or split_x >= page.width_pt * 0.80:
-        return None
-    if gutter_width < max(page.width_pt * 0.02, 8.0):
-        return None
-    return split_x
-
-
-def _footer_page_number_candidates(
-    page: PageInfo,
-    page_paragraphs: list[ParagraphIR],
-) -> list[tuple[int, PdfBoundingBox]]:
-    if page.width_pt is None or page.height_pt is None:
-        return []
-
-    candidates: list[tuple[int, PdfBoundingBox]] = []
-    for paragraph in page_paragraphs:
-        bbox = _paragraph_bbox(paragraph)
-        text = paragraph.text.strip()
-        if bbox is None or not text:
-            continue
-        if bbox.top_pt > page.height_pt * _LOGICAL_PAGE_NUMBER_FOOTER_TOP_RATIO:
-            continue
-        if (bbox.right_pt - bbox.left_pt) > page.width_pt * _LOGICAL_PAGE_NUMBER_MAX_WIDTH_RATIO:
-            continue
-        match = _LOGICAL_PAGE_NUMBER_TEXT_RE.match(text)
-        if match is None:
-            continue
-        candidates.append((int(match.group(1)), bbox))
-    return candidates
-
-
-def _has_footer_page_number_pair(
-    page: PageInfo,
-    page_paragraphs: list[ParagraphIR],
-    *,
-    split_x: float,
-) -> bool:
-    left_candidates: list[tuple[int, PdfBoundingBox]] = []
-    right_candidates: list[tuple[int, PdfBoundingBox]] = []
-    for page_number, bbox in _footer_page_number_candidates(page, page_paragraphs):
-        center_x, _center_y = _bbox_center(bbox)
-        if center_x < split_x:
-            left_candidates.append((page_number, bbox))
-        elif center_x > split_x:
-            right_candidates.append((page_number, bbox))
-
-    if not left_candidates or not right_candidates:
-        return False
-
-    for left_number, _left_bbox in left_candidates:
-        for right_number, _right_bbox in right_candidates:
-            if right_number == left_number + 1:
-                return True
-    return False
-
-
-def _spread_split_x(
-    page: PageInfo,
-    page_regions: list[PdfLayoutRegion],
-    *,
-    page_paragraphs: list[ParagraphIR],
-) -> float | None:
-    split_x = _region_split_x(page, page_regions)
-    if split_x is None:
-        return None
-    if not _has_footer_page_number_pair(page, page_paragraphs, split_x=split_x):
-        return None
-    return split_x
-
-
-def _score_logical_page_for_bbox(logical_page: _LogicalPage, bbox: PdfBoundingBox) -> tuple[int, float, float]:
-    center_x, center_y = _bbox_center(bbox)
-    center_inside = (
-        logical_page.bounding_box.left_pt <= center_x <= logical_page.bounding_box.right_pt
-        and logical_page.bounding_box.bottom_pt <= center_y <= logical_page.bounding_box.top_pt
-    )
-    overlap = _bbox_intersection(logical_page.bounding_box, bbox)
-    overlap_ratio = 0.0 if overlap is None else _bbox_area(overlap) / max(_bbox_area(bbox), 1.0)
-    bbox_center_x, bbox_center_y = _bbox_center(bbox)
-    page_center_x, page_center_y = _bbox_center(logical_page.bounding_box)
-    center_distance = abs(bbox_center_x - page_center_x) + abs(bbox_center_y - page_center_y)
-    return (1 if center_inside else 0, overlap_ratio, -center_distance)
-
-
-def _best_logical_page_for_bbox(
-    logical_pages: list[_LogicalPage],
-    *,
-    bbox: PdfBoundingBox | None,
-    explicit_region_type: str | None,
-) -> _LogicalPage | None:
-    if not logical_pages:
-        return None
-    if len(logical_pages) == 1:
-        return logical_pages[0]
-    if explicit_region_type in {"left", "right"}:
-        for logical_page in logical_pages:
-            if logical_page.logical_page_type == explicit_region_type:
-                return logical_page
-    if bbox is None:
-        return logical_pages[0]
-
-    best_page: _LogicalPage | None = None
+    best_region_type = "main"
     best_score: tuple[int, float, float] | None = None
-    for logical_page in logical_pages:
-        score = _score_logical_page_for_bbox(logical_page, bbox)
-        if best_score is None or score > best_score:
-            best_page = logical_page
-            best_score = score
-    return best_page
-
-
-def _is_image_only_paragraph(paragraph: ParagraphIR) -> bool:
-    return (
-        not paragraph.text.strip()
-        and not paragraph.runs
-        and not paragraph.tables
-        and len(paragraph.images) == 1
-    )
-
-
-def _image_strip_paragraphs_can_merge(left: ParagraphIR, right: ParagraphIR) -> bool:
-    if not _is_image_only_paragraph(left) or not _is_image_only_paragraph(right):
-        return False
-
-    left_bbox = _paragraph_bbox(left)
-    right_bbox = _paragraph_bbox(right)
-    if left_bbox is None or right_bbox is None:
-        return False
-
-    left_width = max(left_bbox.right_pt - left_bbox.left_pt, 0.0)
-    right_width = max(right_bbox.right_pt - right_bbox.left_pt, 0.0)
-    left_height = max(left_bbox.top_pt - left_bbox.bottom_pt, 0.0)
-    right_height = max(right_bbox.top_pt - right_bbox.bottom_pt, 0.0)
-    if left_width <= 0.0 or right_width <= 0.0 or left_height <= 0.0 or right_height <= 0.0:
-        return False
-
-    if left_height > left_width * _IMAGE_STRIP_MAX_HEIGHT_RATIO:
-        return False
-    if right_height > right_width * _IMAGE_STRIP_MAX_HEIGHT_RATIO:
-        return False
-
-    overlap_ratio = _span_overlap_ratio(
-        left_bbox.left_pt,
-        left_bbox.right_pt,
-        right_bbox.left_pt,
-        right_bbox.right_pt,
-    )
-    if overlap_ratio < _IMAGE_STRIP_MIN_SPAN_OVERLAP_RATIO:
-        return False
-
-    left_center_x = (left_bbox.left_pt + left_bbox.right_pt) / 2.0
-    right_center_x = (right_bbox.left_pt + right_bbox.right_pt) / 2.0
-    max_center_delta = max(max(left_width, right_width) * _IMAGE_STRIP_MAX_CENTER_DELTA_RATIO, 4.0)
-    if abs(left_center_x - right_center_x) > max_center_delta:
-        return False
-
-    upper, lower = (left_bbox, right_bbox) if left_bbox.top_pt >= right_bbox.top_pt else (right_bbox, left_bbox)
-    vertical_gap = max(upper.bottom_pt - lower.top_pt, 0.0)
-    if vertical_gap > _IMAGE_STRIP_MAX_GAP_PT:
-        return False
-
-    return True
-
-
-def _merged_image_strip_paragraph(paragraphs: list[ParagraphIR]) -> ParagraphIR:
-    merged = paragraphs[0].model_copy(deep=True)
-    merged.unit_id = f"{paragraphs[0].unit_id}.image-stack"
-    merged.content = [
-        image.model_copy(deep=True)
-        for paragraph in paragraphs
-        for image in paragraph.images
-    ]
-    merged_bbox = _paragraph_union_bbox(paragraphs)
-    merged.bbox = merged_bbox
-    if merged.meta is not None and hasattr(merged.meta, "bounding_box"):
-        merged.meta.bounding_box = merged_bbox
-    merged.recompute_text()
-    return merged
-
-
-def _collapse_image_strip_paragraphs(paragraphs: list[ParagraphIR]) -> list[ParagraphIR]:
-    collapsed: list[ParagraphIR] = []
-    current_group: list[ParagraphIR] = []
-
-    def flush_group() -> None:
-        nonlocal current_group
-        if not current_group:
-            return
-        if len(current_group) >= _IMAGE_STRIP_MIN_GROUP_SIZE:
-            collapsed.append(_merged_image_strip_paragraph(current_group))
-        else:
-            collapsed.extend(current_group)
-        current_group = []
-
-    for paragraph in paragraphs:
-        if not current_group:
-            current_group = [paragraph]
+    for region in page_regions:
+        region_bbox = region.bounding_box
+        if region_bbox is None:
             continue
-        if _image_strip_paragraphs_can_merge(current_group[-1], paragraph):
-            current_group.append(paragraph)
-            continue
-        flush_group()
-        current_group = [paragraph]
-
-    flush_group()
-    return collapsed
-
-
-def _is_footer_page_number_paragraph(page: PageInfo, paragraph: ParagraphIR) -> bool:
-    bbox = _paragraph_bbox(paragraph)
-    text = paragraph.text.strip()
-    if bbox is None or not text or page.width_pt is None or page.height_pt is None:
-        return False
-    if bbox.top_pt > page.height_pt * _LOGICAL_PAGE_NUMBER_FOOTER_TOP_RATIO:
-        return False
-    if (bbox.right_pt - bbox.left_pt) > page.width_pt * _LOGICAL_PAGE_NUMBER_MAX_WIDTH_RATIO:
-        return False
-    return _LOGICAL_PAGE_NUMBER_TEXT_RE.match(text) is not None
-
-
-def _column_band_split_x(
-    page: PageInfo,
-    slice_boxes: list[PdfBoundingBox],
-) -> float | None:
-    if page.width_pt is None or len(slice_boxes) < 2:
-        return None
-
-    center_x = page.width_pt / 2.0
-    center_offset = page.width_pt * _COLUMN_BAND_CENTER_OFFSET_RATIO
-    left_boxes = [
-        box
-        for box in slice_boxes
-        if ((box.left_pt + box.right_pt) / 2.0) < center_x - center_offset
-    ]
-    right_boxes = [
-        box
-        for box in slice_boxes
-        if ((box.left_pt + box.right_pt) / 2.0) > center_x + center_offset
-    ]
-    if not left_boxes or not right_boxes:
-        return None
-
-    strip_half_width = max(page.width_pt * 0.01, 4.0)
-    if any(
-        box.right_pt >= center_x - strip_half_width and box.left_pt <= center_x + strip_half_width
-        for box in slice_boxes
-    ):
-        return None
-
-    left_edge = max(box.right_pt for box in left_boxes)
-    right_edge = min(box.left_pt for box in right_boxes)
-    gutter_width = right_edge - left_edge
-    if gutter_width < max(page.width_pt * _COLUMN_BAND_GUTTER_MIN_WIDTH_RATIO, _COLUMN_BAND_GUTTER_MIN_WIDTH_PT):
-        return None
-
-    return (left_edge + right_edge) / 2.0
-
-
-def _detect_intra_page_column_regions(
-    page: PageInfo,
-    page_paragraphs: list[ParagraphIR],
-) -> list[PdfLayoutRegion]:
-    boxes = [
-        bbox
-        for paragraph in page_paragraphs
-        if not _is_footer_page_number_paragraph(page, paragraph)
-        if (bbox := _paragraph_bbox(paragraph)) is not None
-    ]
-    if page.width_pt is None or page.height_pt is None or len(boxes) < 2:
-        return []
-
-    boundaries = sorted({value for box in boxes for value in (box.bottom_pt, box.top_pt)})
-    if len(boundaries) < 2:
-        return []
-
-    bands: list[dict[str, Any]] = []
-    active_band: dict[str, Any] | None = None
-
-    for bottom, top in zip(boundaries, boundaries[1:]):
-        if top - bottom <= 0.0:
-            continue
-        midpoint = (bottom + top) / 2.0
-        slice_boxes = [box for box in boxes if box.bottom_pt < midpoint < box.top_pt]
-        split_x = _column_band_split_x(page, slice_boxes)
-        if split_x is None:
-            if active_band is not None:
-                bands.append(active_band)
-                active_band = None
-            continue
-
-        left_boxes = [box for box in slice_boxes if ((box.left_pt + box.right_pt) / 2.0) <= split_x]
-        right_boxes = [box for box in slice_boxes if ((box.left_pt + box.right_pt) / 2.0) > split_x]
-        if not left_boxes or not right_boxes:
-            if active_band is not None:
-                bands.append(active_band)
-                active_band = None
-            continue
-
+        overlap = _bbox_intersection(region_bbox, bbox)
+        overlap_area = _bbox_area(overlap) if overlap is not None else 0.0
+        contains_center = 0
+        center_x, center_y = _bbox_center(bbox)
         if (
-            active_band is not None
-            and abs(active_band["split_x"] - split_x) <= _COLUMN_BAND_SPLIT_MERGE_TOLERANCE_PT
-            and abs(active_band["top"] - bottom) <= 1.0
+            region_bbox.left_pt <= center_x <= region_bbox.right_pt
+            and region_bbox.bottom_pt <= center_y <= region_bbox.top_pt
         ):
-            active_band["top"] = top
-            active_band["left_boxes"].extend(left_boxes)
-            active_band["right_boxes"].extend(right_boxes)
+            contains_center = 1
+        if not contains_center and overlap_area <= 0.0:
             continue
-
-        if active_band is not None:
-            bands.append(active_band)
-        active_band = {
-            "bottom": bottom,
-            "top": top,
-            "split_x": split_x,
-            "left_boxes": list(left_boxes),
-            "right_boxes": list(right_boxes),
-        }
-
-    if active_band is not None:
-        bands.append(active_band)
-
-    regions: list[PdfLayoutRegion] = []
-    for band_index, band in enumerate(sorted(bands, key=lambda item: item["top"], reverse=True), start=1):
-        if (band["top"] - band["bottom"]) < _COLUMN_BAND_MIN_HEIGHT_PT:
-            continue
-        left_bbox = _union_bboxes(band["left_boxes"])
-        right_bbox = _union_bboxes(band["right_boxes"])
-        if left_bbox is None or right_bbox is None:
-            continue
-        regions.extend(
-            [
-                PdfLayoutRegion(
-                    region_id=f"p{page.page_number}-band{band_index}-left",
-                    region_type="left",
-                    page_number=page.page_number,
-                    bounding_box=PdfBoundingBox(
-                        left_pt=left_bbox.left_pt,
-                        bottom_pt=band["bottom"],
-                        right_pt=left_bbox.right_pt,
-                        top_pt=band["top"],
-                    ),
-                ),
-                PdfLayoutRegion(
-                    region_id=f"p{page.page_number}-band{band_index}-right",
-                    region_type="right",
-                    page_number=page.page_number,
-                    bounding_box=PdfBoundingBox(
-                        left_pt=right_bbox.left_pt,
-                        bottom_pt=band["bottom"],
-                        right_pt=right_bbox.right_pt,
-                        top_pt=band["top"],
-                    ),
-                ),
-            ]
+        score = (
+            contains_center,
+            overlap_area,
+            -_shared_bbox_distance(region_bbox, bbox),
         )
-
-    return regions
-
-
-def _rebase_bbox(bbox: PdfBoundingBox | None, *, origin_bbox: PdfBoundingBox) -> PdfBoundingBox | None:
-    if bbox is None:
-        return None
-    return PdfBoundingBox(
-        left_pt=bbox.left_pt - origin_bbox.left_pt,
-        bottom_pt=bbox.bottom_pt - origin_bbox.bottom_pt,
-        right_pt=bbox.right_pt - origin_bbox.left_pt,
-        top_pt=bbox.top_pt - origin_bbox.bottom_pt,
-    )
-
-
-def _scale_value(value: float | None, *, scale_factor: float) -> float | None:
-    if value is None:
-        return None
-    return value * scale_factor
-
-
-def _scale_bbox(bbox: PdfBoundingBox | None, *, scale_factor: float) -> PdfBoundingBox | None:
-    if bbox is None or scale_factor == 1.0:
-        return bbox
-    return PdfBoundingBox(
-        left_pt=bbox.left_pt * scale_factor,
-        bottom_pt=bbox.bottom_pt * scale_factor,
-        right_pt=bbox.right_pt * scale_factor,
-        top_pt=bbox.top_pt * scale_factor,
-    )
-
-
-def _rebase_meta_bbox(meta: Any, *, origin_bbox: PdfBoundingBox, scale_factor: float = 1.0) -> Any:
-    if meta is None or not hasattr(meta, "bounding_box"):
-        return meta
-    rebased_meta = meta.model_copy(deep=True) if hasattr(meta, "model_copy") else meta
-    rebased_meta.bounding_box = _scale_bbox(
-        _rebase_bbox(getattr(meta, "bounding_box", None), origin_bbox=origin_bbox),
-        scale_factor=scale_factor,
-    )
-    return rebased_meta
-
-
-def _scale_para_style(para_style: Any, *, scale_factor: float) -> Any:
-    if para_style is None or scale_factor == 1.0:
-        return para_style
-    clone = para_style.model_copy(deep=True) if hasattr(para_style, "model_copy") else para_style
-    for field_name in ("left_indent_pt", "right_indent_pt", "first_line_indent_pt", "hanging_indent_pt"):
-        value = getattr(clone, field_name, None)
-        if value is not None:
-            setattr(clone, field_name, value * scale_factor)
-    return clone
-
-
-def _scale_run_style(run_style: Any, *, scale_factor: float) -> Any:
-    if run_style is None or scale_factor == 1.0:
-        return run_style
-    clone = run_style.model_copy(deep=True) if hasattr(run_style, "model_copy") else run_style
-    if getattr(clone, "size_pt", None) is not None:
-        clone.size_pt = clone.size_pt * scale_factor
-    return clone
-
-
-def _scale_cell_style(cell_style: Any, *, scale_factor: float) -> Any:
-    if cell_style is None or scale_factor == 1.0:
-        return cell_style
-    clone = cell_style.model_copy(deep=True) if hasattr(cell_style, "model_copy") else cell_style
-    if getattr(clone, "width_pt", None) is not None:
-        clone.width_pt = clone.width_pt * scale_factor
-    if getattr(clone, "height_pt", None) is not None:
-        clone.height_pt = clone.height_pt * scale_factor
-    return clone
-
-
-def _scale_table_style(table_style: Any, *, scale_factor: float) -> Any:
-    if table_style is None or scale_factor == 1.0:
-        return table_style
-    clone = table_style.model_copy(deep=True) if hasattr(table_style, "model_copy") else table_style
-    if getattr(clone, "width_pt", None) is not None:
-        clone.width_pt = clone.width_pt * scale_factor
-    if getattr(clone, "height_pt", None) is not None:
-        clone.height_pt = clone.height_pt * scale_factor
-    return clone
-
-
-def _rebase_table_for_logical_page(table: TableIR, *, origin_bbox: PdfBoundingBox, scale_factor: float = 1.0) -> TableIR:
-    clone = table.model_copy(deep=True)
-    clone.bbox = _scale_bbox(_rebase_bbox(table.bbox, origin_bbox=origin_bbox), scale_factor=scale_factor)
-    clone.meta = _rebase_meta_bbox(table.meta, origin_bbox=origin_bbox, scale_factor=scale_factor)
-    clone.table_style = _scale_table_style(clone.table_style, scale_factor=scale_factor)
-    for cell in clone.cells:
-        cell.bbox = _scale_bbox(_rebase_bbox(cell.bbox, origin_bbox=origin_bbox), scale_factor=scale_factor)
-        cell.meta = _rebase_meta_bbox(cell.meta, origin_bbox=origin_bbox, scale_factor=scale_factor)
-        cell.cell_style = _scale_cell_style(cell.cell_style, scale_factor=scale_factor)
-        for paragraph in cell.paragraphs:
-            rebased = _rebase_paragraph_for_logical_page(
-                paragraph,
-                origin_bbox=origin_bbox,
-                scale_factor=scale_factor,
-            )
-            paragraph.unit_id = rebased.unit_id
-            paragraph.text = rebased.text
-            paragraph.page_number = rebased.page_number
-            paragraph.bbox = rebased.bbox
-            paragraph.meta = rebased.meta
-            paragraph.para_style = rebased.para_style
-            paragraph.content = rebased.content
-    return clone
-
-
-def _rebase_paragraph_content_node(node: Any, *, origin_bbox: PdfBoundingBox, scale_factor: float = 1.0) -> Any:
-    if isinstance(node, RunIR):
-        clone = node.model_copy(deep=True)
-        clone.bbox = _scale_bbox(_rebase_bbox(node.bbox, origin_bbox=origin_bbox), scale_factor=scale_factor)
-        clone.meta = _rebase_meta_bbox(node.meta, origin_bbox=origin_bbox, scale_factor=scale_factor)
-        clone.run_style = _scale_run_style(clone.run_style, scale_factor=scale_factor)
-        return clone
-    if isinstance(node, ImageIR):
-        clone = node.model_copy(deep=True)
-        clone.bbox = _scale_bbox(_rebase_bbox(node.bbox, origin_bbox=origin_bbox), scale_factor=scale_factor)
-        clone.display_width_pt = _scale_value(clone.display_width_pt, scale_factor=scale_factor)
-        clone.display_height_pt = _scale_value(clone.display_height_pt, scale_factor=scale_factor)
-        return clone
-    if isinstance(node, TableIR):
-        return _rebase_table_for_logical_page(node, origin_bbox=origin_bbox, scale_factor=scale_factor)
-    return node
-
-
-def _rebase_paragraph_for_logical_page(
-    paragraph: ParagraphIR,
-    *,
-    origin_bbox: PdfBoundingBox,
-    scale_factor: float = 1.0,
-) -> ParagraphIR:
-    clone = paragraph.model_copy(deep=True)
-    clone.bbox = _scale_bbox(_rebase_bbox(_paragraph_bbox(paragraph), origin_bbox=origin_bbox), scale_factor=scale_factor)
-    clone.meta = _rebase_meta_bbox(paragraph.meta, origin_bbox=origin_bbox, scale_factor=scale_factor)
-    clone.para_style = _scale_para_style(paragraph.para_style, scale_factor=scale_factor)
-    clone.content = [
-        _rebase_paragraph_content_node(node, origin_bbox=origin_bbox, scale_factor=scale_factor)
-        for node in paragraph.content
-    ]
-    clone.recompute_text()
-    return clone
-
-
-def _rebase_candidate_for_logical_page(
-    candidate: PdfPreviewVisualBlockCandidate,
-    *,
-    logical_page: _LogicalPage,
-) -> PdfPreviewVisualBlockCandidate:
-    clone = candidate.model_copy(deep=True)
-    clone.page_number = logical_page.page_number
-    clone.bounding_box = (
-        _scale_bbox(
-            _rebase_bbox(candidate.bounding_box, origin_bbox=logical_page.bounding_box),
-            scale_factor=logical_page.scale_factor,
-        )
-        or candidate.bounding_box
-    )
-    clone.child_cells = [
-        rebased
-        for cell_bbox in candidate.child_cells
-        if (
-            rebased := _scale_bbox(
-                _rebase_bbox(cell_bbox, origin_bbox=logical_page.bounding_box),
-                scale_factor=logical_page.scale_factor,
-            )
-        ) is not None
-    ]
-    return clone
-
-
-def _logical_page_page_info(logical_page: _LogicalPage, *, source_page: PageInfo) -> PageInfo:
-    bbox = logical_page.bounding_box
-    margin_left = _scale_value(source_page.margin_left_pt, scale_factor=logical_page.scale_factor)
-    margin_right = _scale_value(source_page.margin_right_pt, scale_factor=logical_page.scale_factor)
-    margin_top = _scale_value(source_page.margin_top_pt, scale_factor=logical_page.scale_factor)
-    margin_bottom = _scale_value(source_page.margin_bottom_pt, scale_factor=logical_page.scale_factor)
-    return PageInfo(
-        page_number=logical_page.page_number,
-        width_pt=logical_page.target_width_pt or max(bbox.right_pt - bbox.left_pt, 0.0),
-        height_pt=logical_page.target_height_pt or max(bbox.top_pt - bbox.bottom_pt, 0.0),
-        margin_left_pt=margin_left,
-        margin_right_pt=margin_right,
-        margin_top_pt=margin_top,
-        margin_bottom_pt=margin_bottom,
-    )
-
-
-def _flow_regions_for_logical_page(
-    page: PageInfo,
-    page_regions: list[PdfLayoutRegion],
-    *,
-    logical_pages: list[_LogicalPage],
-    page_paragraphs: list[ParagraphIR],
-) -> list[PdfLayoutRegion]:
-    if len(logical_pages) != 1:
-        return []
-    band_regions = _detect_intra_page_column_regions(page, page_paragraphs)
-    if band_regions:
-        return band_regions
-    return [region for region in page_regions if region.region_type in {"left", "right"}]
-
-
-def _logical_page_paragraphs(
-    page: PageInfo,
-    page_paragraphs: list[ParagraphIR],
-    *,
-    page_regions: list[PdfLayoutRegion],
-    logical_pages: list[_LogicalPage],
-    logical_page: _LogicalPage,
-) -> list[ParagraphIR]:
-    region_by_id = {region.region_id: region for region in page_regions}
-    paragraphs: list[ParagraphIR] = []
-    for paragraph in page_paragraphs:
-        region_type = _paragraph_region_type(
-            paragraph,
-            page=page,
-            page_regions=page_regions,
-            region_by_id=region_by_id,
-        )
-        target_page = _best_logical_page_for_bbox(
-            logical_pages,
-            bbox=_paragraph_bbox(paragraph),
-            explicit_region_type=region_type,
-        )
-        if target_page is None or target_page.page_number != logical_page.page_number:
-            continue
-        rebased = _rebase_paragraph_for_logical_page(
-            paragraph,
-            origin_bbox=logical_page.bounding_box,
-            scale_factor=logical_page.scale_factor,
-        )
-        rebased.page_number = logical_page.page_number
-        paragraphs.append(rebased)
-    return paragraphs
-
-
-def _logical_page_preview_context(
-    page: PageInfo,
-    preview_context: PdfPreviewContext,
-    *,
-    page_regions: list[PdfLayoutRegion],
-    logical_pages: list[_LogicalPage],
-    logical_page: _LogicalPage,
-) -> PdfPreviewContext:
-    local_candidates: list[PdfPreviewVisualBlockCandidate] = []
-    for candidate in preview_context.visual_block_candidates:
-        if candidate.page_number != page.page_number:
-            continue
-        region_type = _bbox_region_type(
-            candidate.bounding_box,
-            page=page,
-            page_regions=page_regions,
-            explicit_region_type=None,
-        )
-        target_page = _best_logical_page_for_bbox(
-            logical_pages,
-            bbox=candidate.bounding_box,
-            explicit_region_type=region_type,
-        )
-        if target_page is None or target_page.page_number != logical_page.page_number:
-            continue
-        local_candidates.append(
-            _rebase_candidate_for_logical_page(
-                candidate,
-                logical_page=logical_page,
-            )
-        )
-    return PdfPreviewContext(
-        layout_regions=[],
-        tables=[],
-        visual_block_candidates=local_candidates,
-    )
+        if best_score is None or score > best_score:
+            best_score = score
+            best_region_type = _region_role(region.region_type) or "main"
+    return best_region_type
 
 
 def _bbox_order_key(
@@ -891,15 +111,6 @@ def _bbox_order_key(
     if bbox is None:
         return (1_000_000.0, 1_000_000.0, fallback_index, subindex)
     return (-bbox.top_pt, bbox.left_pt, fallback_index, subindex)
-
-
-def _paragraph_offsets_from_page(
-    paragraph: ParagraphIR,
-    *,
-    page: PageInfo,
-) -> tuple[float | None, float | None]:
-    bbox = _paragraph_bbox(paragraph)
-    return _bbox_offsets_from_page(bbox, page=page)
 
 
 def _bbox_offsets_from_page(
@@ -914,7 +125,11 @@ def _bbox_offsets_from_page(
     return top_offset, bottom_offset
 
 
+# ---------- candidate scoring ----------
+# pdfium에서 찾은 visual block 후보에 실제 DocIR node를 배정하기 위한 점수 계산.
+
 def _bbox_assignment_score(candidate_bbox: PdfBoundingBox, node_bbox: PdfBoundingBox) -> tuple[int, float, float]:
+    """candidate bbox가 node bbox를 얼마나 잘 설명하는지 점수화한다."""
     if _bbox_contains(
         candidate_bbox,
         node_bbox,
@@ -960,317 +175,8 @@ def _best_candidate_for_node(
     return best_candidate
 
 
-def _compose_logical_page(
-    page: PageInfo,
-    page_paragraphs: list[ParagraphIR],
-    *,
-    page_regions: list[PdfLayoutRegion],
-    preview_context: PdfPreviewContext,
-) -> _LogicalPageComposition:
-    assigned_candidates, assigned_paragraph_ids, assigned_child_ids = _assign_page_nodes_to_candidates(
-        page,
-        page_paragraphs,
-        page_regions=page_regions,
-        preview_context=preview_context,
-    )
-    promoted_table_paragraphs, promoted_candidate_ids = _promote_assigned_candidates_to_layout_tables(
-        assigned_candidates,
-        page=page,
-    )
-    flow_paragraphs = _filter_page_flow_paragraphs(
-        page_paragraphs,
-        assigned_paragraph_ids=assigned_paragraph_ids,
-        assigned_child_ids=assigned_child_ids,
-    )
-    flow_paragraphs.extend(promoted_table_paragraphs)
-    entries = _build_preview_entries(
-        page,
-        flow_paragraphs,
-        page_regions=page_regions,
-    )
-    ordered_paragraphs = _materialize_flow_paragraphs(
-        page,
-        entries,
-        page_regions=page_regions,
-    )
-    return _LogicalPageComposition(
-        ordered_paragraphs=ordered_paragraphs,
-        assigned_candidates=assigned_candidates,
-        promoted_candidate_ids=promoted_candidate_ids,
-    )
-
-
-def _normalize_pdf_doc_for_flow(
-    doc_ir: DocIR,
-    *,
-    preview_context: PdfPreviewContext | None,
-) -> DocIR:
-    if preview_context is None or not doc_ir.pages:
-        return doc_ir
-
-    paragraphs_by_page: dict[int, list[ParagraphIR]] = {}
-    unpaged: list[ParagraphIR] = []
-    for paragraph in doc_ir.paragraphs:
-        if paragraph.page_number is None:
-            unpaged.append(paragraph)
-            continue
-        paragraphs_by_page.setdefault(paragraph.page_number, []).append(paragraph)
-
-    normalized_pages: list[PageInfo] = []
-    normalized_paragraphs: list[ParagraphIR] = []
-    residual_candidates: list[PdfPreviewVisualBlockCandidate] = []
-    next_logical_page_number = 1
-
-    for page in doc_ir.pages:
-        page_regions = [region for region in preview_context.layout_regions if region.page_number == page.page_number]
-        logical_pages = _build_logical_pages_for_page(
-            page,
-            page_regions,
-            page_paragraphs=paragraphs_by_page.get(page.page_number, []),
-            starting_page_number=next_logical_page_number,
-        )
-        next_logical_page_number += max(len(logical_pages), 1)
-
-        if not logical_pages:
-            normalized_pages.append(page.model_copy(deep=True))
-            normalized_paragraphs.extend(paragraphs_by_page.get(page.page_number, []))
-            continue
-
-        physical_page_paragraphs = paragraphs_by_page.get(page.page_number, [])
-        for logical_page in logical_pages:
-            logical_page_info = _logical_page_page_info(logical_page, source_page=page)
-            logical_page_paragraphs = _logical_page_paragraphs(
-                page,
-                physical_page_paragraphs,
-                page_regions=page_regions,
-                logical_pages=logical_pages,
-                logical_page=logical_page,
-            )
-            logical_page_paragraphs = _collapse_image_strip_paragraphs(logical_page_paragraphs)
-            flow_regions = _flow_regions_for_logical_page(
-                logical_page_info,
-                page_regions,
-                logical_pages=logical_pages,
-                page_paragraphs=logical_page_paragraphs,
-            )
-            logical_preview_context = _logical_page_preview_context(
-                page,
-                preview_context,
-                page_regions=page_regions,
-                logical_pages=logical_pages,
-                logical_page=logical_page,
-            )
-            composition = _compose_logical_page(
-                logical_page_info,
-                logical_page_paragraphs,
-                page_regions=flow_regions,
-                preview_context=logical_preview_context,
-            )
-            normalized_pages.append(logical_page_info)
-            normalized_paragraphs.extend(composition.ordered_paragraphs)
-            residual_candidates.extend(
-                assigned_candidate.candidate
-                for assigned_candidate in composition.assigned_candidates
-                if id(assigned_candidate.candidate) not in composition.promoted_candidate_ids
-            )
-
-    doc_ir.pages = normalized_pages
-    doc_ir.paragraphs = normalized_paragraphs + unpaged
-    preview_context.layout_regions = []
-    preview_context.tables = []
-    preview_context.visual_block_candidates = residual_candidates
-    return doc_ir
-
-
-def _build_preview_entries(
-    page: PageInfo,
-    page_paragraphs: list[ParagraphIR],
-    *,
-    page_regions: list[PdfLayoutRegion],
-) -> list[_PreviewCompositionEntry]:
-    region_by_id = {region.region_id: region for region in page_regions}
-    entries: list[_PreviewCompositionEntry] = []
-    for fallback_index, paragraph in enumerate(page_paragraphs):
-        top_offset, bottom_offset = _paragraph_offsets_from_page(paragraph, page=page)
-        paragraph_bbox = _paragraph_bbox(paragraph)
-        order_key = _bbox_order_key(paragraph_bbox, fallback_index=fallback_index)
-        entries.append(
-            _PreviewCompositionEntry(
-                item_type="paragraph",
-                bounding_box=paragraph_bbox,
-                paragraph=paragraph,
-                region_type=_paragraph_region_type(
-                    paragraph,
-                    page=page,
-                    page_regions=page_regions,
-                    region_by_id=region_by_id,
-                ),
-                top_offset_pt=top_offset,
-                bottom_offset_pt=bottom_offset,
-                order_key=order_key,
-            )
-        )
-
-    entries.sort(key=lambda entry: entry.order_key)
-    return entries
-
-
-def _primary_region_bbox(
-    page_regions: list[PdfLayoutRegion],
-    *,
-    region_type: str,
-) -> PdfBoundingBox | None:
-    matching = [
-        region.bounding_box
-        for region in page_regions
-        if region.region_type == region_type and region.bounding_box is not None
-    ]
-    if not matching:
-        return None
-    return max(matching, key=_bbox_area)
-
-
-def _column_band_cell_style(width_pt: float | None) -> CellStyleInfo:
-    return CellStyleInfo(
-        width_pt=width_pt,
-        vertical_align="top",
-    )
-
-
-def _build_column_band_paragraph(
-    page: PageInfo,
-    *,
-    band_index: int,
-    left_paragraphs: list[ParagraphIR],
-    right_paragraphs: list[ParagraphIR],
-    left_region_bbox: PdfBoundingBox | None,
-    right_region_bbox: PdfBoundingBox | None,
-) -> ParagraphIR:
-    margin_top, margin_right, margin_bottom, margin_left = _shared_page_content_margins(page)
-    content_width = None
-    if page.width_pt is not None:
-        content_width = max(page.width_pt - margin_left - margin_right, 0.0)
-
-    left_width = None
-    right_width = None
-    gutter_width = 18.0
-    if left_region_bbox is not None:
-        left_width = max(left_region_bbox.right_pt - left_region_bbox.left_pt, 0.0)
-    if right_region_bbox is not None:
-        right_width = max(right_region_bbox.right_pt - right_region_bbox.left_pt, 0.0)
-    if left_region_bbox is not None and right_region_bbox is not None:
-        gutter_width = max(right_region_bbox.left_pt - left_region_bbox.right_pt, 18.0)
-
-    if content_width is not None and left_width is None and right_width is None:
-        gutter_width = max(content_width * 0.06, 18.0)
-        column_width = max((content_width - gutter_width) / 2.0, 0.0)
-        left_width = column_width
-        right_width = column_width
-    elif content_width is not None:
-        if left_width is None and right_width is not None:
-            left_width = max(content_width - right_width - gutter_width, 0.0)
-        elif right_width is None and left_width is not None:
-            right_width = max(content_width - left_width - gutter_width, 0.0)
-
-    cells = [
-        TableCellIR(
-            unit_id=f"pdf-preview.p{page.page_number}.column-band.{band_index}.cell.1",
-            row_index=1,
-            col_index=1,
-            cell_style=_column_band_cell_style(left_width),
-            paragraphs=[paragraph.model_copy(deep=True) for paragraph in left_paragraphs],
-        ),
-        TableCellIR(
-            unit_id=f"pdf-preview.p{page.page_number}.column-band.{band_index}.cell.2",
-            row_index=1,
-            col_index=2,
-            cell_style=_column_band_cell_style(gutter_width),
-            paragraphs=[],
-        ),
-        TableCellIR(
-            unit_id=f"pdf-preview.p{page.page_number}.column-band.{band_index}.cell.3",
-            row_index=1,
-            col_index=3,
-            cell_style=_column_band_cell_style(right_width),
-            paragraphs=[paragraph.model_copy(deep=True) for paragraph in right_paragraphs],
-        ),
-    ]
-    for cell in cells:
-        cell.recompute_text()
-
-    table = TableIR(
-        unit_id=f"pdf-preview.p{page.page_number}.column-band.{band_index}",
-        row_count=1,
-        col_count=3,
-        table_style=TableStyleInfo(
-            row_count=1,
-            col_count=3,
-            width_pt=content_width,
-            preview_grid=False,
-        ),
-        cells=cells,
-    )
-    paragraph = ParagraphIR(
-        unit_id=f"{table.unit_id}.paragraph",
-        page_number=page.page_number,
-        text="",
-        content=[table],
-    )
-    paragraph.recompute_text()
-    return paragraph
-
-
-def _materialize_flow_paragraphs(
-    page: PageInfo,
-    entries: list[_PreviewCompositionEntry],
-    *,
-    page_regions: list[PdfLayoutRegion],
-) -> list[ParagraphIR]:
-    ordered_paragraphs = [entry.paragraph for entry in entries if entry.paragraph is not None]
-    has_side_regions = any(region.region_type in {"left", "right"} for region in page_regions)
-    if not has_side_regions:
-        return ordered_paragraphs
-
-    materialized: list[ParagraphIR] = []
-    left_band: list[ParagraphIR] = []
-    right_band: list[ParagraphIR] = []
-    band_index = 0
-
-    def flush_band() -> None:
-        nonlocal band_index, left_band, right_band
-        if not left_band and not right_band:
-            return
-        band_index += 1
-        left_region_bbox = _paragraph_union_bbox(left_band) or _primary_region_bbox(page_regions, region_type="left")
-        right_region_bbox = _paragraph_union_bbox(right_band) or _primary_region_bbox(page_regions, region_type="right")
-        materialized.append(
-            _build_column_band_paragraph(
-                page,
-                band_index=band_index,
-                left_paragraphs=left_band,
-                right_paragraphs=right_band,
-                left_region_bbox=left_region_bbox,
-                right_region_bbox=right_region_bbox,
-            )
-        )
-        left_band = []
-        right_band = []
-
-    for entry in entries:
-        if entry.paragraph is None:
-            continue
-        if entry.region_type == "left":
-            left_band.append(entry.paragraph)
-            continue
-        if entry.region_type == "right":
-            right_band.append(entry.paragraph)
-            continue
-        flush_band()
-        materialized.append(entry.paragraph)
-
-    flush_band()
-    return materialized
-
+# ---------- candidate grouping ----------
+# 가까운 visual block 후보 여러 개를 하나의 layout table로 묶기 위한 로직.
 
 def _span_overlap_ratio(
     left_start: float,
@@ -1388,6 +294,9 @@ def _build_candidate_groups(
     return groups
 
 
+# ---------- node collection ----------
+# page 안의 paragraph/table/image/run을 bbox가 있는 임시 노드로 펼친다.
+
 def _content_node_bbox(node: Any) -> PdfBoundingBox | None:
     return getattr(node, "bbox", None)
 
@@ -1395,6 +304,7 @@ def _content_node_bbox(node: Any) -> PdfBoundingBox | None:
 def _collect_page_render_nodes(
     page_paragraphs: list[ParagraphIR],
 ) -> tuple[list[_PreviewRenderNode], list[_PreviewRenderNode], list[_PreviewRenderNode], list[_PreviewRenderNode]]:
+    """한 페이지의 DocIR 요소들을 visual block 후보에 배정할 수 있는 단위로 수집한다."""
     paragraph_nodes: list[_PreviewRenderNode] = []
     table_nodes: list[_PreviewRenderNode] = []
     image_nodes: list[_PreviewRenderNode] = []
@@ -1450,13 +360,14 @@ def _page_box_candidates(
     ]
 
 
-def _candidate_matches_table_bbox(
+def _candidate_conflicts_with_table_bbox(
     candidate_bbox: PdfBoundingBox,
     table_bbox: PdfBoundingBox,
 ) -> bool:
+    """실제 TableIR와 겹치는 장식 후보를 layout-table 승격에서 제외한다."""
     intersection = _bbox_intersection(candidate_bbox, table_bbox)
     if intersection is None:
-        return False
+        return _shared_bbox_distance(candidate_bbox, table_bbox) <= _CANDIDATE_ASSIGN_TOLERANCE_PT
 
     candidate_area = _bbox_area(candidate_bbox)
     table_area = _bbox_area(table_bbox)
@@ -1466,10 +377,17 @@ def _candidate_matches_table_bbox(
 
     candidate_overlap = intersection_area / candidate_area
     table_overlap = intersection_area / table_area
-    return (
+    close_full_match = (
         candidate_overlap >= 0.82
         and table_overlap >= 0.82
         and _shared_bbox_distance(candidate_bbox, table_bbox) <= 12.0
+    )
+    return (
+        close_full_match
+        or candidate_overlap >= 0.20
+        or table_overlap >= 0.20
+        or _bbox_contains(table_bbox, candidate_bbox, tolerance_pt=_CANDIDATE_ASSIGN_TOLERANCE_PT)
+        or _bbox_contains(candidate_bbox, table_bbox, tolerance_pt=_CANDIDATE_ASSIGN_TOLERANCE_PT)
     )
 
 
@@ -1480,12 +398,13 @@ def _assign_page_nodes_to_candidates(
     page_regions: list[PdfLayoutRegion],
     preview_context: PdfPreviewContext,
 ) -> tuple[list[_AssignedCandidate], set[str], set[str]]:
+    """visual block 후보에 page node들을 배정하고, flow에서 제거할 id도 함께 반환한다."""
     paragraph_nodes, table_nodes, image_nodes, run_nodes = _collect_page_render_nodes(page_paragraphs)
     table_bboxes = [table_node.bbox for table_node in table_nodes]
     candidates = [
         candidate
         for candidate in _page_box_candidates(preview_context, page_number=page.page_number)
-        if not any(_candidate_matches_table_bbox(candidate.bounding_box, table_bbox) for table_bbox in table_bboxes)
+        if not any(_candidate_conflicts_with_table_bbox(candidate.bounding_box, table_bbox) for table_bbox in table_bboxes)
     ]
     if not candidates:
         return [], set(), set()
@@ -1589,6 +508,28 @@ def _filter_page_flow_paragraphs(
             filtered.append(clone)
     return filtered
 
+
+def _promoted_candidate_node_ids(
+    assigned_candidates: list[_AssignedCandidate],
+    *,
+    promoted_candidate_ids: set[int],
+) -> tuple[set[str], set[str]]:
+    """실제로 layout-table로 승격된 candidate의 원본 node id만 제거 대상으로 삼는다."""
+    paragraph_ids: set[str] = set()
+    child_ids: set[str] = set()
+    for assigned_candidate in assigned_candidates:
+        if id(assigned_candidate.candidate) not in promoted_candidate_ids:
+            continue
+        paragraph_ids.update(node.unit_id for node in assigned_candidate.paragraph_nodes)
+        child_ids.update(node.unit_id for node in assigned_candidate.table_nodes)
+        child_ids.update(node.unit_id for node in assigned_candidate.image_nodes)
+        child_ids.update(node.unit_id for node in assigned_candidate.run_nodes)
+    return paragraph_ids, child_ids
+
+
+# ---------- layout table promotion ----------
+# pdfium/ODL visual block 후보를 실제 DocIR의 layout `TableIR`로 승격한다.
+# 표처럼 보이는 박스/선 영역을 flow 안에서 안정적으로 보존하기 위한 preview 보정이다.
 
 def _cluster_boundary_values(
     values: list[float],
@@ -1699,13 +640,11 @@ def _assigned_candidate_real_table_unit_ids(
     return table_unit_ids
 
 
-def _group_has_many_real_tables(
+def _group_has_real_table(
     assigned_candidate_group: _AssignedCandidateGroup,
 ) -> bool:
-    table_unit_ids: set[str] = set()
     for assigned_candidate in assigned_candidate_group.candidates:
-        table_unit_ids.update(_assigned_candidate_real_table_unit_ids(assigned_candidate))
-        if len(table_unit_ids) >= 3:
+        if _assigned_candidate_real_table_unit_ids(assigned_candidate):
             return True
     return False
 
@@ -1787,7 +726,9 @@ def _build_layout_table_paragraph_for_group(
             row_count=max(len(y_boundaries) - 1, 1),
             col_count=max(len(x_boundaries) - 1, 1),
             width_pt=max(group_bbox.right_pt - group_bbox.left_pt, 0.0),
-            preview_grid=len(x_boundaries) > 2 or len(y_boundaries) > 2,
+            # 도식용 layout table은 원본에 있던 박스 cell만 선을 그린다.
+            # 전체 grid를 켜면 빈 filler cell에도 선이 생겨 PDF보다 지저분해진다.
+            preview_grid=False,
         ),
         cells=cells,
     )
@@ -1813,7 +754,7 @@ def _promote_assigned_candidates_to_layout_tables(
     paragraphs: list[ParagraphIR] = []
     promoted_candidate_ids: set[int] = set()
     for group_index, assigned_candidate_group in enumerate(_build_candidate_groups(assigned_candidates, page=page), start=1):
-        if _group_has_many_real_tables(assigned_candidate_group):
+        if _group_has_real_table(assigned_candidate_group):
             continue
         paragraph = _build_layout_table_paragraph_for_group(
             assigned_candidate_group,
@@ -1828,11 +769,554 @@ def _promote_assigned_candidates_to_layout_tables(
     return paragraphs, promoted_candidate_ids
 
 
+def _bbox_union(bboxes: list[PdfBoundingBox | None]) -> PdfBoundingBox | None:
+    filtered = [bbox for bbox in bboxes if bbox is not None]
+    if not filtered:
+        return None
+    return PdfBoundingBox(
+        left_pt=min(bbox.left_pt for bbox in filtered),
+        bottom_pt=min(bbox.bottom_pt for bbox in filtered),
+        right_pt=max(bbox.right_pt for bbox in filtered),
+        top_pt=max(bbox.top_pt for bbox in filtered),
+    )
+
+
+def _page_regions_for_page(preview_context: PdfPreviewContext, page_number: int) -> list[PdfLayoutRegion]:
+    return [region for region in preview_context.layout_regions if region.page_number == page_number]
+
+
+def _paragraph_bbox_or_content(paragraph: ParagraphIR) -> PdfBoundingBox | None:
+    return _paragraph_bbox(paragraph) or _bbox_union([_content_node_bbox(node) for node in paragraph.content])
+
+
+def _apply_region_driven_layout(
+    doc_ir: DocIR,
+    *,
+    preview_context: PdfPreviewContext,
+) -> None:
+    """ODL left-column/right-column을 paragraph.column_layout에 반영한다.
+
+    페이지를 나누지 않고, 같은 페이지 안의 2단 편집을 HTML 렌더러가
+    좌/우 flow로 렌더할 수 있도록 `column_index`만 붙인다.
+    """
+    if not doc_ir.pages:
+        return
+
+    for page in doc_ir.pages:
+        page_regions = _page_regions_for_page(preview_context, page.page_number)
+        left_column_bbox = _bbox_union(
+            [
+                region.bounding_box
+                for region in page_regions
+                if region.region_type == "left-column"
+            ]
+        )
+        right_column_bbox = _bbox_union(
+            [
+                region.bounding_box
+                for region in page_regions
+                if region.region_type == "right-column"
+            ]
+        )
+        if left_column_bbox is None or right_column_bbox is None:
+            continue
+
+        gap_pt = max(right_column_bbox.left_pt - left_column_bbox.right_pt, 0.0)
+        left_width = max(left_column_bbox.right_pt - left_column_bbox.left_pt, 0.0)
+        right_width = max(right_column_bbox.right_pt - right_column_bbox.left_pt, 0.0)
+        if gap_pt <= 0.0 or left_width <= 0.0 or right_width <= 0.0:
+            continue
+
+        layout = ColumnLayoutInfo(
+            count=2,
+            gap_pt=gap_pt,
+            widths_pt=[left_width, right_width],
+            equal_width=abs(left_width - right_width) <= 1.0,
+        )
+
+        for paragraph in [p for p in doc_ir.paragraphs if p.page_number == page.page_number]:
+            bbox = _paragraph_bbox_or_content(paragraph)
+            if bbox is None:
+                continue
+            role = _bbox_region_type(
+                bbox,
+                page=page,
+                page_regions=page_regions,
+                explicit_region_type=None,
+            )
+            if role == "left":
+                paragraph.column_layout = layout.model_copy(update={"column_index": 0}, deep=True)
+            elif role == "right":
+                paragraph.column_layout = layout.model_copy(update={"column_index": 1}, deep=True)
+
+
+def _shift_bbox(bbox: PdfBoundingBox | None, *, origin: PdfBoundingBox) -> PdfBoundingBox | None:
+    if bbox is None:
+        return None
+    return PdfBoundingBox(
+        left_pt=bbox.left_pt - origin.left_pt,
+        bottom_pt=bbox.bottom_pt - origin.bottom_pt,
+        right_pt=bbox.right_pt - origin.left_pt,
+        top_pt=bbox.top_pt - origin.bottom_pt,
+    )
+
+
+def _rebase_bboxes(node: Any, *, origin: PdfBoundingBox) -> None:
+    """left/right-page 분리 후 bbox 좌표계를 새 논리 페이지 원점으로 옮긴다."""
+    if hasattr(node, "bbox"):
+        node.bbox = _shift_bbox(getattr(node, "bbox", None), origin=origin)
+
+    if isinstance(node, ParagraphIR):
+        for child in node.content:
+            _rebase_bboxes(child, origin=origin)
+    elif isinstance(node, TableIR):
+        for cell in node.cells:
+            _rebase_bboxes(cell, origin=origin)
+    elif isinstance(node, TableCellIR):
+        for paragraph in node.paragraphs:
+            _rebase_bboxes(paragraph, origin=origin)
+
+
+def _logical_page_info(source: PageInfo, *, page_number: int, bbox: PdfBoundingBox) -> PageInfo:
+    """모아찍기 분리 후 사용할 논리 PageInfo를 만든다.
+
+    region bbox 크기를 그대로 쓰면 페이지가 너무 작아지므로, 일반 A4처럼
+    portrait 방향으로 정규화한다. source 크기가 없을 때만 bbox 크기로 fallback한다.
+    """
+    page = source.model_copy(deep=True)
+    page.page_number = page_number
+    if source.width_pt is not None and source.height_pt is not None:
+        page.width_pt = min(source.width_pt, source.height_pt)
+        page.height_pt = max(source.width_pt, source.height_pt)
+    else:
+        page.width_pt = _bbox_width(bbox)
+        page.height_pt = _bbox_height(bbox)
+    return page
+
+
+def _split_spread_pages_for_doc(
+    doc_ir: DocIR,
+    *,
+    preview_context: PdfPreviewContext,
+) -> None:
+    """ODL left-page/right-page 모아찍기를 synthetic page 두 장으로 분리한다.
+
+    이 단계는 ODL이 명시적으로 `left-page/right-page`를 준 경우에만 동작한다.
+    `left-column/right-column`은 페이지 분리가 아니라 2단 layout으로 처리한다.
+    """
+    paragraphs_by_page: dict[int, list[ParagraphIR]] = {}
+    unpaged: list[ParagraphIR] = []
+    for paragraph in doc_ir.paragraphs:
+        if paragraph.page_number is None:
+            unpaged.append(paragraph)
+        else:
+            paragraphs_by_page.setdefault(paragraph.page_number, []).append(paragraph)
+
+    next_page_number = 1
+    new_pages: list[PageInfo] = []
+    new_paragraphs: list[ParagraphIR] = []
+
+    for page in doc_ir.pages:
+        page_regions = _page_regions_for_page(preview_context, page.page_number)
+        left_bbox = _bbox_union([region.bounding_box for region in page_regions if region.region_type == "left-page"])
+        right_bbox = _bbox_union([region.bounding_box for region in page_regions if region.region_type == "right-page"])
+        page_paragraphs = paragraphs_by_page.pop(page.page_number, [])
+
+        if left_bbox is None or right_bbox is None:
+            copied_page = page.model_copy(deep=True)
+            copied_page.page_number = next_page_number
+            new_pages.append(copied_page)
+            for paragraph in page_paragraphs:
+                paragraph.page_number = next_page_number
+                new_paragraphs.append(paragraph)
+            next_page_number += 1
+            continue
+
+        split_regions = [region for region in page_regions if region.region_type in {"left-page", "right-page"}]
+        for role_name, region_bbox in (("left", left_bbox), ("right", right_bbox)):
+            new_pages.append(_logical_page_info(page, page_number=next_page_number, bbox=region_bbox))
+            for paragraph in page_paragraphs:
+                role = _bbox_region_type(
+                    _paragraph_bbox_or_content(paragraph),
+                    page=page,
+                    page_regions=split_regions,
+                    explicit_region_type=None,
+                )
+                if role != role_name:
+                    continue
+                cloned = paragraph.model_copy(deep=True)
+                cloned.page_number = next_page_number
+                _rebase_bboxes(cloned, origin=region_bbox)
+                new_paragraphs.append(cloned)
+            next_page_number += 1
+
+    for paragraphs in paragraphs_by_page.values():
+        new_paragraphs.extend(paragraphs)
+
+    doc_ir.pages = new_pages
+    doc_ir.paragraphs = new_paragraphs + unpaged
+
+
+def _bbox_width(bbox: PdfBoundingBox | None) -> float | None:
+    if bbox is None:
+        return None
+    return max(bbox.right_pt - bbox.left_pt, 0.0)
+
+
+def _bbox_height(bbox: PdfBoundingBox | None) -> float | None:
+    if bbox is None:
+        return None
+    return max(bbox.top_pt - bbox.bottom_pt, 0.0)
+
+
+def _bbox_horizontal_slack(container: PdfBoundingBox, content: PdfBoundingBox) -> tuple[float, float]:
+    return (
+        max(content.left_pt - container.left_pt, 0.0),
+        max(container.right_pt - content.right_pt, 0.0),
+    )
+
+
+def _bbox_vertical_slack(container: PdfBoundingBox, content: PdfBoundingBox) -> tuple[float, float]:
+    return (
+        max(container.top_pt - content.top_pt, 0.0),
+        max(content.bottom_pt - container.bottom_pt, 0.0),
+    )
+
+
+def _infer_bbox_horizontal_align(container: PdfBoundingBox, content: PdfBoundingBox) -> str | None:
+    container_width = _bbox_width(container) or 0.0
+    content_width = _bbox_width(content) or 0.0
+    if container_width <= 0.0 or content_width <= 0.0 or content_width >= container_width * 0.92:
+        return None
+
+    left_gap, right_gap = _bbox_horizontal_slack(container, content)
+    slack = left_gap + right_gap
+    if slack < max(container_width * 0.08, 6.0):
+        return None
+    if abs(left_gap - right_gap) <= max(container_width * 0.08, 6.0):
+        return "center"
+    if left_gap >= max(container_width * 0.16, 10.0) and right_gap <= max(slack * 0.18, 4.0):
+        return "right"
+    return None
+
+
+def _infer_bbox_vertical_align(container: PdfBoundingBox, content: PdfBoundingBox) -> str | None:
+    container_height = _bbox_height(container) or 0.0
+    content_height = _bbox_height(content) or 0.0
+    if container_height <= 0.0 or content_height <= 0.0 or content_height >= container_height * 0.86:
+        return None
+
+    top_gap, bottom_gap = _bbox_vertical_slack(container, content)
+    if abs(top_gap - bottom_gap) <= max(container_height * 0.14, 5.0):
+        return "middle"
+    return None
+
+
+def _vertical_overlap_ratio(left: PdfBoundingBox, right: PdfBoundingBox) -> float:
+    overlap = max(0.0, min(left.top_pt, right.top_pt) - max(left.bottom_pt, right.bottom_pt))
+    smaller_height = min(_bbox_height(left) or 0.0, _bbox_height(right) or 0.0)
+    if smaller_height <= 0.0:
+        return 0.0
+    return overlap / smaller_height
+
+
+def _is_layout_row_candidate(paragraph: ParagraphIR) -> bool:
+    """가로 row로 묶을 수 있는 block paragraph인지 본다.
+
+    일반 텍스트 오탐을 줄이기 위해 현재는 ImageIR/TableIR 포함 paragraph만 허용한다.
+    """
+    return any(isinstance(node, (ImageIR, TableIR)) for node in paragraph.content)
+
+
+def _same_layout_row(left: ParagraphIR, right: ParagraphIR) -> bool:
+    """두 block paragraph가 같은 가로 줄에 놓인 것으로 볼 수 있는지 판단한다."""
+    left_bbox = _paragraph_bbox_or_content(left)
+    right_bbox = _paragraph_bbox_or_content(right)
+    if left_bbox is None or right_bbox is None:
+        return False
+
+    left_height = _bbox_height(left_bbox) or 0.0
+    right_height = _bbox_height(right_bbox) or 0.0
+    smaller_height = min(left_height, right_height)
+    if smaller_height <= 0.0:
+        return False
+
+    _left_center_x, left_center_y = _bbox_center(left_bbox)
+    _right_center_x, right_center_y = _bbox_center(right_bbox)
+    center_delta = abs(left_center_y - right_center_y)
+    return (
+        _vertical_overlap_ratio(left_bbox, right_bbox) >= 0.70
+        and center_delta <= max(smaller_height * 0.75, 12.0)
+        and (left_bbox.right_pt <= right_bbox.left_pt or right_bbox.right_pt <= left_bbox.left_pt)
+    )
+
+
+def _column_layout_identity(paragraph: ParagraphIR) -> tuple[object, ...] | None:
+    layout = paragraph.column_layout
+    if layout is None:
+        return None
+    return (
+        layout.count,
+        layout.column_index,
+        round(layout.gap_pt, 3) if layout.gap_pt is not None else None,
+        tuple(round(width, 3) for width in layout.widths_pt),
+        tuple(round(gap, 3) for gap in layout.gaps_pt),
+        layout.equal_width,
+    )
+
+
+def _layout_row_paragraph(
+    *,
+    page_number: int,
+    row_index: int,
+    paragraphs: list[ParagraphIR],
+) -> ParagraphIR:
+    """같은 줄에 놓인 block paragraph들을 1행 N열 borderless TableIR로 감싼다."""
+    ordered = sorted(
+        paragraphs,
+        key=lambda paragraph: (_paragraph_bbox_or_content(paragraph).left_pt if _paragraph_bbox_or_content(paragraph) else 0.0),
+    )
+    row_bbox = _bbox_union([_paragraph_bbox_or_content(paragraph) for paragraph in ordered])
+    cells: list[TableCellIR] = []
+
+    for index, paragraph in enumerate(ordered, start=1):
+        bbox = _paragraph_bbox_or_content(paragraph)
+        next_bbox = _paragraph_bbox_or_content(ordered[index]) if index < len(ordered) else None
+        gap_pt = None
+        if bbox is not None and next_bbox is not None:
+            gap_pt = max(next_bbox.left_pt - bbox.right_pt, 0.0)
+
+        cell_paragraph = paragraph.model_copy(deep=True)
+        cell_paragraph.column_layout = None
+
+        cell = TableCellIR(
+            unit_id=f"pdf-preview.p{page_number}.layout-row.{row_index}.cell.{index}",
+            row_index=1,
+            col_index=index,
+            bbox=bbox,
+            cell_style=CellStyleInfo(
+                width_pt=_bbox_width(bbox),
+                height_pt=_bbox_height(bbox),
+                vertical_align="top",
+                padding_right_pt=gap_pt,
+            ),
+            paragraphs=[cell_paragraph],
+        )
+        cell.recompute_text()
+        cells.append(cell)
+
+    table = TableIR(
+        unit_id=f"pdf-preview.p{page_number}.layout-row.{row_index}",
+        row_count=1,
+        col_count=len(cells),
+        bbox=row_bbox,
+        table_style=TableStyleInfo(
+            row_count=1,
+            col_count=len(cells),
+            width_pt=_bbox_width(row_bbox),
+            height_pt=_bbox_height(row_bbox),
+            preview_grid=False,
+        ),
+        cells=cells,
+    )
+    paragraph = ParagraphIR(
+        unit_id=f"{table.unit_id}.paragraph",
+        page_number=page_number,
+        bbox=row_bbox,
+        column_layout=ordered[0].column_layout.model_copy(deep=True) if ordered[0].column_layout is not None else None,
+        content=[table],
+    )
+    paragraph.recompute_text()
+    return paragraph
+
+
+def _promote_layout_rows_for_doc(doc_ir: DocIR) -> None:
+    """image/table block이 가로로 나란히 놓인 경우 flow 안에서 한 줄로 보존한다."""
+    if not doc_ir.paragraphs:
+        return
+
+    paragraphs_by_page: dict[int, list[ParagraphIR]] = {}
+    unpaged: list[ParagraphIR] = []
+    for paragraph in doc_ir.paragraphs:
+        if paragraph.page_number is None:
+            unpaged.append(paragraph)
+            continue
+        paragraphs_by_page.setdefault(paragraph.page_number, []).append(paragraph)
+
+    new_paragraphs: list[ParagraphIR] = []
+    row_index = 0
+    for page in doc_ir.pages:
+        page_paragraphs = paragraphs_by_page.pop(page.page_number, [])
+        grouped_ids: set[int] = set()
+        replacements: dict[int, ParagraphIR] = {}
+
+        for seed in page_paragraphs:
+            if id(seed) in grouped_ids or not _is_layout_row_candidate(seed):
+                continue
+            seed_layout = _column_layout_identity(seed)
+            row = [
+                candidate
+                for candidate in page_paragraphs
+                if id(candidate) not in grouped_ids
+                and candidate is not seed
+                and _is_layout_row_candidate(candidate)
+                and _column_layout_identity(candidate) == seed_layout
+                and _same_layout_row(seed, candidate)
+            ]
+            if not row:
+                continue
+
+            row_index += 1
+            row.insert(0, seed)
+            replacement = _layout_row_paragraph(
+                page_number=page.page_number,
+                row_index=row_index,
+                paragraphs=row,
+            )
+            replacements[id(seed)] = replacement
+            grouped_ids.update(id(paragraph) for paragraph in row)
+
+        for paragraph in page_paragraphs:
+            if id(paragraph) in replacements:
+                new_paragraphs.append(replacements[id(paragraph)])
+            elif id(paragraph) not in grouped_ids:
+                new_paragraphs.append(paragraph)
+
+    for paragraphs in paragraphs_by_page.values():
+        new_paragraphs.extend(paragraphs)
+    doc_ir.paragraphs = new_paragraphs + unpaged
+
+
+def _paragraph_text_bbox(paragraph: ParagraphIR) -> PdfBoundingBox | None:
+    return _bbox_union([run.bbox for run in paragraph.runs if run.bbox is not None])
+
+
+def _cell_content_bbox(cell: TableCellIR) -> PdfBoundingBox | None:
+    bboxes: list[PdfBoundingBox | None] = []
+    for paragraph in cell.paragraphs:
+        bboxes.append(_paragraph_text_bbox(paragraph) or _paragraph_bbox_or_content(paragraph))
+    return _bbox_union(bboxes)
+
+
+def _apply_table_cell_bbox_style_hints(table: TableIR) -> None:
+    for cell in table.cells:
+        if cell.bbox is None:
+            continue
+        content_bbox = _cell_content_bbox(cell)
+        if content_bbox is None:
+            continue
+
+        style = cell.cell_style
+        if style is None:
+            style = CellStyleInfo()
+            cell.cell_style = style
+
+        if style.horizontal_align is None:
+            style.horizontal_align = _infer_bbox_horizontal_align(cell.bbox, content_bbox)
+        if style.vertical_align is None:
+            style.vertical_align = _infer_bbox_vertical_align(cell.bbox, content_bbox)
+
+
+def _page_content_bbox(page: PageInfo) -> PdfBoundingBox | None:
+    if page.width_pt is None or page.height_pt is None:
+        return None
+    margin_left = _non_negative_value(page.margin_left_pt, default=42.0)
+    margin_right = _non_negative_value(page.margin_right_pt, default=42.0)
+    margin_top = _non_negative_value(page.margin_top_pt, default=48.0)
+    margin_bottom = _non_negative_value(page.margin_bottom_pt, default=48.0)
+    return PdfBoundingBox(
+        left_pt=margin_left,
+        bottom_pt=margin_bottom,
+        right_pt=max(page.width_pt - margin_right, margin_left),
+        top_pt=max(page.height_pt - margin_top, margin_bottom),
+    )
+
+
+def _non_negative_value(value: float | None, *, default: float) -> float:
+    if value is None:
+        return default
+    return max(value, 0.0)
+
+
+def _apply_paragraph_bbox_style_hints(
+    paragraph: ParagraphIR,
+    *,
+    container_bbox: PdfBoundingBox,
+) -> None:
+    if paragraph.column_layout is not None:
+        return
+
+    bbox = _paragraph_text_bbox(paragraph) or _paragraph_bbox(paragraph)
+    if bbox is None:
+        return
+
+    style = paragraph.para_style
+    if style is None:
+        style = ParaStyleInfo()
+        paragraph.para_style = style
+
+    if style.align is None:
+        style.align = _infer_bbox_horizontal_align(container_bbox, bbox)
+
+    if style.align is not None:
+        return
+    if style.left_indent_pt is not None:
+        return
+
+    left_indent = bbox.left_pt - container_bbox.left_pt
+    content_width = _bbox_width(container_bbox) or 0.0
+    if 4.0 <= left_indent <= content_width * 0.35:
+        style.left_indent_pt = left_indent
+
+
+def _apply_table_tree_bbox_style_hints(table: TableIR) -> None:
+    for cell in table.cells:
+        container_bbox = cell.bbox or table.bbox
+        if container_bbox is None:
+            continue
+        for paragraph in cell.paragraphs:
+            _apply_paragraph_tree_bbox_style_hints(paragraph, container_bbox=container_bbox)
+    _apply_table_cell_bbox_style_hints(table)
+
+
+def _apply_paragraph_tree_bbox_style_hints(
+    paragraph: ParagraphIR,
+    *,
+    container_bbox: PdfBoundingBox,
+) -> None:
+    for node in paragraph.content:
+        if isinstance(node, TableIR):
+            _apply_table_tree_bbox_style_hints(node)
+    _apply_paragraph_bbox_style_hints(paragraph, container_bbox=container_bbox)
+
+
+def _apply_bbox_style_hints(doc_ir: DocIR) -> None:
+    """PDF bbox를 공통 style hint로 바꿔 HTML/HWP 렌더러가 재사용하게 한다."""
+    pages = {page.page_number: page for page in doc_ir.pages}
+    for paragraph in doc_ir.paragraphs:
+        if paragraph.page_number is None:
+            continue
+        page = pages.get(paragraph.page_number)
+        if page is None:
+            continue
+        page_bbox = _page_content_bbox(page)
+        if page_bbox is None:
+            continue
+        _apply_paragraph_tree_bbox_style_hints(paragraph, container_bbox=page_bbox)
+
+
+# ---------- public surface ----------
+
 def prepare_pdf_for_html(
     doc_ir: DocIR,
     *,
     preview_context: PdfPreviewContext | None = None,
 ) -> DocIR:
+    """PDF DocIR를 공통 HTML 렌더러에 넘기기 전에 preview용으로 보정한다.
+
+    호출 순서가 중요하다. 먼저 visual block을 TableIR로 승격하고, spread page를
+    나눈 뒤, 남은 page 안에서 column/layout-row 보정을 적용한다.
+    """
     if (doc_ir.source_doc_type or "").lower() != "pdf":
         return doc_ir
 
@@ -1842,8 +1326,85 @@ def prepare_pdf_for_html(
     # unaware of PDF-specific extraction quirks.
     enrich_pdf_table_borders(doc_ir)
     enrich_pdf_table_backgrounds(doc_ir)
-    _normalize_pdf_doc_for_flow(doc_ir, preview_context=preview_context)
+    if preview_context is not None:
+        _promote_visual_boxes_for_doc(doc_ir, preview_context=preview_context)
+        _split_spread_pages_for_doc(doc_ir, preview_context=preview_context)
+        _apply_region_driven_layout(doc_ir, preview_context=preview_context)
+        _promote_layout_rows_for_doc(doc_ir)
+    _apply_bbox_style_hints(doc_ir)
     return doc_ir
+
+
+def _promote_visual_boxes_for_doc(
+    doc_ir: DocIR,
+    *,
+    preview_context: PdfPreviewContext,
+) -> None:
+    """각 물리 페이지에서 visual block 후보를 layout TableIR로 승격한다."""
+    if not doc_ir.pages or not preview_context.visual_block_candidates:
+        return
+
+    paragraphs_by_page: dict[int, list[ParagraphIR]] = {}
+    unpaged: list[ParagraphIR] = []
+    for paragraph in doc_ir.paragraphs:
+        if paragraph.page_number is None:
+            unpaged.append(paragraph)
+            continue
+        paragraphs_by_page.setdefault(paragraph.page_number, []).append(paragraph)
+
+    handled_page_numbers: set[int] = set()
+    new_paragraphs: list[ParagraphIR] = []
+    residual_candidate_ids: set[int] = set()
+
+    for page in doc_ir.pages:
+        handled_page_numbers.add(page.page_number)
+        page_paragraphs = paragraphs_by_page.get(page.page_number, [])
+        page_regions = [
+            region
+            for region in preview_context.layout_regions
+            if region.page_number == page.page_number
+        ]
+        assigned_candidates, _assigned_paragraph_ids, _assigned_child_ids = _assign_page_nodes_to_candidates(
+            page,
+            page_paragraphs,
+            page_regions=page_regions,
+            preview_context=preview_context,
+        )
+        promoted_paragraphs, promoted_candidate_ids = _promote_assigned_candidates_to_layout_tables(
+            assigned_candidates,
+            page=page,
+        )
+        promoted_paragraph_ids, promoted_child_ids = _promoted_candidate_node_ids(
+            assigned_candidates,
+            promoted_candidate_ids=promoted_candidate_ids,
+        )
+        flow_paragraphs = _filter_page_flow_paragraphs(
+            page_paragraphs,
+            assigned_paragraph_ids=promoted_paragraph_ids,
+            assigned_child_ids=promoted_child_ids,
+        )
+        flow_paragraphs.extend(promoted_paragraphs)
+
+        # Preserve visual reading order across original paragraphs and promoted tables.
+        indexed = list(enumerate(flow_paragraphs))
+        indexed.sort(key=lambda item: _bbox_order_key(_paragraph_bbox(item[1]), fallback_index=item[0]))
+        new_paragraphs.extend(paragraph for _, paragraph in indexed)
+
+        for assigned_candidate in assigned_candidates:
+            if id(assigned_candidate.candidate) not in promoted_candidate_ids:
+                residual_candidate_ids.add(id(assigned_candidate.candidate))
+
+    # Carry along paragraphs whose page number doesn't match any DocIR page.
+    for page_number, paragraphs in paragraphs_by_page.items():
+        if page_number not in handled_page_numbers:
+            new_paragraphs.extend(paragraphs)
+
+    doc_ir.paragraphs = new_paragraphs + unpaged
+    preview_context.visual_block_candidates = [
+        candidate
+        for candidate in preview_context.visual_block_candidates
+        if id(candidate) in residual_candidate_ids
+    ]
 
 
 def _apply_preview_table_geometry(
@@ -1851,6 +1412,7 @@ def _apply_preview_table_geometry(
     *,
     preview_context: PdfPreviewContext | None,
 ) -> DocIR:
+    """ODL table grid boundary를 기존 TableIR의 width/height/cell size에 반영한다."""
     if preview_context is None or not preview_context.tables:
         return doc_ir
 
@@ -1877,24 +1439,11 @@ def _match_preview_table_context(
     paragraph_page_number: int | None,
     table,
 ) -> PdfPreviewTableContext | None:
-    table_meta = getattr(table, "meta", None)
-    page_number = getattr(table_meta, "page_number", None) or paragraph_page_number
-    layout_region_id = getattr(table_meta, "layout_region_id", None)
-    reading_order_index = getattr(table_meta, "reading_order_index", None)
-    bounding_box = getattr(table, "bbox", None) or getattr(table_meta, "bounding_box", None)
+    page_number = paragraph_page_number
+    bounding_box = getattr(table, "bbox", None)
 
     if page_number is None:
         return None
-
-    exact_key_matches = [
-        candidate
-        for candidate in candidates
-        if candidate.page_number == page_number
-        and candidate.layout_region_id == layout_region_id
-        and candidate.reading_order_index == reading_order_index
-    ]
-    if exact_key_matches:
-        return exact_key_matches[0]
 
     if bounding_box is None:
         return None

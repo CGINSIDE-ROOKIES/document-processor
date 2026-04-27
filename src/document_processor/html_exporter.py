@@ -46,6 +46,37 @@ def _column_group_css(layout: ColumnLayoutInfo) -> str:
     return ";".join(parts)
 
 
+def _column_grid_css(layout: ColumnLayoutInfo) -> str:
+    parts = [
+        "display:grid",
+        "grid-template-columns:minmax(0,1fr) minmax(0,1fr)",
+        "align-items:start",
+        "break-inside:auto",
+    ]
+    gap_pt = _non_negative_pt(layout.gap_pt)
+    if gap_pt is not None:
+        parts.append(f"column-gap:{gap_pt:.1f}pt")
+        parts.append(f"gap:0 {gap_pt:.1f}pt")
+    return ";".join(parts)
+
+
+def _indexed_columns(paragraphs: list[ParagraphIR]) -> tuple[list[ParagraphIR], list[ParagraphIR]] | None:
+    left_paragraphs: list[ParagraphIR] = []
+    right_paragraphs: list[ParagraphIR] = []
+    for paragraph in paragraphs:
+        column_index = paragraph.column_layout.column_index if paragraph.column_layout is not None else None
+        if column_index == 0:
+            left_paragraphs.append(paragraph)
+        elif column_index == 1:
+            right_paragraphs.append(paragraph)
+        else:
+            return None
+
+    if not left_paragraphs or not right_paragraphs:
+        return None
+    return left_paragraphs, right_paragraphs
+
+
 def _html_attrs(
     *,
     style: str | None = None,
@@ -450,14 +481,6 @@ def _render_paragraph_like(
     *,
     debug_layout: bool = False,
 ) -> str:
-    if content and all(isinstance(node, ImageIR) for node in content) and len(content) > 1:
-        image_fragments = [
-            _render_image(doc_ir, node, block=True)
-            for node in content
-            if isinstance(node, ImageIR)
-        ]
-        return f'<div style="margin:0;line-height:0">{"".join(fragment for fragment in image_fragments if fragment)}</div>'
-
     parts: list[str] = []
     inline_fragments: list[str] = []
 
@@ -636,6 +659,33 @@ def _render_column_group(
         return ""
 
     layout = paragraphs[0].column_layout
+    indexed_columns = _indexed_columns(paragraphs) if layout.count == 2 else None
+    if indexed_columns is not None:
+        left_paragraphs, right_paragraphs = indexed_columns
+        attrs = [
+            'class="document-column-group document-column-group--indexed"',
+            'data-column-mode="indexed"',
+            f'data-column-count="{max(layout.count, 1)}"',
+            f'style="{_column_grid_css(layout)}"',
+        ]
+        if debug_layout:
+            attrs.append(f'data-debug-label="{escape(_column_group_debug_label(layout, paragraphs), quote=True)}"')
+
+        left_html = "\n\n".join(
+            _render_paragraph(doc_ir, paragraph, debug_layout=debug_layout)
+            for paragraph in left_paragraphs
+        )
+        right_html = "\n\n".join(
+            _render_paragraph(doc_ir, paragraph, debug_layout=debug_layout)
+            for paragraph in right_paragraphs
+        )
+        return (
+            f"<div {' '.join(attrs)}>"
+            f'<div class="document-column" data-column-index="1">{left_html or "&nbsp;"}</div>'
+            f'<div class="document-column" data-column-index="2">{right_html or "&nbsp;"}</div>'
+            "</div>"
+        )
+
     attrs = [
         'class="document-column-group"',
         f'data-column-count="{max(layout.count, 1)}"',

@@ -150,18 +150,21 @@ def _iter_paragraph_table_candidates(
     page_heights: dict[int, float],
 ):
     for table in paragraph.tables:
-        yield from _iter_table_candidates(table, page_heights=page_heights)
+        yield from _iter_table_candidates(
+            table,
+            page_number=paragraph.page_number,
+            page_heights=page_heights,
+        )
 
 
 def _iter_table_candidates(
     table: TableIR,
     *,
+    page_number: int | None,
     page_heights: dict[int, float],
 ):
     for cell in table.cells:
-        cell_meta = getattr(cell, "meta", None)
-        page_number = getattr(cell_meta, "page_number", None)
-        cell_bbox = getattr(cell, "bbox", None) or getattr(cell_meta, "bounding_box", None)
+        cell_bbox = getattr(cell, "bbox", None)
         page_height_pt = page_heights.get(page_number)
         if page_number is not None and cell_bbox is not None and page_height_pt is not None:
             yield page_number, cell, page_height_pt

@@ -8,10 +8,9 @@ from typing import Any
 from ..models import DocIR, PageInfo
 from .config import PdfParseConfig
 from .enhancement import enrich_pdf_table_borders
-from .meta import PdfDocumentMeta
 from .odl import build_doc_ir_from_odl_result, preprocess_dotted_rule_splits, run_odl_json
 from .parsing import PageClass, PdfProfile, decide_page, probe_pdf
-from .preview.context import build_pdf_preview_context
+from .preview.context import build_pdf_preview_context, collect_pdfium_visual_block_candidates
 from .preview.models import PdfPreviewContext
 
 
@@ -73,18 +72,19 @@ def _parse_pdf_to_doc_ir_with_preview(
                 "image_output": resolved_config.odl.image_output or "embedded",
             },
         )
-        # The same raw document feeds two outputs:
-        # 1. canonical DocIR
-        # 2. preview-only sidecar context
-        preview_context = build_pdf_preview_context(
-            raw_document,
-            pdf_path=source_path,
-            page_numbers=structured_pages,
-        )
         preprocess_dotted_rule_splits(
             raw_document,
             pdf_path=source_path,
             page_numbers=structured_pages,
+        )
+        # The dotted-rule pass mutates raw table structure. Build preview context
+        # after it so table grid hints match the final DocIR TableIR shape.
+        preview_context = build_pdf_preview_context(raw_document)
+        preview_context.visual_block_candidates.extend(
+            collect_pdfium_visual_block_candidates(
+                pdf_path=source_path,
+                page_numbers=structured_pages,
+            )
         )
         doc_ir = build_doc_ir_from_odl_result(
             raw_document,
@@ -114,19 +114,6 @@ def _parse_pdf_to_doc_ir_with_preview(
             pdf_path=source_path,
             dpi=resolved_config.table_border_dpi,
         )
-    document_meta = (
-        doc_ir.meta.model_copy(deep=True)
-        if isinstance(doc_ir.meta, PdfDocumentMeta)
-        else PdfDocumentMeta()
-    )
-    document_meta.structured_pages = structured_pages
-    document_meta.scan_like_pages = [
-        decision.page_number
-        for decision in page_decisions
-        if decision.page_class == PageClass.SCAN_LIKE
-    ]
-    doc_ir.meta = document_meta
-    doc_ir.set_pdf_preview_context(preview_context)
     return doc_ir, preview_context
 
 

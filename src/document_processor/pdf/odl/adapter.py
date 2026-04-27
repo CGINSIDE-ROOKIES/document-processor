@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -9,10 +10,6 @@ from ...models import DocIR, ImageAsset, ImageIR, PageInfo, ParagraphIR, RunIR, 
 from ...style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
 from ..meta import (
     PdfBoundingBox,
-    PdfDocumentMeta,
-    PdfNodeMeta,
-    build_pdf_document_meta,
-    build_pdf_node_meta,
     coerce_bbox,
     coerce_float,
     coerce_int,
@@ -26,6 +23,12 @@ from ..meta import (
 
 _STRIP_CONNECTOR_CHARS = frozenset({"➡", "→", "➜", "➝", "←", "↑", "↓", "↔", "↕", ""})
 _STRIP_ROW_TOLERANCE_PT = 18.0
+
+
+@dataclass(frozen=True)
+class _OdlNodeGeometry:
+    page_number: int | None = None
+    bounding_box: PdfBoundingBox | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +150,29 @@ def _page_number_from_node(node: dict[str, Any]) -> int | None:
     return coerce_int(node.get("page number"))
 
 
+def _node_geometry(node: dict[str, Any]) -> _OdlNodeGeometry | None:
+    geometry = _OdlNodeGeometry(
+        page_number=_page_number_from_node(node),
+        bounding_box=coerce_bbox(node.get("bounding box")),
+    )
+    return geometry if geometry.page_number is not None or geometry.bounding_box is not None else None
+
+
+def _compose_node_geometry(
+    primary: _OdlNodeGeometry | None,
+    fallback: _OdlNodeGeometry | None,
+) -> _OdlNodeGeometry | None:
+    if primary is None:
+        return fallback
+    if fallback is None:
+        return primary
+    geometry = _OdlNodeGeometry(
+        page_number=primary.page_number if primary.page_number is not None else fallback.page_number,
+        bounding_box=primary.bounding_box if primary.bounding_box is not None else fallback.bounding_box,
+    )
+    return geometry if geometry.page_number is not None or geometry.bounding_box is not None else None
+
+
 def _border_css(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
@@ -178,8 +204,8 @@ def _paragraph_from_text_node(
     node: dict[str, Any],
     *,
     unit_id: str,
-    paragraph_meta: PdfNodeMeta | None = None,
-    run_meta: PdfNodeMeta | None = None,
+    paragraph_geometry: _OdlNodeGeometry | None = None,
+    run_geometry: _OdlNodeGeometry | None = None,
     style_node: dict[str, Any] | None = None,
     default_page_number: int | None = None,
 ) -> ParagraphIR | None:
@@ -189,21 +215,20 @@ def _paragraph_from_text_node(
     if not text.strip() and node.get("type") not in {"caption", "header", "footer", "formula"}:
         return None
     style_source = style_node or node
-    resolved_meta = paragraph_meta if paragraph_meta is not None else build_pdf_node_meta(node)
-    resolved_run_meta = run_meta if run_meta is not None else resolved_meta
+    resolved_geometry = paragraph_geometry if paragraph_geometry is not None else _node_geometry(node)
+    resolved_run_geometry = run_geometry if run_geometry is not None else resolved_geometry
     content = _runs_from_text_node(
         node,
         unit_id=unit_id,
         style_node=style_source,
-        run_meta=resolved_run_meta,
+        run_geometry=resolved_run_geometry,
     ) if text else []
     return ParagraphIR(
         unit_id=unit_id,
         text=text,
-        page_number=_page_number_from_node(style_source) or _page_number_from_node(node) or default_page_number,
-        bbox=resolved_meta.bounding_box if resolved_meta is not None else None,
+        page_number=_page_number_from_node(style_source) or _page_number_from_node(node) or (resolved_geometry.page_number if resolved_geometry is not None else None) or default_page_number,
+        bbox=resolved_geometry.bounding_box if resolved_geometry is not None else None,
         para_style=_para_style_from_node(style_source),
-        meta=resolved_meta,
         content=content,
     )
 
@@ -221,20 +246,22 @@ def _paragraphs_from_container_node(
     paragraphs/tables/images and appended in reading order.
     """
     paragraphs: list[ParagraphIR] = []
-    container_meta = build_pdf_node_meta(node)
+    node_type = node.get("type")
+    container_geometry = _node_geometry(node)
     default_page_number = _page_number_from_node(node)
 
     for child_index, child in enumerate(node.get("kids", []), start=1):
         child_type = child.get("type")
         child_unit_id = f"{unit_prefix}.c{child_index}"
         if child_type == "table":
+            child_geometry = _compose_node_geometry(_node_geometry(child), container_geometry)
             paragraphs.append(
                 ParagraphIR(
                     unit_id=child_unit_id,
                     text="",
                     page_number=_page_number_from_node(child) or default_page_number,
+                    bbox=child_geometry.bounding_box if child_geometry is not None else None,
                     para_style=_para_style_from_node(child),
-                    meta=build_pdf_node_meta(child) or container_meta,
                     content=[
                         _table_node_to_ir(
                             child,
@@ -249,8 +276,6 @@ def _paragraphs_from_container_node(
             paragraph = _image_paragraph(child, unit_id=child_unit_id, assets=assets)
             if paragraph.page_number is None:
                 paragraph.page_number = default_page_number
-            if paragraph.meta is None:
-                paragraph.meta = container_meta
             paragraphs.append(paragraph)
             continue
         if child_type == "list":
@@ -266,8 +291,8 @@ def _paragraphs_from_container_node(
         paragraph = _paragraph_from_text_node(
             child,
             unit_id=child_unit_id,
-            paragraph_meta=container_meta,
-            run_meta=build_pdf_node_meta(child),
+            paragraph_geometry=_compose_node_geometry(_node_geometry(child), container_geometry),
+            run_geometry=_compose_node_geometry(_node_geometry(child), container_geometry),
             style_node=child,
             default_page_number=default_page_number,
         )
@@ -280,27 +305,10 @@ def _paragraphs_from_container_node(
     paragraph = _paragraph_from_text_node(
         node,
         unit_id=unit_prefix,
-        paragraph_meta=container_meta,
+        paragraph_geometry=container_geometry,
         default_page_number=default_page_number,
     )
     return [paragraph] if paragraph is not None else []
-
-
-def _compose_pdf_node_meta(
-    primary: PdfNodeMeta | None,
-    fallback: PdfNodeMeta | None,
-) -> PdfNodeMeta | None:
-    if primary is None:
-        return fallback
-    if fallback is None:
-        return primary
-    merged = PdfNodeMeta(
-        **{
-            **fallback.model_dump(exclude_defaults=True, exclude_none=True),
-            **primary.model_dump(exclude_defaults=True, exclude_none=True),
-        }
-    )
-    return merged if merged.model_dump(exclude_defaults=True, exclude_none=True) else None
 
 
 def _merged_style_node(
@@ -324,7 +332,7 @@ def _runs_from_text_node(
     *,
     unit_id: str,
     style_node: dict[str, Any],
-    run_meta: PdfNodeMeta | None,
+    run_geometry: _OdlNodeGeometry | None,
 ) -> list[RunIR]:
     """Convert ODL spans into RunIR and merge adjacent identical runs.
 
@@ -342,9 +350,8 @@ def _runs_from_text_node(
             RunIR(
                 unit_id=f"{unit_id}.r1",
                 text=text,
-                bbox=run_meta.bounding_box if run_meta is not None else None,
+                bbox=run_geometry.bounding_box if run_geometry is not None else None,
                 run_style=_run_style_from_node(style_node),
-                meta=run_meta,
             )
         ]
 
@@ -354,14 +361,13 @@ def _runs_from_text_node(
         if not isinstance(span_text, str):
             continue
         span_style_node = _merged_style_node(span, style_node)
-        span_meta = _compose_pdf_node_meta(build_pdf_node_meta(span), run_meta)
+        span_geometry = _compose_node_geometry(_node_geometry(span), run_geometry)
         runs.append(
             RunIR(
                 unit_id=f"{unit_id}.r{index}",
                 text=span_text,
-                bbox=span_meta.bounding_box if span_meta is not None else None,
+                bbox=span_geometry.bounding_box if span_geometry is not None else None,
                 run_style=_run_style_from_node(span_style_node),
-                meta=span_meta,
             )
         )
     if runs:
@@ -372,9 +378,8 @@ def _runs_from_text_node(
         RunIR(
             unit_id=f"{unit_id}.r1",
             text=text,
-            bbox=run_meta.bounding_box if run_meta is not None else None,
+            bbox=run_geometry.bounding_box if run_geometry is not None else None,
             run_style=_run_style_from_node(style_node),
-            meta=run_meta,
         )
     ]
 
@@ -392,40 +397,19 @@ def _merge_adjacent_runs(runs: list[RunIR]) -> list[RunIR]:
         if _can_merge_runs(current, run):
             current.text += run.text
             current.bbox = _merge_bounding_boxes(current.bbox, run.bbox)
-            current.meta = _merge_run_meta(current.meta, run.meta)
             continue
         merged_runs.append(run.model_copy(deep=True))
     return merged_runs
 
 
 def _can_merge_runs(left: RunIR, right: RunIR) -> bool:
-    return _run_style_signature(left.run_style) == _run_style_signature(
-        right.run_style
-    ) and _run_meta_signature(left.meta) == _run_meta_signature(right.meta)
+    return _run_style_signature(left.run_style) == _run_style_signature(right.run_style)
 
 
 def _run_style_signature(style: RunStyleInfo | None) -> dict[str, Any] | None:
     if style is None:
         return None
     return style.model_dump(exclude_defaults=True, exclude_none=True)
-
-
-def _run_meta_signature(meta: PdfNodeMeta | None) -> dict[str, Any] | None:
-    if meta is None:
-        return None
-    signature = meta.model_dump(exclude_defaults=True, exclude_none=True)
-    signature.pop("bounding_box", None)
-    return signature
-
-
-def _merge_run_meta(left: PdfNodeMeta | None, right: PdfNodeMeta | None) -> PdfNodeMeta | None:
-    if left is None:
-        return right
-    if right is None:
-        return left
-    merged = left.model_copy(deep=True)
-    merged.bounding_box = _merge_bounding_boxes(left.bounding_box, right.bounding_box)
-    return merged if merged.model_dump(exclude_defaults=True, exclude_none=True) else None
 
 
 def _merge_bounding_boxes(
@@ -475,7 +459,6 @@ def _append_image_asset(
         data_base64=data_base64,
         intrinsic_width_px=coerce_int(node_value(node, "width px", "image width")),
         intrinsic_height_px=coerce_int(node_value(node, "height px", "image height")),
-        meta=build_pdf_node_meta(node),
     )
 
 
@@ -487,21 +470,20 @@ def _image_paragraph(
 ) -> ParagraphIR:
     _append_image_asset(assets, node=node, unit_id=unit_id)
     display_width_pt, display_height_pt = _display_size_from_node(node)
-    image_meta = build_pdf_node_meta(node)
+    image_geometry = _node_geometry(node)
     return ParagraphIR(
         unit_id=unit_id,
         text="",
         page_number=_page_number_from_node(node),
-        bbox=image_meta.bounding_box if image_meta is not None else None,
+        bbox=image_geometry.bounding_box if image_geometry is not None else None,
         para_style=_para_style_from_node(node),
-        meta=image_meta,
         content=[
             ImageIR(
                 unit_id=f"{unit_id}.img1",
                 image_id=f"odl-img-{unit_id}",
                 alt_text=node_value(node, "alt text"),
                 title=node_value(node, "title", "name"),
-                bbox=image_meta.bounding_box if image_meta is not None else None,
+                bbox=image_geometry.bounding_box if image_geometry is not None else None,
                 display_width_pt=display_width_pt,
                 display_height_pt=display_height_pt,
             )
@@ -528,15 +510,14 @@ def _cell_paragraphs(
         unit_id = f"{cell_unit_id}.p{child_index + 1}"
         if child_type == "table":
             child_index += 1
-            child_meta = build_pdf_node_meta(child)
+            child_geometry = _node_geometry(child)
             paragraphs.append(
                 ParagraphIR(
                     unit_id=unit_id,
                     text="",
                     page_number=_page_number_from_node(child) or default_page_number,
-                    bbox=child_meta.bounding_box if child_meta is not None else None,
+                    bbox=child_geometry.bounding_box if child_geometry is not None else None,
                     para_style=_para_style_from_node(child),
-                    meta=child_meta,
                     content=[
                         _table_node_to_ir(
                             child,
@@ -568,7 +549,6 @@ def _cell_paragraphs(
                 text="",
                 page_number=default_page_number,
                 bbox=None,
-                meta=PdfNodeMeta(page_number=default_page_number),
             )
         )
     return paragraphs
@@ -620,7 +600,7 @@ def _table_node_to_ir(
     ``preprocess_dotted_rule_splits`` so the raw structure is already complete
     by the time we arrive here.
     """
-    table_meta = build_pdf_node_meta(node)
+    table_geometry = _node_geometry(node)
     resolved_cells = _iter_raw_table_cells(node)
     row_count = coerce_int(node.get("number of rows")) or 0
     col_count = coerce_int(node.get("number of columns")) or 0
@@ -633,14 +613,13 @@ def _table_node_to_ir(
         unit_id=unit_id,
         row_count=row_count,
         col_count=col_count,
-        bbox=table_meta.bounding_box if table_meta is not None else None,
+        bbox=table_geometry.bounding_box if table_geometry is not None else None,
         table_style=table_style,
-        meta=table_meta,
     )
     for cell in resolved_cells:
         row_index = coerce_int(cell.get("row number")) or 1
         col_index = coerce_int(cell.get("column number")) or 1
-        cell_meta = build_pdf_node_meta(cell)
+        cell_geometry = _node_geometry(cell)
         cell_style = _cell_style_from_node(cell)
         if cell_style is not None:
             cell_style.rowspan = max(coerce_int(cell.get("row span")) or 1, 1)
@@ -651,8 +630,7 @@ def _table_node_to_ir(
             col_index=col_index,
             rowspan=max(coerce_int(cell.get("row span")) or 1, 1),
             colspan=max(coerce_int(cell.get("column span")) or 1, 1),
-            cell_bbox=cell_meta.bounding_box if cell_meta is not None else None,
-            cell_meta=cell_meta,
+            cell_bbox=cell_geometry.bounding_box if cell_geometry is not None else None,
             cell_style=cell_style,
             children=cell.get("kids", []),
             unit_id=unit_id,
@@ -670,7 +648,6 @@ def _append_table_cell(
     rowspan: int,
     colspan: int,
     cell_bbox: PdfBoundingBox | None,
-    cell_meta: PdfNodeMeta | None,
     cell_style: CellStyleInfo | None,
     children: list[dict[str, Any]],
     unit_id: str,
@@ -689,7 +666,6 @@ def _append_table_cell(
             text=extract_text_from_odl_children(children),
             bbox=cell_bbox,
             cell_style=cell_style,
-            meta=cell_meta,
             paragraphs=_cell_paragraphs(
                 children,
                 cell_unit_id=cell_unit_id,
@@ -886,6 +862,7 @@ def _paragraphs_from_list_node(
     *,
     unit_prefix: str,
     assets: dict[str, ImageAsset],
+    list_level: int = 1,
 ) -> list[ParagraphIR]:
     """Flatten list items into normal paragraph units.
 
@@ -897,10 +874,12 @@ def _paragraphs_from_list_node(
     for index, item in enumerate(node.get("list items", []), start=1):
         unit_id = f"{unit_prefix}.li{index}"
         item_paragraphs: list[ParagraphIR] = []
+        item_geometry = _node_geometry(item)
         paragraph = _paragraph_from_text_node(
             item,
             unit_id=unit_id,
-            paragraph_meta=build_pdf_node_meta(item),
+            paragraph_geometry=item_geometry,
+            run_geometry=item_geometry,
         )
         if paragraph is not None:
             item_paragraphs.append(paragraph)
@@ -914,18 +893,18 @@ def _paragraphs_from_list_node(
                         child,
                         unit_prefix=child_unit_id,
                         assets=assets,
-                                )
+                        list_level=list_level + 1,
+                    )
                 )
             elif child_type == "table":
-                child_meta = build_pdf_node_meta(child)
+                child_geometry = _node_geometry(child)
                 child_paragraphs.append(
                     ParagraphIR(
                         unit_id=child_unit_id,
                         text="",
                         page_number=_page_number_from_node(child),
-                        bbox=child_meta.bounding_box if child_meta is not None else None,
+                        bbox=child_geometry.bounding_box if child_geometry is not None else None,
                         para_style=_para_style_from_node(child),
-                        meta=child_meta,
                         content=[
                             _table_node_to_ir(
                                 child,
@@ -936,9 +915,15 @@ def _paragraphs_from_list_node(
                     )
                 )
             elif child_type == "image":
-                child_paragraphs.append(_image_paragraph(child, unit_id=child_unit_id, assets=assets))
+                paragraph = _image_paragraph(child, unit_id=child_unit_id, assets=assets)
+                child_paragraphs.append(paragraph)
             else:
-                nested_paragraph = _paragraph_from_text_node(child, unit_id=child_unit_id)
+                nested_paragraph = _paragraph_from_text_node(
+                    child,
+                    unit_id=child_unit_id,
+                    paragraph_geometry=_compose_node_geometry(_node_geometry(child), item_geometry),
+                    run_geometry=_compose_node_geometry(_node_geometry(child), item_geometry),
+                )
                 if nested_paragraph is not None:
                     child_paragraphs.append(nested_paragraph)
         item_paragraphs.extend(
@@ -996,6 +981,87 @@ def _page_infos_from_odl(raw_document: dict[str, Any]) -> list[PageInfo]:
     ]
 
 
+def _layout_region_bboxes(raw_document: dict[str, Any]) -> dict[str, list[float]]:
+    region_bboxes: dict[str, list[float]] = {}
+    for region in raw_document.get("layout regions", []) or []:
+        if not isinstance(region, dict):
+            continue
+        region_id = region.get("region id")
+        bbox = region.get("bounding box")
+        if isinstance(region_id, str) and isinstance(bbox, list) and len(bbox) == 4:
+            region_bboxes[region_id] = bbox
+    return region_bboxes
+
+
+def _fill_missing_bboxes_from_layout_regions(value: Any, region_bboxes: dict[str, list[float]]) -> None:
+    if isinstance(value, dict):
+        region_id = value.get("layout region id")
+        if "bounding box" not in value and isinstance(region_id, str) and region_id in region_bboxes:
+            value["bounding box"] = list(region_bboxes[region_id])
+        for child in value.values():
+            _fill_missing_bboxes_from_layout_regions(child, region_bboxes)
+        return
+    if isinstance(value, list):
+        for child in value:
+            _fill_missing_bboxes_from_layout_regions(child, region_bboxes)
+
+
+def _canonicalize_top_level_paragraphs(paragraphs: list[ParagraphIR]) -> list[ParagraphIR]:
+    canonical: list[ParagraphIR] = []
+    for paragraph_index, paragraph in enumerate(paragraphs, start=1):
+        clone = paragraph.model_copy(deep=True)
+        _canonicalize_paragraph_unit_ids(
+            clone,
+            unit_id=f"s1.p{paragraph_index}",
+            top_level=True,
+        )
+        canonical.append(clone)
+    return canonical
+
+
+def _canonicalize_paragraph_unit_ids(
+    paragraph: ParagraphIR,
+    *,
+    unit_id: str,
+    top_level: bool,
+) -> None:
+    paragraph.unit_id = unit_id
+    run_index = 0
+    image_index = 0
+    table_index = 0
+    for node in paragraph.content:
+        if isinstance(node, RunIR):
+            run_index += 1
+            node.unit_id = f"{unit_id}.r{run_index}"
+            continue
+        if isinstance(node, ImageIR):
+            image_index += 1
+            node.unit_id = f"{unit_id}.img{image_index}"
+            continue
+        if isinstance(node, TableIR):
+            table_index += 1
+            table_unit_id = (
+                f"{unit_id}.r1.tbl{table_index}"
+                if top_level
+                else f"{unit_id}.tbl{table_index}"
+            )
+            _canonicalize_table_unit_ids(node, unit_id=table_unit_id)
+    paragraph.recompute_text()
+
+
+def _canonicalize_table_unit_ids(table: TableIR, *, unit_id: str) -> None:
+    table.unit_id = unit_id
+    for cell in table.cells:
+        cell.unit_id = f"{unit_id}.tr{cell.row_index}.tc{cell.col_index}"
+        for paragraph_index, paragraph in enumerate(cell.paragraphs, start=1):
+            _canonicalize_paragraph_unit_ids(
+                paragraph,
+                unit_id=f"{cell.unit_id}.p{paragraph_index}",
+                top_level=False,
+            )
+        cell.recompute_text()
+
+
 def build_doc_ir_from_odl_result(
     raw_document: dict[str, Any],
     *,
@@ -1008,9 +1074,11 @@ def build_doc_ir_from_odl_result(
 
     Important design choice:
     - top-level content stays flat in ``DocIR.paragraphs``
-    - page/region/layout information remains metadata
+    - page/bbox information is copied into first-class DocIR fields
     - preview-only raw fields are intentionally *not* mirrored into DocIR
     """
+    _fill_missing_bboxes_from_layout_regions(raw_document, _layout_region_bboxes(raw_document))
+
     assets: dict[str, ImageAsset] = {}
     paragraphs: list[ParagraphIR] = []
 
@@ -1020,15 +1088,14 @@ def build_doc_ir_from_odl_result(
         unit_id = f"p{order + 1}"
         if node_type == "table":
             order += 1
-            node_meta = build_pdf_node_meta(node)
+            node_geometry = _node_geometry(node)
             paragraphs.append(
                 ParagraphIR(
                     unit_id=unit_id,
                     text="",
                     page_number=_page_number_from_node(node),
-                    bbox=node_meta.bounding_box if node_meta is not None else None,
+                    bbox=node_geometry.bounding_box if node_geometry is not None else None,
                     para_style=_para_style_from_node(node),
-                    meta=node_meta,
                     content=[
                         _table_node_to_ir(
                             node,
@@ -1072,15 +1139,14 @@ def build_doc_ir_from_odl_result(
                 child_unit_id = f"p{order + 1}"
                 if child.get("type") == "table":
                     order += 1
-                    child_meta = build_pdf_node_meta(child)
+                    child_geometry = _node_geometry(child)
                     paragraphs.append(
                         ParagraphIR(
                             unit_id=child_unit_id,
                             text="",
                             page_number=_page_number_from_node(child),
-                            bbox=child_meta.bounding_box if child_meta is not None else None,
+                            bbox=child_geometry.bounding_box if child_geometry is not None else None,
                             para_style=_para_style_from_node(child),
-                            meta=child_meta,
                             content=[
                                 _table_node_to_ir(
                                     child,
@@ -1118,15 +1184,14 @@ def build_doc_ir_from_odl_result(
     resolved_doc_id = doc_id or raw_document.get("file name")
     if resolved_doc_id and "." in resolved_doc_id:
         resolved_doc_id = Path(resolved_doc_id).stem
-    document_meta: PdfDocumentMeta = build_pdf_document_meta(raw_document)
+    canonical_paragraphs = _canonicalize_top_level_paragraphs(paragraphs)
     return resolved_doc_cls(
         doc_id=resolved_doc_id,
-        meta=document_meta if document_meta.model_dump(exclude_defaults=True, exclude_none=True) else None,
         source_path=resolved_source_path,
         source_doc_type="pdf",
         assets=assets,
         pages=_page_infos_from_odl(raw_document),
-        paragraphs=paragraphs,
+        paragraphs=canonical_paragraphs,
         **doc_kwargs,
     )
 

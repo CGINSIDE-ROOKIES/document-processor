@@ -97,7 +97,7 @@ PDF uses a dedicated pipeline:
 
 When HTML is requested, the PDF path adds one more preview step:
 
-- `DocIR -> pdf/preview.py -> shared html exporter`
+- `DocIR -> pdf.preview.normalize/render -> shared html exporter`
 
 The adapter preserves and normalizes:
 
@@ -105,16 +105,22 @@ The adapter preserves and normalizes:
 - `spans[]` -> `RunIR[]`
 - table/cell/span structure
 - run style fields such as font family, size, color, underline, strikethrough
-- PDF node metadata such as page number, bounding box, `layout_region_id`, `reading_order_index`
+- first-class DocIR page numbers and bounding boxes copied from ODL geometry
 
 The preview path additionally uses raw ODL-derived hints such as:
 
 - `layout regions[]`
 - `grid row boundaries`
 - `grid column boundaries`
+- visual block candidates
 
-The core `DocIR` model stays shared. PDF-specific preview behavior lives in
-[`preview.py`](/Users/yoonseo/Developer/External/document-processor/src/document_processor/pdf/preview.py).
+The core `DocIR` model stays shared. Current PDF-specific state is split into:
+
+- canonical structure in `DocIR`
+- style-projectable results in `StyleMap`
+- preview-only layout hints in the runtime `PdfPreviewContext`
+
+The preview renderer uses explicit runtime preview context. Preview layout hints are not persisted in `DocIR.meta`.
 
 
 ## Preview Fidelity Options

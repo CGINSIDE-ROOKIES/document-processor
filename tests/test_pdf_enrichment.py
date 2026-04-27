@@ -20,8 +20,10 @@ from document_processor.pdf.enhancement import (
     infer_cell_background_from_rendered_page,
     infer_cell_borders_from_rendered_page,
 )
-from document_processor.pdf.meta import PdfBoundingBox, PdfNodeMeta
+from document_processor.pdf.meta import PdfBoundingBox
 from document_processor.pdf.preview import prepare_pdf_for_html
+from document_processor.pdf.preview.models import PdfPreviewContext
+from document_processor.pdf.preview.render import render_pdf_preview_html
 from document_processor.style_types import CellStyleInfo, TableStyleInfo
 
 
@@ -96,24 +98,21 @@ class PdfEnrichmentTests(unittest.TestCase):
                 paragraphs=[
                     ParagraphIR(
                         unit_id="p1",
+                        page_number=1,
                         content=[
                             TableIR(
                                 unit_id="p1.tbl1",
-                                meta=PdfNodeMeta(page_number=1),
                                 table_style=TableStyleInfo(preview_grid=True),
                                 cells=[
                                     TableCellIR(
                                         unit_id="p1.tbl1.tr1.tc1",
                                         row_index=1,
                                         col_index=1,
-                                        meta=PdfNodeMeta(
-                                            page_number=1,
-                                            bounding_box=PdfBoundingBox(
-                                                left_pt=10.0,
-                                                bottom_pt=10.0,
-                                                right_pt=30.0,
-                                                top_pt=30.0,
-                                            ),
+                                        bbox=PdfBoundingBox(
+                                            left_pt=10.0,
+                                            bottom_pt=10.0,
+                                            right_pt=30.0,
+                                            top_pt=30.0,
                                         ),
                                     )
                                 ],
@@ -148,10 +147,10 @@ class PdfEnrichmentTests(unittest.TestCase):
                 paragraphs=[
                     ParagraphIR(
                         unit_id="p1",
+                        page_number=1,
                         content=[
                             TableIR(
                                 unit_id="p1.tbl1",
-                                meta=PdfNodeMeta(page_number=1),
                                 table_style=TableStyleInfo(preview_grid=True),
                                 cells=[
                                     TableCellIR(
@@ -164,14 +163,11 @@ class PdfEnrichmentTests(unittest.TestCase):
                                             border_left="1px solid",
                                             border_right="1px solid",
                                         ),
-                                        meta=PdfNodeMeta(
-                                            page_number=1,
-                                            bounding_box=PdfBoundingBox(
-                                                left_pt=10.0,
-                                                bottom_pt=10.0,
-                                                right_pt=30.0,
-                                                top_pt=30.0,
-                                            ),
+                                        bbox=PdfBoundingBox(
+                                            left_pt=10.0,
+                                            bottom_pt=10.0,
+                                            right_pt=30.0,
+                                            top_pt=30.0,
                                         ),
                                     )
                                 ],
@@ -218,24 +214,21 @@ class PdfEnrichmentTests(unittest.TestCase):
                 paragraphs=[
                     ParagraphIR(
                         unit_id="p1",
+                        page_number=1,
                         content=[
                             TableIR(
                                 unit_id="p1.tbl1",
-                                meta=PdfNodeMeta(page_number=1),
                                 table_style=TableStyleInfo(preview_grid=True),
                                 cells=[
                                     TableCellIR(
                                         unit_id="p1.tbl1.tr1.tc1",
                                         row_index=1,
                                         col_index=1,
-                                        meta=PdfNodeMeta(
-                                            page_number=1,
-                                            bounding_box=PdfBoundingBox(
-                                                left_pt=10.0,
-                                                bottom_pt=10.0,
-                                                right_pt=30.0,
-                                                top_pt=30.0,
-                                            ),
+                                        bbox=PdfBoundingBox(
+                                            left_pt=10.0,
+                                            bottom_pt=10.0,
+                                            right_pt=30.0,
+                                            top_pt=30.0,
                                         ),
                                     )
                                 ],
@@ -266,31 +259,58 @@ class PdfEnrichmentTests(unittest.TestCase):
         enrich_borders.assert_called_once_with(doc)
         enrich_backgrounds.assert_called_once_with(doc)
 
-    def test_docir_to_html_routes_pdf_with_attached_preview_context_through_preview_path(self) -> None:
+    def test_render_pdf_preview_html_accepts_explicit_preview_context(self) -> None:
         doc = DocIR(source_doc_type="pdf", source_path="/tmp/example.pdf")
-        attached_context = object()
-        doc.set_pdf_preview_context(attached_context)
+        attached_context = PdfPreviewContext()
+
+        with patch("document_processor.pdf.preview.render.prepare_pdf_for_html") as prepare_pdf, patch(
+            "document_processor.pdf.preview.render.render_html_document"
+        ) as render_html:
+            prepare_pdf.side_effect = lambda prepared_doc, preview_context=None: prepared_doc
+            render_html.return_value = "<html>preview</html>"
+
+            html = render_pdf_preview_html(doc, preview_context=attached_context)
+
+        self.assertEqual(html, "<html>preview</html>")
+        prepare_pdf.assert_called_once()
+        self.assertEqual(
+            prepare_pdf.call_args.kwargs["preview_context"].model_dump(),
+            attached_context.model_dump(),
+        )
+
+    def test_docir_to_html_routes_pdf_without_attached_preview_context_through_preview_renderer(self) -> None:
+        doc = DocIR(source_doc_type="pdf", source_path="/tmp/example.pdf")
 
         with patch("document_processor.pdf.preview.render.render_pdf_preview_html") as render_preview:
             render_preview.return_value = "<html>preview</html>"
-
-            html = doc.to_html()
-
-        self.assertEqual(html, "<html>preview</html>")
-        render_preview.assert_called_once_with(doc, preview_context=attached_context, title=None)
-
-    def test_docir_to_html_routes_pdf_without_attached_preview_context_through_render_prep(self) -> None:
-        doc = DocIR(source_doc_type="pdf", source_path="/tmp/example.pdf")
-
-        with patch("document_processor.render_prep.prepare_doc_ir_for_html") as prepare_doc:
             doc.to_html()
 
-        prepare_doc.assert_called_once_with(doc)
+        render_preview.assert_called_once_with(doc, title=None)
 
-    def test_docir_to_html_routes_pdf_without_source_path_through_render_prep(self) -> None:
+    def test_docir_to_html_routes_pdf_without_source_path_through_preview_renderer(self) -> None:
         doc = DocIR(source_doc_type="pdf")
 
-        with patch("document_processor.render_prep.prepare_doc_ir_for_html") as prepare_doc:
+        with patch("document_processor.pdf.preview.render.render_pdf_preview_html") as render_preview:
+            render_preview.return_value = "<html>preview</html>"
             doc.to_html()
 
-        prepare_doc.assert_called_once_with(doc)
+        render_preview.assert_called_once_with(doc, title=None)
+
+    def test_render_pdf_preview_html_does_not_restore_preview_context_from_doc_meta(self) -> None:
+        doc = DocIR(
+            source_doc_type="pdf",
+            source_path="/tmp/example.pdf",
+            pages=[PageInfo(page_number=1, width_pt=200, height_pt=120)],
+            paragraphs=[ParagraphIR(unit_id="s1.p1", page_number=1, text="Preview body")],
+        )
+
+        with patch("document_processor.pdf.preview.render.prepare_pdf_for_html") as prepare_pdf, patch(
+            "document_processor.pdf.preview.render.render_html_document",
+            return_value="<html>body</html>",
+        ) as render_html:
+            prepare_pdf.side_effect = lambda prepared_doc, preview_context=None: prepared_doc
+            html = render_pdf_preview_html(doc, title="Preview")
+
+        self.assertIn("body", html)
+        render_html.assert_called_once()
+        self.assertIsNone(prepare_pdf.call_args.kwargs["preview_context"])

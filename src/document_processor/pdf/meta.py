@@ -5,8 +5,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from pydantic import BaseModel, Field
-
 from ..models import BoundingBox
 
 _HEX_COLOR_RE = re.compile(r"^#[0-9A-Fa-f]{3}([0-9A-Fa-f]{3})?([0-9A-Fa-f]{2})?$")
@@ -16,26 +14,6 @@ _BRACKETED_NUMBER_RE = re.compile(r"^\[\s*([^\]]+)\s*\]$")
 
 
 PdfBoundingBox = BoundingBox
-
-
-class PdfNodeMeta(BaseModel):
-    page_number: int | None = None
-    bounding_box: PdfBoundingBox | None = None
-    linked_content_id: int | None = None
-    layout_region_id: str | None = None
-    reading_order_index: int | None = None
-
-
-class PdfDocumentMeta(BaseModel):
-    parser: str = "odl-local"
-    file_name: str | None = None
-    number_of_pages: int | None = None
-    author: str | None = None
-    title: str | None = None
-    creation_date: str | None = None
-    modification_date: str | None = None
-    structured_pages: list[int] = Field(default_factory=list)
-    scan_like_pages: list[int] = Field(default_factory=list)
 
 
 def node_value(node: dict[str, Any], *keys: str) -> Any:
@@ -92,36 +70,6 @@ def coerce_bbox(value: Any) -> PdfBoundingBox | None:
         bottom_pt=bottom,
         right_pt=right,
         top_pt=top,
-    )
-
-
-def build_pdf_node_meta(node: dict[str, Any]) -> PdfNodeMeta | None:
-    meta = PdfNodeMeta(
-        page_number=coerce_int(node.get("page number")),
-        bounding_box=coerce_bbox(node.get("bounding box")),
-        linked_content_id=coerce_int(node.get("linked content id")),
-        layout_region_id=node.get("layout region id")
-        if isinstance(node.get("layout region id"), str)
-        else None,
-        reading_order_index=coerce_int(node.get("reading order index")),
-    )
-    return meta if meta.model_dump(exclude_defaults=True, exclude_none=True) else None
-
-
-def build_pdf_document_meta(raw_document: dict[str, Any]) -> PdfDocumentMeta:
-    return PdfDocumentMeta(
-        file_name=raw_document.get("file name")
-        if isinstance(raw_document.get("file name"), str)
-        else None,
-        number_of_pages=coerce_int(raw_document.get("number of pages")),
-        author=raw_document.get("author") if isinstance(raw_document.get("author"), str) else None,
-        title=raw_document.get("title") if isinstance(raw_document.get("title"), str) else None,
-        creation_date=raw_document.get("creation date")
-        if isinstance(raw_document.get("creation date"), str)
-        else None,
-        modification_date=raw_document.get("modification date")
-        if isinstance(raw_document.get("modification date"), str)
-        else None,
     )
 
 
@@ -249,10 +197,6 @@ def extract_text_from_odl_node(node: dict[str, Any]) -> str:
 
 __all__ = [
     "PdfBoundingBox",
-    "PdfDocumentMeta",
-    "PdfNodeMeta",
-    "build_pdf_document_meta",
-    "build_pdf_node_meta",
     "coerce_float",
     "coerce_bbox",
     "coerce_int",

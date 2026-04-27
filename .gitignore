@@ -222,6 +222,7 @@ src/document_processor/pdf/__pycache__/
 # docs for local development
 docs
 graphify-out/
+.graphify_python
 
 # local experimental scripts
 scripts

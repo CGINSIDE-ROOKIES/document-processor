@@ -1,9 +1,13 @@
-"""Preview model and constant definitions."""
+"""PDF preview 전용 모델과 threshold 상수.
+
+여기 모델들은 canonical DocIR에 넣기 애매한 PDF 전용 sidecar 정보다.
+ODL layout region, pdfium에서 뽑은 선/박스 primitive, visual block 후보,
+그리고 normalize 단계에서 임시로 쓰는 매칭 결과를 정의한다.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-import re
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -12,7 +16,6 @@ from ...models import ImageIR, ParagraphIR, RunIR, TableIR
 from ..meta import PdfBoundingBox
 
 _VISUAL_TOUCH_TOLERANCE_PT = 1.0
-_VISUAL_DIVIDER_SPAN_RATIO = 0.80
 _VISUAL_MIN_LINE_SEGMENT_PT = 5.0
 _VISUAL_SEGMENTED_AXIS_TOLERANCE_PT = 1.0
 _VISUAL_SEGMENTED_GAP_TOLERANCE_PT = 3.0
@@ -23,28 +26,17 @@ _VISUAL_FRAME_MIN_SIZE_PT = 10.0
 _VISUAL_OPEN_FRAME_PRIMITIVE_LIMIT = 500
 _CANDIDATE_ASSIGN_TOLERANCE_PT = 2.0
 _VISUAL_BOX_SEED_MIN_SIZE_PT = 4.0
-_VISUAL_BOUNDARY_SUPPRESSION_TOLERANCE_PT = 2.0
-_VISUAL_BOUNDARY_SUPPRESSION_OVERLAP_RATIO = 0.85
 _VISUAL_LINE_JOIN_TOLERANCE_PT = 1.5
 _LAYOUT_TABLE_GROUP_GAP_TOLERANCE_PT = 18.0
 _LAYOUT_TABLE_ALIGNMENT_OVERLAP_RATIO = 0.75
 _LAYOUT_TABLE_BOUNDARY_TOLERANCE_PT = 4.0
-_LOGICAL_PAGE_NUMBER_FOOTER_TOP_RATIO = 0.14
-_LOGICAL_PAGE_NUMBER_MAX_WIDTH_RATIO = 0.18
-_LOGICAL_PAGE_NUMBER_TEXT_RE = re.compile(r"^\s*[-–—]?\s*[\(\[\{]?\s*(\d{1,4})\s*[\)\]\}]?\s*[-–—]?\s*$")
-_COLUMN_BAND_CENTER_OFFSET_RATIO = 0.08
-_COLUMN_BAND_GUTTER_MIN_WIDTH_PT = 12.0
-_COLUMN_BAND_GUTTER_MIN_WIDTH_RATIO = 0.03
-_COLUMN_BAND_MIN_HEIGHT_PT = 24.0
-_COLUMN_BAND_SPLIT_MERGE_TOLERANCE_PT = 24.0
-_IMAGE_STRIP_MIN_GROUP_SIZE = 3
-_IMAGE_STRIP_MAX_HEIGHT_RATIO = 0.20
-_IMAGE_STRIP_MIN_SPAN_OVERLAP_RATIO = 0.92
-_IMAGE_STRIP_MAX_CENTER_DELTA_RATIO = 0.03
-_IMAGE_STRIP_MAX_GAP_PT = 6.0
-
 
 class PdfLayoutRegion(BaseModel):
+    """ODL raw의 layout region.
+
+    `left-page/right-page`는 모아찍힌 논리 페이지 분리용이고,
+    `left-column/right-column`은 2단 flow 렌더용 힌트다.
+    """
     region_id: str
     region_type: str
     page_number: int
@@ -52,22 +44,15 @@ class PdfLayoutRegion(BaseModel):
 
 
 class PdfPreviewTableContext(BaseModel):
+    """ODL table의 grid boundary 정보를 HTML table geometry에 보강하기 위한 context."""
     page_number: int | None = None
     bounding_box: PdfBoundingBox | None = None
-    layout_region_id: str | None = None
-    reading_order_index: int | None = None
     grid_row_boundaries: list[float] = Field(default_factory=list)
     grid_column_boundaries: list[float] = Field(default_factory=list)
-    serialized_cell_count: int | None = None
-    logical_cell_count: int | None = None
-    covered_logical_cell_count: int | None = None
-    non_empty_cell_count: int | None = None
-    empty_cell_count: int | None = None
-    spanning_cell_count: int | None = None
-    line_art_boxes: list[PdfBoundingBox] = Field(default_factory=list)
 
 
 class PdfPreviewVisualPrimitive(BaseModel):
+    """pdfium에서 추출한 선/박스 같은 저수준 시각 요소."""
     page_number: int
     draw_order: int
     object_type: str
@@ -82,6 +67,7 @@ class PdfPreviewVisualPrimitive(BaseModel):
 
 
 class PdfPreviewVisualBlockCandidate(BaseModel):
+    """시각 요소들을 묶어 만든 layout table 승격 후보."""
     page_number: int
     candidate_type: str
     bounding_box: PdfBoundingBox
@@ -91,6 +77,7 @@ class PdfPreviewVisualBlockCandidate(BaseModel):
 
 
 class PdfPreviewContext(BaseModel):
+    """PDF preview normalize에 필요한 sidecar 정보 묶음."""
     layout_regions: list[PdfLayoutRegion] = Field(default_factory=list)
     tables: list[PdfPreviewTableContext] = Field(default_factory=list)
     visual_block_candidates: list[PdfPreviewVisualBlockCandidate] = Field(default_factory=list)
@@ -98,6 +85,7 @@ class PdfPreviewContext(BaseModel):
 
 @dataclass(slots=True)
 class _PreviewRenderNode:
+    """paragraph/table/image/run을 bbox 기준으로 후보 영역에 배정하기 위한 임시 노드."""
     kind: str
     unit_id: str
     bbox: PdfBoundingBox
@@ -112,6 +100,7 @@ class _PreviewRenderNode:
 
 @dataclass(slots=True)
 class _AssignedCandidate:
+    """visual block candidate 하나에 실제 DocIR 노드들이 배정된 결과."""
     candidate: PdfPreviewVisualBlockCandidate
     region_type: str
     top_offset_pt: float | None
@@ -125,42 +114,13 @@ class _AssignedCandidate:
 
 @dataclass(slots=True)
 class _AssignedCandidateGroup:
+    """인접한 assigned candidate들을 하나의 layout table로 승격하기 위한 그룹."""
     candidates: list[_AssignedCandidate]
     region_type: str
     top_offset_pt: float | None
     bottom_offset_pt: float | None
     order_key: tuple[float, float, int, int]
     bounding_box: PdfBoundingBox
-
-
-@dataclass(slots=True)
-class _LogicalPage:
-    page_number: int
-    physical_page_number: int
-    logical_page_type: str
-    bounding_box: PdfBoundingBox
-    source_region_ids: list[str]
-    scale_factor: float = 1.0
-    target_width_pt: float | None = None
-    target_height_pt: float | None = None
-
-
-@dataclass(slots=True)
-class _PreviewCompositionEntry:
-    item_type: str
-    region_type: str
-    top_offset_pt: float | None
-    bottom_offset_pt: float | None
-    order_key: tuple[float, float, int, int]
-    bounding_box: PdfBoundingBox | None
-    paragraph: ParagraphIR | None = None
-
-
-@dataclass(slots=True)
-class _LogicalPageComposition:
-    ordered_paragraphs: list[ParagraphIR]
-    assigned_candidates: list[_AssignedCandidate]
-    promoted_candidate_ids: set[int]
 
 
 __all__ = [
@@ -172,7 +132,4 @@ __all__ = [
     "_PreviewRenderNode",
     "_AssignedCandidate",
     "_AssignedCandidateGroup",
-    "_LogicalPage",
-    "_PreviewCompositionEntry",
-    "_LogicalPageComposition",
 ]

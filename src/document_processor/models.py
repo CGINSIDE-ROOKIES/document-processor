@@ -7,7 +7,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, BinaryIO, Generic, TypeAlias, TypeVar
 
-from pydantic import BaseModel, Field, PrivateAttr, computed_field
+from pydantic import BaseModel, Field, computed_field
 
 from .io_utils import TemporarySourcePath, coerce_source_to_supported_value, get_source_name, infer_doc_type
 from .style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
@@ -89,6 +89,7 @@ class ColumnLayoutInfo(BaseModel):
     """Active text-column layout for a paragraph or section."""
 
     count: int = 1
+    column_index: int | None = None
     gap_pt: float | None = None
     widths_pt: list[float] = Field(default_factory=list)
     gaps_pt: list[float] = Field(default_factory=list)
@@ -99,6 +100,7 @@ class ImageIR(BaseModel, Generic[T]):
     """Image placement node inside paragraph-like content."""
 
     model_config = {"validate_assignment": True}
+    meta: T | None = None
 
     unit_id: str
     image_id: str
@@ -204,8 +206,6 @@ class TableIR(BaseModel, Generic[T]):
 class DocIR(BaseModel, Generic[T]):
     """Top-level structural document IR."""
 
-    _pdf_preview_context: Any = PrivateAttr(default=None)
-
     meta: T | None = None
 
     doc_id: str | None = None
@@ -224,12 +224,6 @@ class DocIR(BaseModel, Generic[T]):
         image_id = image_or_id if isinstance(image_or_id, str) else image_or_id.image_id
         return self.assets.get(image_id)
 
-    def set_pdf_preview_context(self, preview_context: Any) -> None:
-        self._pdf_preview_context = preview_context
-
-    def get_pdf_preview_context(self) -> Any:
-        return self._pdf_preview_context
-
     @classmethod
     def from_file(
         cls,
@@ -247,27 +241,15 @@ class DocIR(BaseModel, Generic[T]):
         from .core.style_extractor import extract_styles
 
         resolved_doc_type = infer_doc_type(source, doc_type)  # type: ignore[arg-type]
-        if resolved_doc_type == "pdf":
-            from .pdf import parse_pdf_to_doc_ir
-
-            # PDF uses a dedicated pipeline so probe/ODL routing stays isolated from
-            # the DOCX/HWP(HWPX) parsers below.
-            with TemporarySourcePath(source, suffix=".pdf") as source_path:
-                return parse_pdf_to_doc_ir(
-                    source_path,
-                    doc_id=doc_id,
-                    doc_cls=cls,
-                    **doc_kwargs,
-                )
-
         source_name = get_source_name(source)
         resolved_source_path = source_name
 
-        if resolved_doc_type == "hwp":
-            with TemporarySourcePath(source, suffix=".hwp") as source_path:
+        if resolved_doc_type in {"hwp", "pdf"}:
+            suffix = ".hwp" if resolved_doc_type == "hwp" else ".pdf"
+            with TemporarySourcePath(source, suffix=suffix) as source_path:
                 doc_ir = build_doc_ir_from_file(
                     source_path,
-                    doc_type="hwp",
+                    doc_type=resolved_doc_type,
                     skip_empty=skip_empty,
                     include_tables=include_tables,
                     source_path=resolved_source_path,
@@ -278,7 +260,7 @@ class DocIR(BaseModel, Generic[T]):
                 )
                 style_map = extract_styles(
                     source_path,
-                    doc_type="hwp",
+                    doc_type=resolved_doc_type,
                     include_tables=include_tables,
                 )
         else:
@@ -338,10 +320,7 @@ class DocIR(BaseModel, Generic[T]):
         """Render this document IR as styled HTML."""
         if (self.source_doc_type or "").lower() == "pdf":
             from .pdf.preview.render import render_pdf_preview_html
-
-            preview_context = self.get_pdf_preview_context()
-            if preview_context is not None:
-                return render_pdf_preview_html(self, preview_context=preview_context, title=title)
+            return render_pdf_preview_html(self, title=title)
 
         from .render_prep import prepare_doc_ir_for_html
         from .html_exporter import render_html_document

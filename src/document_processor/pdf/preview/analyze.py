@@ -1,17 +1,19 @@
-"""PDF preview analysis helpers."""
+"""pdfium 시각 primitive 분석 코드.
+
+ODL이 텍스트/표 구조를 잘 못 잡는 경우를 보완하기 위해 PDF 페이지의 선,
+박스, 배경 도형을 pdfium으로 직접 읽는다. 여기서는 그런 저수준 primitive를
+정리해서 dotted/segmented rule, axis-aligned box, visual block 후보로
+바꾸는 일만 한다. DocIR 수정은 `normalize.py`에서 한다.
+"""
 
 from __future__ import annotations
 
 from ...models import PageInfo
 from ..meta import PdfBoundingBox
 from .models import (
-    PdfLayoutRegion,
     PdfPreviewVisualBlockCandidate,
     PdfPreviewVisualPrimitive,
-    _VISUAL_BOUNDARY_SUPPRESSION_OVERLAP_RATIO,
-    _VISUAL_BOUNDARY_SUPPRESSION_TOLERANCE_PT,
     _VISUAL_BOX_SEED_MIN_SIZE_PT,
-    _VISUAL_DIVIDER_SPAN_RATIO,
     _VISUAL_FRAME_MIN_SIZE_PT,
     _VISUAL_LINE_JOIN_TOLERANCE_PT,
     _VISUAL_MIN_LINE_SEGMENT_PT,
@@ -34,6 +36,9 @@ from .shared import (
     _shared_page_content_margins,
     _union_box_bounds,
 )
+
+
+# ---------- primitive 판별/기본 geometry ----------
 
 def _has_visible_stroke(primitive: PdfPreviewVisualPrimitive) -> bool:
     if not primitive.has_stroke:
@@ -268,18 +273,6 @@ def _primitive_is_long_rule(primitive: PdfPreviewVisualPrimitive) -> bool:
     return "long_vertical_rule" in roles or "long_horizontal_rule" in roles
 
 
-def _line_like_bbox_orientation(bbox: PdfBoundingBox) -> str | None:
-    width = max(bbox.right_pt - bbox.left_pt, 0.0)
-    height = max(bbox.top_pt - bbox.bottom_pt, 0.0)
-    if width <= 0.0 or height <= 0.0:
-        return None
-    if width >= height * 4.0 and height <= _VISUAL_BOUNDARY_SUPPRESSION_TOLERANCE_PT * 2.0:
-        return "horizontal"
-    if height >= width * 4.0 and width <= _VISUAL_BOUNDARY_SUPPRESSION_TOLERANCE_PT * 2.0:
-        return "vertical"
-    return None
-
-
 def _bbox_overlap_ratio(left: PdfBoundingBox, right: PdfBoundingBox) -> float:
     intersection = _bbox_intersection(left, right)
     if intersection is None:
@@ -332,80 +325,7 @@ def _point_bucket_keys(point: tuple[float, float], *, tolerance_pt: float) -> li
     ]
 
 
-def _pdfium_text_boxes(page) -> list[tuple[float, float, float, float]]:  # noqa: ANN001
-    textpage = page.get_textpage()
-    rect_count = textpage.count_rects()
-    boxes: list[tuple[float, float, float, float]] = []
-    for rect_index in range(rect_count):
-        left, bottom, right, top = textpage.get_rect(rect_index)
-        if right <= left or top <= bottom:
-            continue
-        boxes.append((left, bottom, right, top))
-    return boxes
-
-
-def _has_central_vertical_gutter(
-    text_boxes: list[tuple[float, float, float, float]],
-    *,
-    page_width: float,
-) -> bool:
-    if not text_boxes:
-        return False
-
-    content_bottom = min(box[1] for box in text_boxes)
-    content_top = max(box[3] for box in text_boxes)
-    content_height = max(content_top - content_bottom, 1.0)
-
-    strip_half_width = max(page_width * 0.01, 4.0)
-    center_x = page_width / 2.0
-    probe_offsets = (-0.03, -0.02, -0.01, 0.0, 0.01, 0.02, 0.03)
-
-    for offset in probe_offsets:
-        x_center = center_x + page_width * offset
-        intervals = [
-            (box[1], box[3])
-            for box in text_boxes
-            if box[2] >= x_center - strip_half_width and box[0] <= x_center + strip_half_width
-        ]
-        if not intervals:
-            return True
-
-        merged = _merge_intervals(intervals)
-        longest_gap = _longest_interval_gap(merged, start=content_bottom, end=content_top)
-        if longest_gap >= content_height * 0.60:
-            return True
-
-    return False
-
-
-def _merge_intervals(intervals: list[tuple[float, float]]) -> list[tuple[float, float]]:
-    if not intervals:
-        return []
-
-    merged: list[tuple[float, float]] = []
-    for start, end in sorted(intervals):
-        if not merged or start > merged[-1][1]:
-            merged.append((start, end))
-            continue
-        merged[-1] = (merged[-1][0], max(merged[-1][1], end))
-    return merged
-
-
-def _longest_interval_gap(
-    intervals: list[tuple[float, float]],
-    *,
-    start: float,
-    end: float,
-) -> float:
-    cursor = start
-    longest = 0.0
-    for left, right in intervals:
-        if left > cursor:
-            longest = max(longest, left - cursor)
-        cursor = max(cursor, right)
-    longest = max(longest, end - cursor)
-    return longest
-
+# ---------- pdfium 객체 추출 ----------
 
 def _extract_pdfium_visual_primitives(
     page,  # noqa: ANN001
@@ -478,7 +398,7 @@ def extract_pdfium_table_rule_primitives(
     page_number: int,
     raw_module=None,  # noqa: ANN001
 ) -> list[PdfPreviewVisualPrimitive]:
-    """Expose line-like PDFium primitives for canonical table split enrichment."""
+    """canonical table split 보강용 선 primitive만 외부에 공개한다."""
 
     primitives = _extract_pdfium_visual_primitives(
         page,
@@ -491,6 +411,8 @@ def extract_pdfium_table_rule_primitives(
         if {"horizontal_line_segment", "vertical_line_segment"} & set(primitive.candidate_roles)
     ]
 
+
+# ---------- dotted/segmented rule과 box edge 합성 ----------
 
 def _build_segmented_rule_primitives(
     primitives: list[PdfPreviewVisualPrimitive],
@@ -866,6 +788,7 @@ def _candidate_roles_for_visual_primitive(
 def _build_visual_block_candidates(
     primitives: list[PdfPreviewVisualPrimitive],
 ) -> list[PdfPreviewVisualBlockCandidate]:
+    """선/박스 primitive들을 묶어 normalize 단계에서 TableIR로 승격할 후보를 만든다."""
     if not primitives:
         return []
 
@@ -888,9 +811,7 @@ def _build_visual_block_candidates(
         long_line_primitives = [
             primitive for primitive in line_primitives if _primitive_is_long_rule(primitive)
         ]
-        return _suppress_boundary_semantic_lines(
-            _dedupe_visual_block_candidates(_build_non_box_line_candidates(long_line_primitives))
-        )
+        return _dedupe_visual_block_candidates(_build_open_frame_candidates(long_line_primitives))
 
     components = _connected_line_components(line_primitives)
     axis_box_candidates: list[PdfPreviewVisualBlockCandidate] = []
@@ -910,9 +831,9 @@ def _build_visual_block_candidates(
         for primitive in line_primitives
         if primitive.draw_order not in assigned_draw_orders
     ]
-    candidates.extend(_build_non_box_line_candidates(leftover_lines))
+    candidates.extend(_build_open_frame_candidates(leftover_lines))
 
-    return _suppress_boundary_semantic_lines(_dedupe_visual_block_candidates(candidates))
+    return _dedupe_visual_block_candidates(candidates)
 
 
 def _connected_line_components(
@@ -1131,7 +1052,7 @@ def _find_axis_box_seed_bboxes_from_component(
     return _dedupe_seed_bboxes(seed_bboxes)
 
 
-def _build_non_box_line_candidates(
+def _build_open_frame_candidates(
     line_primitives: list[PdfPreviewVisualPrimitive],
 ) -> list[PdfPreviewVisualBlockCandidate]:
     candidates: list[PdfPreviewVisualBlockCandidate] = []
@@ -1139,14 +1060,13 @@ def _build_non_box_line_candidates(
         candidate_bbox = _union_visual_primitive_bboxes(component)
         if candidate_bbox is None:
             continue
-        candidate_type = "semantic_line"
-        if _is_open_frame_component(component):
-            candidate_type = "axis_box" if _component_has_box_outline(candidate_bbox, component) else "open_frame"
+        if not _is_open_frame_component(component):
+            continue
 
         candidates.append(
             PdfPreviewVisualBlockCandidate(
                 page_number=component[0].page_number,
-                candidate_type=candidate_type,
+                candidate_type="open_frame",
                 bounding_box=candidate_bbox,
                 primitive_draw_orders=sorted({primitive.draw_order for primitive in component}),
                 source_roles=sorted({role for primitive in component for role in primitive.candidate_roles}),
@@ -1154,43 +1074,6 @@ def _build_non_box_line_candidates(
             )
         )
     return _dedupe_visual_block_candidates(candidates)
-
-
-def _component_has_box_outline(
-    candidate_bbox: PdfBoundingBox,
-    component: list[PdfPreviewVisualPrimitive],
-) -> bool:
-    width = candidate_bbox.right_pt - candidate_bbox.left_pt
-    height = candidate_bbox.top_pt - candidate_bbox.bottom_pt
-    if width < _VISUAL_FRAME_MIN_SIZE_PT or height < _VISUAL_FRAME_MIN_SIZE_PT:
-        return False
-
-    has_top = False
-    has_bottom = False
-    has_left = False
-    has_right = False
-    for primitive in component:
-        orientation = _primitive_line_orientation(primitive)
-        bbox = primitive.bounding_box
-        if orientation == "horizontal":
-            line_width = bbox.right_pt - bbox.left_pt
-            y_center = (bbox.top_pt + bbox.bottom_pt) / 2.0
-            if line_width >= width * _VISUAL_DIVIDER_SPAN_RATIO:
-                if abs(y_center - candidate_bbox.top_pt) <= _VISUAL_TOUCH_TOLERANCE_PT:
-                    has_top = True
-                if abs(y_center - candidate_bbox.bottom_pt) <= _VISUAL_TOUCH_TOLERANCE_PT:
-                    has_bottom = True
-        elif orientation == "vertical":
-            line_height = bbox.top_pt - bbox.bottom_pt
-            x_center = (bbox.left_pt + bbox.right_pt) / 2.0
-            if line_height >= height * _VISUAL_DIVIDER_SPAN_RATIO:
-                if abs(x_center - candidate_bbox.left_pt) <= _VISUAL_TOUCH_TOLERANCE_PT:
-                    has_left = True
-                if abs(x_center - candidate_bbox.right_pt) <= _VISUAL_TOUCH_TOLERANCE_PT:
-                    has_right = True
-        if has_top and has_bottom and has_left and has_right:
-            return True
-    return False
 
 
 def _dedupe_visual_block_candidates(
@@ -1227,110 +1110,3 @@ def _dedupe_visual_block_candidates(
 
     kept.sort(key=lambda item: (item.page_number, item.bounding_box.top_pt, item.bounding_box.left_pt))
     return kept
-
-
-def _suppress_boundary_semantic_lines(
-    candidates: list[PdfPreviewVisualBlockCandidate],
-) -> list[PdfPreviewVisualBlockCandidate]:
-    if not candidates:
-        return []
-
-    structural_candidates = [
-        candidate
-        for candidate in candidates
-        if candidate.candidate_type in {"axis_box", "open_frame"}
-    ]
-    if not structural_candidates:
-        return candidates
-
-    kept: list[PdfPreviewVisualBlockCandidate] = []
-    for candidate in candidates:
-        if candidate.candidate_type == "semantic_line" and any(
-            _semantic_line_matches_structure_boundary(candidate, structure)
-            for structure in structural_candidates
-            if structure.page_number == candidate.page_number
-        ):
-            continue
-        kept.append(candidate)
-    return kept
-
-
-def _semantic_line_matches_structure_boundary(
-    line_candidate: PdfPreviewVisualBlockCandidate,
-    structure_candidate: PdfPreviewVisualBlockCandidate,
-) -> bool:
-    line_bbox = line_candidate.bounding_box
-    structure_bbox = structure_candidate.bounding_box
-    orientation = _line_like_bbox_orientation(line_bbox)
-    if orientation is None:
-        return False
-
-    if orientation == "horizontal":
-        line_span = max(line_bbox.right_pt - line_bbox.left_pt, 0.0)
-        structure_span = max(structure_bbox.right_pt - structure_bbox.left_pt, 0.0)
-        overlap = min(line_bbox.right_pt, structure_bbox.right_pt) - max(line_bbox.left_pt, structure_bbox.left_pt)
-        if line_span <= 0.0 or structure_span <= 0.0 or overlap <= 0.0:
-            return False
-        overlap_ratio = overlap / min(line_span, structure_span)
-        if overlap_ratio < _VISUAL_BOUNDARY_SUPPRESSION_OVERLAP_RATIO:
-            return False
-        y_center = (line_bbox.top_pt + line_bbox.bottom_pt) / 2.0
-        return (
-            abs(y_center - structure_bbox.top_pt) <= _VISUAL_BOUNDARY_SUPPRESSION_TOLERANCE_PT
-            or abs(y_center - structure_bbox.bottom_pt) <= _VISUAL_BOUNDARY_SUPPRESSION_TOLERANCE_PT
-        )
-
-    line_span = max(line_bbox.top_pt - line_bbox.bottom_pt, 0.0)
-    structure_span = max(structure_bbox.top_pt - structure_bbox.bottom_pt, 0.0)
-    overlap = min(line_bbox.top_pt, structure_bbox.top_pt) - max(line_bbox.bottom_pt, structure_bbox.bottom_pt)
-    if line_span <= 0.0 or structure_span <= 0.0 or overlap <= 0.0:
-        return False
-    overlap_ratio = overlap / min(line_span, structure_span)
-    if overlap_ratio < _VISUAL_BOUNDARY_SUPPRESSION_OVERLAP_RATIO:
-        return False
-    x_center = (line_bbox.left_pt + line_bbox.right_pt) / 2.0
-    return (
-        abs(x_center - structure_bbox.left_pt) <= _VISUAL_BOUNDARY_SUPPRESSION_TOLERANCE_PT
-        or abs(x_center - structure_bbox.right_pt) <= _VISUAL_BOUNDARY_SUPPRESSION_TOLERANCE_PT
-    )
-
-
-def _detect_pdfium_split_regions(page, *, page_number: int) -> list[PdfLayoutRegion]:  # noqa: ANN001
-    page_width = page.get_width() or 0.0
-    page_height = page.get_height() or 0.0
-    if page_width <= 0.0 or page_height <= 0.0:
-        return []
-
-    text_boxes = _pdfium_text_boxes(page)
-    if not text_boxes:
-        return []
-
-    center_x = page_width / 2.0
-    left_boxes = [box for box in text_boxes if ((box[0] + box[2]) / 2.0) < center_x - page_width * 0.08]
-    right_boxes = [box for box in text_boxes if ((box[0] + box[2]) / 2.0) > center_x + page_width * 0.08]
-    min_cluster_boxes = max(int(len(text_boxes) * 0.10), 12)
-    if len(left_boxes) < min_cluster_boxes or len(right_boxes) < min_cluster_boxes:
-        return []
-
-    if not _has_central_vertical_gutter(text_boxes, page_width=page_width):
-        return []
-
-    left_bbox = _bbox_from_bounds(_union_box_bounds(left_boxes))
-    right_bbox = _bbox_from_bounds(_union_box_bounds(right_boxes))
-    if left_bbox is None or right_bbox is None:
-        return []
-
-    return [
-        PdfLayoutRegion(
-            region_id=f"pdfium-p{page_number}-left",
-            region_type="left",
-            page_number=page_number,
-            bounding_box=left_bbox,
-        ),
-        PdfLayoutRegion(
-            region_id=f"pdfium-p{page_number}-right",
-            region_type="right",
-            page_number=page_number,
-            bounding_box=right_bbox,
-        ),
-    ]
