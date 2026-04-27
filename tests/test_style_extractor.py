@@ -13,7 +13,12 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from document_processor import DocIR, HwpxDocument
-from document_processor.core.style_extractor import extract_styles, extract_styles_docx, extract_styles_hwpx
+from document_processor.core.style_extractor import (
+    _repair_hwpx_xml_text,
+    extract_styles,
+    extract_styles_docx,
+    extract_styles_hwpx,
+)
 
 
 class StyleExtractorTests(unittest.TestCase):
@@ -148,6 +153,13 @@ class StyleExtractorTests(unittest.TestCase):
 
         self.assertEqual(style_map.paragraphs["s1.p1"].align, "center")
         self.assertAlmostEqual(style_map.runs["s1.p1.r1"].size_pt or 0.0, 12.0, places=3)
+
+    def test_repair_hwpx_xml_text_preserves_xml_1_0_boundaries(self) -> None:
+        valid_chars = "\t\n\r \uD7FF\uE000\uFFFD\U00010000\U0010FFFF"
+        invalid_chars = "\x00\x08\x0B\x0C\x0E\x1F\ud800\udfff\ufffe\uffff"
+
+        self.assertEqual(_repair_hwpx_xml_text(f"A{valid_chars}B"), f"A{valid_chars}B")
+        self.assertEqual(_repair_hwpx_xml_text(f"A{invalid_chars}B"), "AB")
 
     def test_extract_hwpx_styles_from_hwpx_document(self) -> None:
         header_xml = """<?xml version="1.0" encoding="UTF-8"?>

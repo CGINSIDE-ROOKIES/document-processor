@@ -71,7 +71,7 @@ _HWPX_VISIBLE_LINE_SHAPES = {
 }
 
 _XML_1_0_INVALID_CHAR_RE = re.compile(
-    "[^\u0009\u000A\u000D\u0020-\uD7FF\uE000-\uFFFD\U00010000-\U0010FFFF]"
+    r"[\x00-\x08\x0B\x0C\x0E-\x1F\uD800-\uDFFF\uFFFE\uFFFF]"
 )
 _BARE_XML_AMPERSAND_RE = re.compile(
     r"&(?!#\d+;|#x[0-9A-Fa-f]+;|[A-Za-z][A-Za-z0-9]*;)"
