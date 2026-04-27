@@ -25,6 +25,7 @@ from document_processor.pdf.preview import prepare_pdf_for_html
 from document_processor.pdf.preview.models import PdfPreviewContext
 from document_processor.pdf.preview.render import render_pdf_preview_html
 from document_processor.style_types import CellStyleInfo, TableStyleInfo
+from document_processor.pdf.odl.adapter import _pdf_node_kwargs
 
 
 def _make_test_page(*, width: int = 40, height: int = 40) -> RenderedPdfPage:
@@ -97,15 +98,15 @@ class PdfEnrichmentTests(unittest.TestCase):
                 pages=[PageInfo(page_number=1, width_pt=40.0, height_pt=40.0)],
                 paragraphs=[
                     ParagraphIR(
-                        unit_id="p1",
+                        **_pdf_node_kwargs("paragraph", "p1"),
                         page_number=1,
                         content=[
                             TableIR(
-                                unit_id="p1.tbl1",
+                                **_pdf_node_kwargs("table", "p1.tbl1"),
                                 table_style=TableStyleInfo(preview_grid=True),
                                 cells=[
                                     TableCellIR(
-                                        unit_id="p1.tbl1.tr1.tc1",
+                                        **_pdf_node_kwargs("cell", "p1.tbl1.tr1.tc1"),
                                         row_index=1,
                                         col_index=1,
                                         bbox=PdfBoundingBox(
@@ -146,15 +147,15 @@ class PdfEnrichmentTests(unittest.TestCase):
                 pages=[PageInfo(page_number=1, width_pt=40.0, height_pt=40.0)],
                 paragraphs=[
                     ParagraphIR(
-                        unit_id="p1",
+                        **_pdf_node_kwargs("paragraph", "p1"),
                         page_number=1,
                         content=[
                             TableIR(
-                                unit_id="p1.tbl1",
+                                **_pdf_node_kwargs("table", "p1.tbl1"),
                                 table_style=TableStyleInfo(preview_grid=True),
                                 cells=[
                                     TableCellIR(
-                                        unit_id="p1.tbl1.tr1.tc1",
+                                        **_pdf_node_kwargs("cell", "p1.tbl1.tr1.tc1"),
                                         row_index=1,
                                         col_index=1,
                                         cell_style=CellStyleInfo(
@@ -213,15 +214,15 @@ class PdfEnrichmentTests(unittest.TestCase):
                 pages=[PageInfo(page_number=1, width_pt=40.0, height_pt=40.0)],
                 paragraphs=[
                     ParagraphIR(
-                        unit_id="p1",
+                        **_pdf_node_kwargs("paragraph", "p1"),
                         page_number=1,
                         content=[
                             TableIR(
-                                unit_id="p1.tbl1",
+                                **_pdf_node_kwargs("table", "p1.tbl1"),
                                 table_style=TableStyleInfo(preview_grid=True),
                                 cells=[
                                     TableCellIR(
-                                        unit_id="p1.tbl1.tr1.tc1",
+                                        **_pdf_node_kwargs("cell", "p1.tbl1.tr1.tc1"),
                                         row_index=1,
                                         col_index=1,
                                         bbox=PdfBoundingBox(
@@ -301,7 +302,7 @@ class PdfEnrichmentTests(unittest.TestCase):
             source_doc_type="pdf",
             source_path="/tmp/example.pdf",
             pages=[PageInfo(page_number=1, width_pt=200, height_pt=120)],
-            paragraphs=[ParagraphIR(unit_id="s1.p1", page_number=1, text="Preview body")],
+            paragraphs=[ParagraphIR(**_pdf_node_kwargs("paragraph", "s1.p1"), page_number=1, text="Preview body")],
         )
 
         with patch("document_processor.pdf.preview.render.prepare_pdf_for_html") as prepare_pdf, patch(

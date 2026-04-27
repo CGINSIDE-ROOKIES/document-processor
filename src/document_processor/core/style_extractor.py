@@ -1903,23 +1903,25 @@ def _parse_pdf_to_doc_ir_with_preview(source):
 
 
 def _collect_style_map_from_doc_ir(doc_ir) -> StyleMap:
+    from ..models import _node_debug_path
+
     style_map = StyleMap()
 
     def collect_paragraph(paragraph) -> None:
         if paragraph.para_style is not None:
-            style_map.paragraphs[paragraph.unit_id] = paragraph.para_style.model_copy(deep=True)
+            style_map.paragraphs[_node_debug_path(paragraph)] = paragraph.para_style.model_copy(deep=True)
         for run in paragraph.runs:
             if run.run_style is not None:
-                style_map.runs[run.unit_id] = run.run_style.model_copy(deep=True)
+                style_map.runs[_node_debug_path(run)] = run.run_style.model_copy(deep=True)
         for table in paragraph.tables:
             collect_table(table)
 
     def collect_table(table) -> None:
         if table.table_style is not None:
-            style_map.tables[table.unit_id] = table.table_style.model_copy(deep=True)
+            style_map.tables[_node_debug_path(table)] = table.table_style.model_copy(deep=True)
         for cell in table.cells:
             if cell.cell_style is not None:
-                style_map.cells[cell.unit_id] = cell.cell_style.model_copy(deep=True)
+                style_map.cells[_node_debug_path(cell)] = cell.cell_style.model_copy(deep=True)
             for paragraph in cell.paragraphs:
                 collect_paragraph(paragraph)
 

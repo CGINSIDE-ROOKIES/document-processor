@@ -23,6 +23,7 @@ from document_processor.core.style_extractor import (
 )
 from document_processor.pdf.preview.models import PdfPreviewContext, PdfPreviewTableContext
 from document_processor.style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
+from document_processor.pdf.odl.adapter import _pdf_node_kwargs
 
 
 class StyleExtractorTests(unittest.TestCase):
@@ -33,31 +34,31 @@ class StyleExtractorTests(unittest.TestCase):
             source_doc_type="pdf",
             paragraphs=[
                 ParagraphIR(
-                    unit_id="s1.p1",
+                    **_pdf_node_kwargs("paragraph", "s1.p1"),
                     text="Hello",
                     para_style=ParaStyleInfo(align="center"),
                     content=[
                         RunIR(
-                            unit_id="s1.p1.r1",
+                            **_pdf_node_kwargs("run", "s1.p1.r1"),
                             text="Hello",
                             run_style=RunStyleInfo(font_family="Noto Serif KR", size_pt=11.0),
                         )
                     ],
                 ),
                 ParagraphIR(
-                    unit_id="s1.p2",
+                    **_pdf_node_kwargs("paragraph", "s1.p2"),
                     text="",
                     page_number=1,
                     content=[
                         TableIR(
-                            unit_id="s1.p2.r1.tbl1",
+                            **_pdf_node_kwargs("table", "s1.p2.r1.tbl1"),
                             row_count=1,
                             col_count=1,
                             bbox=BoundingBox(left_pt=10, bottom_pt=20, right_pt=110, top_pt=120),
                             table_style=TableStyleInfo(row_count=1, col_count=1),
                             cells=[
                                 TableCellIR(
-                                    unit_id="s1.p2.r1.tbl1.tr1.tc1",
+                                    **_pdf_node_kwargs("cell", "s1.p2.r1.tbl1.tr1.tc1"),
                                     row_index=1,
                                     col_index=1,
                                     cell_style=CellStyleInfo(rowspan=1, colspan=1),

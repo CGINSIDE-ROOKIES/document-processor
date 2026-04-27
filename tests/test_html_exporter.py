@@ -17,6 +17,7 @@ from document_processor import (
 )
 from document_processor.models import ImageAsset, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
 from document_processor.style_types import CellStyleInfo, ColumnLayoutInfo, ListItemInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
+from document_processor.pdf.odl.adapter import _pdf_node_kwargs
 
 
 def _render_review_html_for_doc(doc: DocIR, annotations: list[TextAnnotation] | None = None) -> str:
@@ -65,8 +66,8 @@ class HtmlExporterTests(unittest.TestCase):
         doc = DocIR(
             paragraphs=[
                 ParagraphIR(
-                    unit_id="s1.p1",
-                    content=[RunIR(unit_id="s1.p1.r1", text="Alpha\nBeta")],
+                    **_pdf_node_kwargs("paragraph", "s1.p1"),
+                    content=[RunIR(**_pdf_node_kwargs("run", "s1.p1.r1"), text="Alpha\nBeta")],
                 )
             ],
         )
@@ -260,31 +261,31 @@ class HtmlExporterTests(unittest.TestCase):
             source_doc_type="pdf",
             paragraphs=[
                 ParagraphIR(
-                    unit_id="s1.p1",
+                    **_pdf_node_kwargs("paragraph", "s1.p1"),
                     content=[
                         TableIR(
-                            unit_id="s1.p1.r1.tbl1",
+                            **_pdf_node_kwargs("table", "s1.p1.r1.tbl1"),
                             table_style=TableStyleInfo(preview_grid=True),
                             cells=[
                                 TableCellIR(
-                                    unit_id="s1.p1.r1.tbl1.tr1.tc1",
+                                    **_pdf_node_kwargs("cell", "s1.p1.r1.tbl1.tr1.tc1"),
                                     row_index=1,
                                     col_index=1,
                                     paragraphs=[
                                         ParagraphIR(
-                                            unit_id="s1.p1.r1.tbl1.tr1.tc1.p1",
-                                            content=[RunIR(unit_id="x", text="A1")],
+                                            **_pdf_node_kwargs("paragraph", "s1.p1.r1.tbl1.tr1.tc1.p1"),
+                                            content=[RunIR(**_pdf_node_kwargs("run", "x"), text="A1")],
                                         )
                                     ],
                                 ),
                                 TableCellIR(
-                                    unit_id="s1.p1.r1.tbl1.tr1.tc2",
+                                    **_pdf_node_kwargs("cell", "s1.p1.r1.tbl1.tr1.tc2"),
                                     row_index=1,
                                     col_index=2,
                                     paragraphs=[
                                         ParagraphIR(
-                                            unit_id="s1.p1.r1.tbl1.tr1.tc2.p1",
-                                            content=[RunIR(unit_id="y", text="B1")],
+                                            **_pdf_node_kwargs("paragraph", "s1.p1.r1.tbl1.tr1.tc2.p1"),
+                                            content=[RunIR(**_pdf_node_kwargs("run", "y"), text="B1")],
                                         )
                                     ],
                                 ),
@@ -307,9 +308,9 @@ class HtmlExporterTests(unittest.TestCase):
             source_doc_type="pdf",
             paragraphs=[
                 ParagraphIR(
-                    unit_id="s1.p1",
+                    **_pdf_node_kwargs("paragraph", "s1.p1"),
                     para_style=ParaStyleInfo(render_tag="h2"),
-                    content=[RunIR(unit_id="x", text="Heading")],
+                    content=[RunIR(**_pdf_node_kwargs("run", "x"), text="Heading")],
                 )
             ],
         )
@@ -354,11 +355,11 @@ class HtmlExporterTests(unittest.TestCase):
             },
             paragraphs=[
                 ParagraphIR(
-                    unit_id="s1.p1",
+                    **_pdf_node_kwargs("paragraph", "s1.p1"),
                     content=[
-                        ImageIR(unit_id="s1.p1.img1", image_id="img1", display_width_pt=72.0, display_height_pt=4.0),
-                        ImageIR(unit_id="s1.p1.img2", image_id="img2", display_width_pt=72.0, display_height_pt=4.0),
-                        ImageIR(unit_id="s1.p1.img3", image_id="img3", display_width_pt=72.0, display_height_pt=4.0),
+                        ImageIR(**_pdf_node_kwargs("image", "s1.p1.img1"), image_id="img1", display_width_pt=72.0, display_height_pt=4.0),
+                        ImageIR(**_pdf_node_kwargs("image", "s1.p1.img2"), image_id="img2", display_width_pt=72.0, display_height_pt=4.0),
+                        ImageIR(**_pdf_node_kwargs("image", "s1.p1.img3"), image_id="img3", display_width_pt=72.0, display_height_pt=4.0),
                     ],
                 )
             ],

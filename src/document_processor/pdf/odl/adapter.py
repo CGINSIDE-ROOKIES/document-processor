@@ -6,8 +6,30 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ...models import DocIR, ImageAsset, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
+from ...core.document_ir_parser import _node_kwargs
+from ...models import (
+    DocIR,
+    ImageAsset,
+    ImageIR,
+    PageInfo,
+    ParagraphIR,
+    RunIR,
+    TableCellIR,
+    TableIR,
+    _node_debug_path,
+)
 from ...style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
+
+
+def _pdf_node_kwargs(kind, structural_path: str, *, parent_debug_path: str | None = None, text: str | None = None) -> dict[str, object]:
+    """PDF-sourced shorthand around `_node_kwargs(..., source_doc_type='pdf')`."""
+    return _node_kwargs(
+        kind,
+        structural_path,
+        source_doc_type="pdf",
+        parent_debug_path=parent_debug_path,
+        text=text,
+    )
 from ..meta import (
     PdfBoundingBox,
     coerce_bbox,
@@ -224,7 +246,7 @@ def _paragraph_from_text_node(
         run_geometry=resolved_run_geometry,
     ) if text else []
     return ParagraphIR(
-        unit_id=unit_id,
+        **_pdf_node_kwargs("paragraph", unit_id),
         text=text,
         page_number=_page_number_from_node(style_source) or _page_number_from_node(node) or (resolved_geometry.page_number if resolved_geometry is not None else None) or default_page_number,
         bbox=resolved_geometry.bounding_box if resolved_geometry is not None else None,
@@ -257,7 +279,7 @@ def _paragraphs_from_container_node(
             child_geometry = _compose_node_geometry(_node_geometry(child), container_geometry)
             paragraphs.append(
                 ParagraphIR(
-                    unit_id=child_unit_id,
+                    **_pdf_node_kwargs("paragraph", child_unit_id),
                     text="",
                     page_number=_page_number_from_node(child) or default_page_number,
                     bbox=child_geometry.bounding_box if child_geometry is not None else None,
@@ -348,7 +370,7 @@ def _runs_from_text_node(
     if text and "\n" in text and not any("\n" in span.get("content", "") for span in spans):
         return [
             RunIR(
-                unit_id=f"{unit_id}.r1",
+                **_pdf_node_kwargs("run", f"{unit_id}.r1"),
                 text=text,
                 bbox=run_geometry.bounding_box if run_geometry is not None else None,
                 run_style=_run_style_from_node(style_node),
@@ -364,7 +386,7 @@ def _runs_from_text_node(
         span_geometry = _compose_node_geometry(_node_geometry(span), run_geometry)
         runs.append(
             RunIR(
-                unit_id=f"{unit_id}.r{index}",
+                **_pdf_node_kwargs("run", f"{unit_id}.r{index}"),
                 text=span_text,
                 bbox=span_geometry.bounding_box if span_geometry is not None else None,
                 run_style=_run_style_from_node(span_style_node),
@@ -376,7 +398,7 @@ def _runs_from_text_node(
         return []
     return [
         RunIR(
-            unit_id=f"{unit_id}.r1",
+            **_pdf_node_kwargs("run", f"{unit_id}.r1"),
             text=text,
             bbox=run_geometry.bounding_box if run_geometry is not None else None,
             run_style=_run_style_from_node(style_node),
@@ -472,14 +494,14 @@ def _image_paragraph(
     display_width_pt, display_height_pt = _display_size_from_node(node)
     image_geometry = _node_geometry(node)
     return ParagraphIR(
-        unit_id=unit_id,
+        **_pdf_node_kwargs("paragraph", unit_id),
         text="",
         page_number=_page_number_from_node(node),
         bbox=image_geometry.bounding_box if image_geometry is not None else None,
         para_style=_para_style_from_node(node),
         content=[
             ImageIR(
-                unit_id=f"{unit_id}.img1",
+                **_pdf_node_kwargs("image", f"{unit_id}.img1"),
                 image_id=f"odl-img-{unit_id}",
                 alt_text=node_value(node, "alt text"),
                 title=node_value(node, "title", "name"),
@@ -513,7 +535,7 @@ def _cell_paragraphs(
             child_geometry = _node_geometry(child)
             paragraphs.append(
                 ParagraphIR(
-                    unit_id=unit_id,
+                    **_pdf_node_kwargs("paragraph", unit_id),
                     text="",
                     page_number=_page_number_from_node(child) or default_page_number,
                     bbox=child_geometry.bounding_box if child_geometry is not None else None,
@@ -545,7 +567,7 @@ def _cell_paragraphs(
     if not paragraphs:
         paragraphs.append(
             ParagraphIR(
-                unit_id=f"{cell_unit_id}.p1",
+                **_pdf_node_kwargs("paragraph", f"{cell_unit_id}.p1"),
                 text="",
                 page_number=default_page_number,
                 bbox=None,
@@ -610,7 +632,7 @@ def _table_node_to_ir(
         table_style.col_count = col_count
 
     table = TableIR(
-        unit_id=unit_id,
+        **_pdf_node_kwargs("table", unit_id),
         row_count=row_count,
         col_count=col_count,
         bbox=table_geometry.bounding_box if table_geometry is not None else None,
@@ -660,7 +682,7 @@ def _append_table_cell(
         cell_style.colspan = colspan
     table.cells.append(
         TableCellIR(
-            unit_id=cell_unit_id,
+            **_pdf_node_kwargs("cell", cell_unit_id),
             row_index=row_index,
             col_index=col_index,
             text=extract_text_from_odl_children(children),
@@ -757,7 +779,7 @@ def _build_strip_table_paragraph(
             cell_index += 1
             cells.append(
                 TableCellIR(
-                    unit_id=f"{unit_id}.cell.{cell_index}",
+                    **_pdf_node_kwargs("cell", f"{unit_id}.cell.{cell_index}"),
                     row_index=row_index,
                     col_index=col_index,
                     text=paragraph.text,
@@ -775,7 +797,7 @@ def _build_strip_table_paragraph(
         return None
 
     table = TableIR(
-        unit_id=f"{unit_id}.tbl1",
+        **_pdf_node_kwargs("table", f"{unit_id}.tbl1"),
         row_count=max(len(rows), 1),
         col_count=max(col_count, 1),
         bbox=group_bbox,
@@ -789,7 +811,7 @@ def _build_strip_table_paragraph(
         cells=cells,
     )
     paragraph = ParagraphIR(
-        unit_id=unit_id,
+        **_pdf_node_kwargs("paragraph", unit_id),
         text="",
         page_number=paragraphs[0].page_number,
         bbox=group_bbox,
@@ -900,7 +922,7 @@ def _paragraphs_from_list_node(
                 child_geometry = _node_geometry(child)
                 child_paragraphs.append(
                     ParagraphIR(
-                        unit_id=child_unit_id,
+                        **_pdf_node_kwargs("paragraph", child_unit_id),
                         text="",
                         page_number=_page_number_from_node(child),
                         bbox=child_geometry.bounding_box if child_geometry is not None else None,
@@ -1019,24 +1041,31 @@ def _canonicalize_top_level_paragraphs(paragraphs: list[ParagraphIR]) -> list[Pa
     return canonical
 
 
+def _set_pdf_node_anchor(node, kind, structural_path: str, *, parent_debug_path: str | None = None) -> None:
+    """Reset node_id + native_anchor on an existing IR node."""
+    kwargs = _pdf_node_kwargs(kind, structural_path, parent_debug_path=parent_debug_path)
+    node.node_id = kwargs["node_id"]
+    node.native_anchor = kwargs["native_anchor"]
+
+
 def _canonicalize_paragraph_unit_ids(
     paragraph: ParagraphIR,
     *,
     unit_id: str,
     top_level: bool,
 ) -> None:
-    paragraph.unit_id = unit_id
+    _set_pdf_node_anchor(paragraph, "paragraph", unit_id)
     run_index = 0
     image_index = 0
     table_index = 0
     for node in paragraph.content:
         if isinstance(node, RunIR):
             run_index += 1
-            node.unit_id = f"{unit_id}.r{run_index}"
+            _set_pdf_node_anchor(node, "run", f"{unit_id}.r{run_index}", parent_debug_path=unit_id)
             continue
         if isinstance(node, ImageIR):
             image_index += 1
-            node.unit_id = f"{unit_id}.img{image_index}"
+            _set_pdf_node_anchor(node, "image", f"{unit_id}.img{image_index}", parent_debug_path=unit_id)
             continue
         if isinstance(node, TableIR):
             table_index += 1
@@ -1050,13 +1079,14 @@ def _canonicalize_paragraph_unit_ids(
 
 
 def _canonicalize_table_unit_ids(table: TableIR, *, unit_id: str) -> None:
-    table.unit_id = unit_id
+    _set_pdf_node_anchor(table, "table", unit_id)
     for cell in table.cells:
-        cell.unit_id = f"{unit_id}.tr{cell.row_index}.tc{cell.col_index}"
+        cell_unit_id = f"{unit_id}.tr{cell.row_index}.tc{cell.col_index}"
+        _set_pdf_node_anchor(cell, "cell", cell_unit_id, parent_debug_path=unit_id)
         for paragraph_index, paragraph in enumerate(cell.paragraphs, start=1):
             _canonicalize_paragraph_unit_ids(
                 paragraph,
-                unit_id=f"{cell.unit_id}.p{paragraph_index}",
+                unit_id=f"{cell_unit_id}.p{paragraph_index}",
                 top_level=False,
             )
         cell.recompute_text()
@@ -1091,7 +1121,7 @@ def build_doc_ir_from_odl_result(
             node_geometry = _node_geometry(node)
             paragraphs.append(
                 ParagraphIR(
-                    unit_id=unit_id,
+                    **_pdf_node_kwargs("paragraph", unit_id),
                     text="",
                     page_number=_page_number_from_node(node),
                     bbox=node_geometry.bounding_box if node_geometry is not None else None,
@@ -1142,7 +1172,7 @@ def build_doc_ir_from_odl_result(
                     child_geometry = _node_geometry(child)
                     paragraphs.append(
                         ParagraphIR(
-                            unit_id=child_unit_id,
+                            **_pdf_node_kwargs("paragraph", child_unit_id),
                             text="",
                             page_number=_page_number_from_node(child),
                             bbox=child_geometry.bounding_box if child_geometry is not None else None,

@@ -23,6 +23,7 @@ from document_processor.pdf.pipeline import parse_pdf_to_doc_ir
 from document_processor.pdf.parsing import PageClass, PageDecision, PageProfile, PdfProfile
 from document_processor.pdf.preview.context import build_pdf_preview_context
 from document_processor.pdf.preview.models import PdfPreviewContext
+from document_processor.pdf.odl.adapter import _pdf_node_kwargs
 
 
 class PdfPipelineTests(unittest.TestCase):
@@ -31,7 +32,7 @@ class PdfPipelineTests(unittest.TestCase):
             doc_id="sample",
             source_path="sample.pdf",
             source_doc_type="pdf",
-            paragraphs=[ParagraphIR(unit_id="s1.p1")],
+            paragraphs=[ParagraphIR(**_pdf_node_kwargs("paragraph", "s1.p1"))],
         )
         style_map = StyleMap(paragraphs={"s1.p1": ParaStyleInfo(align="center")})
         with patch("document_processor.core.document_ir_parser.build_doc_ir_from_file", return_value=built_doc) as build_doc, patch(
@@ -226,43 +227,43 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertEqual(doc.source_doc_type, "pdf")
         self.assertIsNone(doc.meta)
         self.assertEqual([page.page_number for page in doc.pages], [1, 2])
-        self.assertEqual(doc.paragraphs[0].unit_id, "s1.p1")
+        self.assertEqual(doc.paragraphs[0].native_anchor.debug_path, "s1.p1")
         self.assertEqual(doc.paragraphs[0].text, "Hello PDF")
         self.assertEqual(doc.paragraphs[0].bbox.left_pt, 10.0)
         self.assertIsNone(doc.paragraphs[0].meta)
         self.assertEqual(doc.paragraphs[0].runs[0].bbox.left_pt, 10.0)
-        self.assertEqual(doc.paragraphs[0].runs[0].unit_id, "s1.p1.r1")
+        self.assertEqual(doc.paragraphs[0].runs[0].native_anchor.debug_path, "s1.p1.r1")
         self.assertIsNone(doc.paragraphs[0].runs[0].meta)
         self.assertEqual(doc.paragraphs[0].runs[0].run_style.font_family, "Noto Serif KR")
-        self.assertEqual(doc.paragraphs[1].unit_id, "s1.p2")
+        self.assertEqual(doc.paragraphs[1].native_anchor.debug_path, "s1.p2")
         self.assertEqual(doc.paragraphs[1].text, "\\frac{a}{b}")
         self.assertIsNone(doc.paragraphs[1].meta)
-        self.assertEqual(doc.paragraphs[2].unit_id, "s1.p3")
+        self.assertEqual(doc.paragraphs[2].native_anchor.debug_path, "s1.p3")
         self.assertEqual(doc.paragraphs[2].text, "First item")
         self.assertIsNone(doc.paragraphs[2].meta)
-        self.assertEqual(doc.paragraphs[3].unit_id, "s1.p4")
+        self.assertEqual(doc.paragraphs[3].native_anchor.debug_path, "s1.p4")
         self.assertEqual(doc.paragraphs[3].tables[0].cells[0].text, "A1")
         self.assertEqual(doc.paragraphs[3].bbox.left_pt, 200.0)
-        self.assertEqual(doc.paragraphs[3].tables[0].unit_id, "s1.p4.r1.tbl1")
+        self.assertEqual(doc.paragraphs[3].tables[0].native_anchor.debug_path, "s1.p4.r1.tbl1")
         self.assertEqual(doc.paragraphs[3].tables[0].bbox.left_pt, 200.0)
         self.assertIsNone(doc.paragraphs[3].tables[0].meta)
         self.assertTrue(doc.paragraphs[3].tables[0].table_style.preview_grid)
-        self.assertEqual(doc.paragraphs[3].tables[0].cells[0].unit_id, "s1.p4.r1.tbl1.tr1.tc1")
+        self.assertEqual(doc.paragraphs[3].tables[0].cells[0].native_anchor.debug_path, "s1.p4.r1.tbl1.tr1.tc1")
         self.assertEqual(doc.paragraphs[3].tables[0].cells[0].bbox.left_pt, 210.0)
         self.assertIsNone(doc.paragraphs[3].tables[0].cells[0].meta)
         self.assertEqual(
-            doc.paragraphs[3].tables[0].cells[0].paragraphs[0].unit_id,
+            doc.paragraphs[3].tables[0].cells[0].paragraphs[0].native_anchor.debug_path,
             "s1.p4.r1.tbl1.tr1.tc1.p1",
         )
         self.assertEqual(doc.paragraphs[3].tables[0].cells[0].cell_style.border_top, "1px solid")
         self.assertEqual(doc.paragraphs[3].tables[0].cells[0].cell_style.border_right, "1px solid")
         self.assertIn("odl-img-p5", doc.assets)
-        self.assertEqual(doc.paragraphs[4].unit_id, "s1.p5")
-        self.assertEqual(doc.paragraphs[4].images[0].unit_id, "s1.p5.img1")
+        self.assertEqual(doc.paragraphs[4].native_anchor.debug_path, "s1.p5")
+        self.assertEqual(doc.paragraphs[4].images[0].native_anchor.debug_path, "s1.p5.img1")
         self.assertEqual(doc.paragraphs[4].images[0].image_id, "odl-img-p5")
         self.assertEqual(doc.paragraphs[4].bbox.left_pt, 300.0)
         self.assertEqual(doc.paragraphs[4].images[0].bbox.left_pt, 300.0)
-        self.assertIsNone(doc.paragraphs[4].images[0].meta)
+        self.assertFalse(hasattr(doc.paragraphs[4].images[0], "meta"))
         self.assertIsNone(doc.assets["odl-img-p5"].meta)
 
     def test_build_doc_ir_from_odl_result_preserves_text_whitespace_and_header_footer_children(self) -> None:

@@ -87,7 +87,7 @@ class PdfPreviewContext(BaseModel):
 class _PreviewRenderNode:
     """paragraph/table/image/run을 bbox 기준으로 후보 영역에 배정하기 위한 임시 노드."""
     kind: str
-    unit_id: str
+    node_id: str
     bbox: PdfBoundingBox
     order_key: tuple[float, float, int, int]
     parent_paragraph_id: str | None = None

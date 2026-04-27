@@ -14,8 +14,23 @@ from __future__ import annotations
 
 from typing import Any
 
-from ...models import ColumnLayoutInfo, DocIR, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
-from ...style_types import CellStyleInfo, ParaStyleInfo, TableStyleInfo
+from ...models import DocIR, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
+from ...style_types import CellStyleInfo, ColumnLayoutInfo, ParaStyleInfo, TableStyleInfo
+from ..odl.adapter import _pdf_node_kwargs
+
+
+def _paragraph_column_layout(paragraph: ParagraphIR) -> ColumnLayoutInfo | None:
+    return paragraph.para_style.column_layout if paragraph.para_style is not None else None
+
+
+def _set_paragraph_column_layout(paragraph: ParagraphIR, layout: ColumnLayoutInfo | None) -> None:
+    if layout is None:
+        if paragraph.para_style is not None:
+            paragraph.para_style.column_layout = None
+        return
+    if paragraph.para_style is None:
+        paragraph.para_style = ParaStyleInfo()
+    paragraph.para_style.column_layout = layout
 from ..enhancement import enrich_pdf_table_backgrounds, enrich_pdf_table_borders
 from ..meta import PdfBoundingBox
 from .models import (
@@ -317,10 +332,10 @@ def _collect_page_render_nodes(
             paragraph_nodes.append(
                 _PreviewRenderNode(
                     kind="paragraph",
-                    unit_id=paragraph.unit_id,
+                    node_id=paragraph.node_id,
                     bbox=paragraph_bbox,
                     order_key=paragraph_key,
-                    parent_paragraph_id=paragraph.unit_id,
+                    parent_paragraph_id=paragraph.node_id,
                     parent_para_style=paragraph.para_style,
                     paragraph=paragraph,
                 )
@@ -332,10 +347,10 @@ def _collect_page_render_nodes(
                 continue
             node_key = _bbox_order_key(node_bbox, fallback_index=fallback_index, subindex=content_index)
             common_kwargs = {
-                "unit_id": getattr(node, "unit_id", f"{paragraph.unit_id}.c{content_index}"),
+                "node_id": getattr(node, "node_id", None) or f"{paragraph.node_id}.c{content_index}",
                 "bbox": node_bbox,
                 "order_key": node_key,
-                "parent_paragraph_id": paragraph.unit_id,
+                "parent_paragraph_id": paragraph.node_id,
                 "parent_para_style": paragraph.para_style,
             }
             if isinstance(node, TableIR):
@@ -445,7 +460,7 @@ def _assign_page_nodes_to_candidates(
         assigned = candidate_lookup[id(candidate)]
         assigned.paragraph_nodes.append(node)
         assigned.order_key = min(assigned.order_key, node.order_key)
-        assigned_paragraph_ids.add(node.unit_id)
+        assigned_paragraph_ids.add(node.node_id)
 
     for nodes, target_attr in (
         (table_nodes, "table_nodes"),
@@ -461,7 +476,7 @@ def _assign_page_nodes_to_candidates(
             assigned = candidate_lookup[id(candidate)]
             getattr(assigned, target_attr).append(node)
             assigned.order_key = min(assigned.order_key, node.order_key)
-            assigned_child_ids.add(node.unit_id)
+            assigned_child_ids.add(node.node_id)
 
     assigned_candidates = [
         assigned_candidate
@@ -488,7 +503,7 @@ def _filter_page_flow_paragraphs(
 ) -> list[ParagraphIR]:
     filtered: list[ParagraphIR] = []
     for paragraph in page_paragraphs:
-        if paragraph.unit_id in assigned_paragraph_ids:
+        if paragraph.node_id in assigned_paragraph_ids:
             continue
         if not assigned_child_ids:
             filtered.append(paragraph)
@@ -496,7 +511,7 @@ def _filter_page_flow_paragraphs(
         remaining_content = [
             node
             for node in paragraph.content
-            if getattr(node, "unit_id", "") not in assigned_child_ids
+            if getattr(node, "node_id", "") not in assigned_child_ids
         ]
         if len(remaining_content) == len(paragraph.content):
             filtered.append(paragraph)
@@ -520,10 +535,10 @@ def _promoted_candidate_node_ids(
     for assigned_candidate in assigned_candidates:
         if id(assigned_candidate.candidate) not in promoted_candidate_ids:
             continue
-        paragraph_ids.update(node.unit_id for node in assigned_candidate.paragraph_nodes)
-        child_ids.update(node.unit_id for node in assigned_candidate.table_nodes)
-        child_ids.update(node.unit_id for node in assigned_candidate.image_nodes)
-        child_ids.update(node.unit_id for node in assigned_candidate.run_nodes)
+        paragraph_ids.update(node.node_id for node in assigned_candidate.paragraph_nodes)
+        child_ids.update(node.node_id for node in assigned_candidate.table_nodes)
+        child_ids.update(node.node_id for node in assigned_candidate.image_nodes)
+        child_ids.update(node.node_id for node in assigned_candidate.run_nodes)
     return paragraph_ids, child_ids
 
 
@@ -565,7 +580,7 @@ def _auxiliary_nodes_to_paragraphs(
     group_para_style: dict[str, Any] = {}
     group_bbox: dict[str, PdfBoundingBox] = {}
     for node in nodes:
-        group_key = node.parent_paragraph_id or node.unit_id
+        group_key = node.parent_paragraph_id or node.node_id
         grouped.setdefault(group_key, []).append(node)
         group_order[group_key] = min(group_order.get(group_key, node.order_key), node.order_key)
         if group_key not in group_para_style:
@@ -594,7 +609,7 @@ def _auxiliary_nodes_to_paragraphs(
         if not content_nodes:
             continue
         paragraph = ParagraphIR(
-            unit_id=f"{group_key}.layout-table",
+            **_pdf_node_kwargs("paragraph", f"{group_key}.layout-table"),
             text="",
             bbox=group_bbox.get(group_key),
             para_style=group_para_style.get(group_key),
@@ -631,11 +646,11 @@ def _assigned_candidate_real_table_unit_ids(
             continue
         for content_node in paragraph_node.paragraph.content:
             if isinstance(content_node, TableIR):
-                table_unit_ids.add(content_node.unit_id)
+                table_unit_ids.add(content_node.node_id)
 
     for table_node in assigned_candidate.table_nodes:
         if table_node.table is not None:
-            table_unit_ids.add(table_node.table.unit_id)
+            table_unit_ids.add(table_node.table.node_id)
 
     return table_unit_ids
 
@@ -703,7 +718,7 @@ def _build_layout_table_paragraph_for_group(
         colspan = max(right_index - left_index, 1)
         rowspan = max(bottom_index - top_index, 1)
         cell = TableCellIR(
-            unit_id=f"pdf-preview.p{page_number}.layout-table.{group_index}.cell.{candidate_index}",
+            **_pdf_node_kwargs("cell", f"pdf-preview.p{page_number}.layout-table.{group_index}.cell.{candidate_index}"),
             row_index=top_index + 1,
             col_index=left_index + 1,
             bbox=bbox,
@@ -717,8 +732,9 @@ def _build_layout_table_paragraph_for_group(
         cell.recompute_text()
         cells.append(cell)
 
+    table_path = f"pdf-preview.p{page_number}.layout-table.{group_index}"
     table = TableIR(
-        unit_id=f"pdf-preview.p{page_number}.layout-table.{group_index}",
+        **_pdf_node_kwargs("table", table_path),
         row_count=max(len(y_boundaries) - 1, 1),
         col_count=max(len(x_boundaries) - 1, 1),
         bbox=group_bbox,
@@ -733,7 +749,7 @@ def _build_layout_table_paragraph_for_group(
         cells=cells,
     )
     paragraph = ParagraphIR(
-        unit_id=f"{table.unit_id}.paragraph",
+        **_pdf_node_kwargs("paragraph", f"{table_path}.paragraph"),
         text="",
         page_number=page_number,
         bbox=group_bbox,
@@ -845,9 +861,9 @@ def _apply_region_driven_layout(
                 explicit_region_type=None,
             )
             if role == "left":
-                paragraph.column_layout = layout.model_copy(update={"column_index": 0}, deep=True)
+                _set_paragraph_column_layout(paragraph, layout.model_copy(update={"column_index": 0}, deep=True))
             elif role == "right":
-                paragraph.column_layout = layout.model_copy(update={"column_index": 1}, deep=True)
+                _set_paragraph_column_layout(paragraph, layout.model_copy(update={"column_index": 1}, deep=True))
 
 
 def _shift_bbox(bbox: PdfBoundingBox | None, *, origin: PdfBoundingBox) -> PdfBoundingBox | None:
@@ -1052,7 +1068,7 @@ def _same_layout_row(left: ParagraphIR, right: ParagraphIR) -> bool:
 
 
 def _column_layout_identity(paragraph: ParagraphIR) -> tuple[object, ...] | None:
-    layout = paragraph.column_layout
+    layout = _paragraph_column_layout(paragraph)
     if layout is None:
         return None
     return (
@@ -1087,10 +1103,10 @@ def _layout_row_paragraph(
             gap_pt = max(next_bbox.left_pt - bbox.right_pt, 0.0)
 
         cell_paragraph = paragraph.model_copy(deep=True)
-        cell_paragraph.column_layout = None
+        _set_paragraph_column_layout(cell_paragraph, None)
 
         cell = TableCellIR(
-            unit_id=f"pdf-preview.p{page_number}.layout-row.{row_index}.cell.{index}",
+            **_pdf_node_kwargs("cell", f"pdf-preview.p{page_number}.layout-row.{row_index}.cell.{index}"),
             row_index=1,
             col_index=index,
             bbox=bbox,
@@ -1105,8 +1121,9 @@ def _layout_row_paragraph(
         cell.recompute_text()
         cells.append(cell)
 
+    table_path = f"pdf-preview.p{page_number}.layout-row.{row_index}"
     table = TableIR(
-        unit_id=f"pdf-preview.p{page_number}.layout-row.{row_index}",
+        **_pdf_node_kwargs("table", table_path),
         row_count=1,
         col_count=len(cells),
         bbox=row_bbox,
@@ -1119,11 +1136,12 @@ def _layout_row_paragraph(
         ),
         cells=cells,
     )
+    seed_layout = _paragraph_column_layout(ordered[0])
     paragraph = ParagraphIR(
-        unit_id=f"{table.unit_id}.paragraph",
+        **_pdf_node_kwargs("paragraph", f"{table_path}.paragraph"),
         page_number=page_number,
         bbox=row_bbox,
-        column_layout=ordered[0].column_layout.model_copy(deep=True) if ordered[0].column_layout is not None else None,
+        para_style=ParaStyleInfo(column_layout=seed_layout.model_copy(deep=True)) if seed_layout is not None else None,
         content=[table],
     )
     paragraph.recompute_text()
@@ -1243,7 +1261,7 @@ def _apply_paragraph_bbox_style_hints(
     *,
     container_bbox: PdfBoundingBox,
 ) -> None:
-    if paragraph.column_layout is not None:
+    if _paragraph_column_layout(paragraph) is not None:
         return
 
     bbox = _paragraph_text_bbox(paragraph) or _paragraph_bbox(paragraph)
