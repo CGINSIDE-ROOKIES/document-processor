@@ -416,6 +416,24 @@ class HtmlExporterTests(unittest.TestCase):
             self.assertLess(html.index('class="document-column-group"'), html.index("Column body one"))
             self.assertLess(html.index("Column body two"), html.index("Footer"))
 
+    def test_export_html_renders_indexed_column_group_when_one_side_is_empty(self) -> None:
+        doc = DocIR(paragraphs=[
+                ParagraphIR(
+                    para_style=ParaStyleInfo(
+                        column_layout=ColumnLayoutInfo(count=2, column_index=0, gap_pt=18.0)
+                    ),
+                    content=[RunIR(text="Only left column")],
+                ),
+            ],
+        )
+
+        html = doc.to_html()
+
+        self.assertIn('document-column-group--indexed', html)
+        self.assertIn('data-column-index="1">', html)
+        self.assertIn('data-column-index="2">&nbsp;</div>', html)
+        self.assertIn("Only left column", html)
+
     def test_export_html_renders_paragraph_list_markers(self) -> None:
         doc = DocIR(paragraphs=[
                 ParagraphIR(

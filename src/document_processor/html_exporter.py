@@ -78,7 +78,7 @@ def _indexed_columns(paragraphs: list[ParagraphIR]) -> tuple[list[ParagraphIR], 
         else:
             return None
 
-    if not left_paragraphs or not right_paragraphs:
+    if not left_paragraphs and not right_paragraphs:
         return None
     return left_paragraphs, right_paragraphs
 
