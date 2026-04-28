@@ -17,6 +17,7 @@ from document_processor import (
 )
 from document_processor.models import ImageAsset, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
 from document_processor.style_types import CellStyleInfo, ColumnLayoutInfo, ListItemInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
+from document_processor.pdf.odl.adapter import _pdf_node_kwargs
 
 
 def _render_review_html_for_doc(doc: DocIR, annotations: list[TextAnnotation] | None = None) -> str:
@@ -36,7 +37,8 @@ class HtmlExporterTests(unittest.TestCase):
                 ParagraphIR(para_style=ParaStyleInfo(align="center", first_line_indent_pt=12.0),
                     content=[
                         RunIR(text="Hello  world",
-                            run_style=RunStyleInfo(bold=True,
+                            run_style=RunStyleInfo(font_family="Noto Serif KR",
+                                bold=True,
                                 italic=True,
                                 underline=True,
                                 color="#112233",
@@ -53,11 +55,26 @@ class HtmlExporterTests(unittest.TestCase):
         self.assertIn("<title>Preview</title>", html)
         self.assertIn("text-align:center", html)
         self.assertIn("text-indent:12.0pt", html)
+        self.assertIn("font-family:Noto Serif KR", html)
         self.assertIn("font-size:11.0pt", html)
         self.assertIn("color:#112233", html)
         self.assertIn("<b>Hello", html)
         self.assertIn("<i><b>", html)
         self.assertIn("&nbsp;&nbsp;", html)
+
+    def test_export_html_renders_newlines_inside_runs_as_line_breaks(self) -> None:
+        doc = DocIR(
+            paragraphs=[
+                ParagraphIR(
+                    **_pdf_node_kwargs("paragraph", "s1.p1"),
+                    content=[RunIR(**_pdf_node_kwargs("run", "s1.p1.r1"), text="Alpha\nBeta")],
+                )
+            ],
+        )
+
+        html = doc.to_html()
+
+        self.assertIn("Alpha<br>Beta", html)
 
     def test_export_html_renders_tables_and_cell_styles(self) -> None:
         doc = DocIR(paragraphs=[
@@ -239,6 +256,70 @@ class HtmlExporterTests(unittest.TestCase):
         self.assertIn("margin-left:0", html)
         self.assertIn("margin-right:auto", html)
 
+    def test_export_html_renders_table_grid_when_table_style_requests_render_grid(self) -> None:
+        doc = DocIR(
+            source_doc_type="pdf",
+            paragraphs=[
+                ParagraphIR(
+                    **_pdf_node_kwargs("paragraph", "s1.p1"),
+                    content=[
+                        TableIR(
+                            **_pdf_node_kwargs("table", "s1.p1.r1.tbl1"),
+                            table_style=TableStyleInfo(render_grid=True),
+                            cells=[
+                                TableCellIR(
+                                    **_pdf_node_kwargs("cell", "s1.p1.r1.tbl1.tr1.tc1"),
+                                    row_index=1,
+                                    col_index=1,
+                                    paragraphs=[
+                                        ParagraphIR(
+                                            **_pdf_node_kwargs("paragraph", "s1.p1.r1.tbl1.tr1.tc1.p1"),
+                                            content=[RunIR(**_pdf_node_kwargs("run", "x"), text="A1")],
+                                        )
+                                    ],
+                                ),
+                                TableCellIR(
+                                    **_pdf_node_kwargs("cell", "s1.p1.r1.tbl1.tr1.tc2"),
+                                    row_index=1,
+                                    col_index=2,
+                                    paragraphs=[
+                                        ParagraphIR(
+                                            **_pdf_node_kwargs("paragraph", "s1.p1.r1.tbl1.tr1.tc2.p1"),
+                                            content=[RunIR(**_pdf_node_kwargs("run", "y"), text="B1")],
+                                        )
+                                    ],
+                                ),
+                            ],
+                        )
+                    ],
+                )
+            ],
+        )
+
+        html = doc.to_html()
+
+        self.assertIn("border-top:1px solid #4a4f57", html)
+        self.assertIn("border-right:1px solid #4a4f57", html)
+        self.assertIn("A1", html)
+        self.assertIn("B1", html)
+
+    def test_export_html_renders_pdf_heading_tag_from_paragraph_style(self) -> None:
+        doc = DocIR(
+            source_doc_type="pdf",
+            paragraphs=[
+                ParagraphIR(
+                    **_pdf_node_kwargs("paragraph", "s1.p1"),
+                    para_style=ParaStyleInfo(render_tag="h2"),
+                    content=[RunIR(**_pdf_node_kwargs("run", "x"), text="Heading")],
+                )
+            ],
+        )
+
+        html = doc.to_html()
+
+        self.assertIn("<h2", html)
+        self.assertIn("Heading</h2>", html)
+
     def test_export_html_uses_image_display_size(self) -> None:
         doc = DocIR(assets={
                 "img1": ImageAsset(mime_type="image/png",
@@ -264,6 +345,31 @@ class HtmlExporterTests(unittest.TestCase):
         self.assertIn("<img ", html)
         self.assertIn("width:72.0pt", html)
         self.assertIn("height:36.0pt", html)
+
+    def test_export_html_renders_multi_image_paragraph_inline(self) -> None:
+        doc = DocIR(
+            assets={
+                "img1": ImageAsset(mime_type="image/png", filename="a.png", data_base64="AAAA"),
+                "img2": ImageAsset(mime_type="image/png", filename="b.png", data_base64="AAAA"),
+                "img3": ImageAsset(mime_type="image/png", filename="c.png", data_base64="AAAA"),
+            },
+            paragraphs=[
+                ParagraphIR(
+                    **_pdf_node_kwargs("paragraph", "s1.p1"),
+                    content=[
+                        ImageIR(**_pdf_node_kwargs("image", "s1.p1.img1"), image_id="img1", display_width_pt=72.0, display_height_pt=4.0),
+                        ImageIR(**_pdf_node_kwargs("image", "s1.p1.img2"), image_id="img2", display_width_pt=72.0, display_height_pt=4.0),
+                        ImageIR(**_pdf_node_kwargs("image", "s1.p1.img3"), image_id="img3", display_width_pt=72.0, display_height_pt=4.0),
+                    ],
+                )
+            ],
+        )
+
+        html = doc.to_html()
+
+        self.assertNotIn("line-height:0", html)
+        self.assertNotIn("display:block", html)
+        self.assertEqual(html.count("<img "), 3)
 
     def test_export_html_renders_bordered_page_frames_when_page_metadata_exists(self) -> None:
         doc = DocIR(pages=[

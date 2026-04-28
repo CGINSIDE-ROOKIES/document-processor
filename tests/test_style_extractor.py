@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 import zipfile
+from unittest.mock import patch
 
 THIS_DIR = Path(__file__).resolve().parent
 SRC_ROOT = THIS_DIR.parent / "src"
@@ -13,15 +14,73 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from document_processor import DocIR, HwpxDocument
+from document_processor.models import BoundingBox, ParagraphIR, RunIR, TableCellIR, TableIR
 from document_processor.core.style_extractor import (
     _repair_hwpx_xml_text,
     extract_styles,
     extract_styles_docx,
     extract_styles_hwpx,
 )
+from document_processor.style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
+from document_processor.pdf.odl.adapter import _pdf_node_kwargs
 
 
 class StyleExtractorTests(unittest.TestCase):
+    def test_extract_styles_pdf_projects_docir_styles_and_preview_table_geometry(self) -> None:
+        doc = DocIR(
+            doc_id="sample",
+            source_path="sample.pdf",
+            source_doc_type="pdf",
+            paragraphs=[
+                ParagraphIR(
+                    **_pdf_node_kwargs("paragraph", "s1.p1"),
+                    text="Hello",
+                    para_style=ParaStyleInfo(align="center"),
+                    content=[
+                        RunIR(
+                            **_pdf_node_kwargs("run", "s1.p1.r1"),
+                            text="Hello",
+                            run_style=RunStyleInfo(font_family="Noto Serif KR", size_pt=11.0),
+                        )
+                    ],
+                ),
+                ParagraphIR(
+                    **_pdf_node_kwargs("paragraph", "s1.p2"),
+                    text="",
+                    page_number=1,
+                    content=[
+                        TableIR(
+                            **_pdf_node_kwargs("table", "s1.p2.r1.tbl1"),
+                            row_count=1,
+                            col_count=1,
+                            bbox=BoundingBox(left_pt=10, bottom_pt=20, right_pt=110, top_pt=120),
+                            table_style=TableStyleInfo(row_count=1, col_count=1, width_pt=120.0, height_pt=48.0),
+                            cells=[
+                                TableCellIR(
+                                    **_pdf_node_kwargs("cell", "s1.p2.r1.tbl1.tr1.tc1"),
+                                    row_index=1,
+                                    col_index=1,
+                                    cell_style=CellStyleInfo(rowspan=1, colspan=1, width_pt=120.0, height_pt=48.0),
+                                )
+                            ],
+                        )
+                    ],
+                ),
+            ],
+        )
+
+        with patch("document_processor.pdf.parse_pdf_to_doc_ir", return_value=doc):
+            style_map = extract_styles("sample.pdf", doc_type="pdf")
+
+        self.assertEqual(style_map.paragraphs["s1.p1"].align, "center")
+        self.assertEqual(style_map.runs["s1.p1.r1"].font_family, "Noto Serif KR")
+        self.assertEqual(style_map.tables["s1.p2.r1.tbl1"].row_count, 1)
+        self.assertEqual(style_map.tables["s1.p2.r1.tbl1"].col_count, 1)
+        self.assertAlmostEqual(style_map.tables["s1.p2.r1.tbl1"].width_pt or 0.0, 120.0, places=3)
+        self.assertAlmostEqual(style_map.tables["s1.p2.r1.tbl1"].height_pt or 0.0, 48.0, places=3)
+        self.assertAlmostEqual(style_map.cells["s1.p2.r1.tbl1.tr1.tc1"].width_pt or 0.0, 120.0, places=3)
+        self.assertAlmostEqual(style_map.cells["s1.p2.r1.tbl1.tr1.tc1"].height_pt or 0.0, 48.0, places=3)
+
     def test_extract_docx_paragraph_indents(self) -> None:
         from docx import Document
         from docx.shared import Pt

@@ -10,8 +10,16 @@ from typing import TYPE_CHECKING, Literal
 from xml.etree import ElementTree as ET
 import zipfile
 
-from ..io_utils import infer_doc_type
-from ..style_types import CellStyleInfo, ColumnLayoutInfo, ListItemInfo, ParaStyleInfo, RunStyleInfo, StyleMap, TableStyleInfo
+from ..io_utils import TemporarySourcePath, infer_doc_type
+from ..style_types import (
+    CellStyleInfo,
+    ColumnLayoutInfo,
+    ListItemInfo,
+    ParaStyleInfo,
+    RunStyleInfo,
+    StyleMap,
+    TableStyleInfo,
+)
 from .hwp_converter import convert_hwp_to_hwpx_bytes
 
 if TYPE_CHECKING:
@@ -1888,6 +1896,47 @@ def extract_styles_docx(
     return style_map
 
 
+def _collect_style_map_from_doc_ir(doc_ir) -> StyleMap:
+    from ..models import _node_debug_path
+
+    style_map = StyleMap()
+
+    def collect_paragraph(paragraph) -> None:
+        if paragraph.para_style is not None:
+            style_map.paragraphs[_node_debug_path(paragraph)] = paragraph.para_style.model_copy(deep=True)
+        for run in paragraph.runs:
+            if run.run_style is not None:
+                style_map.runs[_node_debug_path(run)] = run.run_style.model_copy(deep=True)
+        for table in paragraph.tables:
+            collect_table(table)
+
+    def collect_table(table) -> None:
+        if table.table_style is not None:
+            style_map.tables[_node_debug_path(table)] = table.table_style.model_copy(deep=True)
+        for cell in table.cells:
+            if cell.cell_style is not None:
+                style_map.cells[_node_debug_path(cell)] = cell.cell_style.model_copy(deep=True)
+            for paragraph in cell.paragraphs:
+                collect_paragraph(paragraph)
+
+    for paragraph in doc_ir.paragraphs:
+        collect_paragraph(paragraph)
+
+    return style_map
+
+
+def extract_styles_pdf(source: str | Path | bytes) -> StyleMap:
+    from ..pdf import parse_pdf_to_doc_ir
+
+    if isinstance(source, (str, Path)):
+        doc_ir = parse_pdf_to_doc_ir(source)
+        return _collect_style_map_from_doc_ir(doc_ir)
+
+    with TemporarySourcePath(source, suffix=".pdf") as source_path:
+        doc_ir = parse_pdf_to_doc_ir(source_path)
+        return _collect_style_map_from_doc_ir(doc_ir)
+
+
 def extract_styles(
     source: "HwpxDocument | DocxDocument | str | Path | bytes",
     *,
@@ -1898,7 +1947,7 @@ def extract_styles(
     resolved = infer_doc_type(source, doc_type)
 
     if resolved == "pdf":
-        raise NotImplementedError("PDF style extraction is not implemented yet.")
+        return extract_styles_pdf(source)
 
     if resolved == "hwp":
         if not isinstance(source, (str, Path)):
@@ -1917,4 +1966,5 @@ __all__ = [
     "extract_styles",
     "extract_styles_docx",
     "extract_styles_hwpx",
+    "extract_styles_pdf",
 ]

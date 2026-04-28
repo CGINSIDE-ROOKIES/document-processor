@@ -28,12 +28,11 @@ uv pip install -e /path/to/document-processor
 
 ### Dependencies
 
-| Package | Purpose |
-|---|---|
-| `pydantic` | IR models and validation |
+| Package       | Purpose                            |
+| ------------- | ---------------------------------- |
+| `pydantic`    | IR models and validation           |
 | `python-docx` | DOCX parsing and native write-back |
-| `jpype1` | HWP conversion via Java interop |
-
+| `jpype1`      | HWP conversion via Java interop    |
 
 ## Quick start
 
@@ -57,7 +56,6 @@ The package covers:
 - stateless text editing with native file write-back
 - annotation resolution and review HTML rendering
 
-
 ## Custom metadata
 
 All IR models include a `.meta` field for attaching processing metadata
@@ -77,7 +75,7 @@ for file_ in files:
     with \
         open((out_dir / file_.stem).with_suffix(".json"), "w", encoding="utf-8") as json_f, \
         open((out_dir / file_.stem).with_suffix(".html"), "w", encoding="utf-8") as html_f:
-        
+
         json.dump(doc.model_dump(mode="json"), json_f, indent=4, ensure_ascii=False)
         html_f.write(doc.to_html())
 
@@ -85,7 +83,6 @@ for file_ in files:
 ```
 
 > **Note:** Metadata objects must extend Pydantic `BaseModel`. Otherwise a validation error is raised.
-
 
 ## Images in the IR
 
@@ -166,7 +163,6 @@ geometry, cell padding, and a black grid. HWPX table inserts are written as
 inline objects (`treatAsChar="1"`), and inserted rows/columns inherit nearby
 row/cell properties when possible.
 
-
 ## Annotations and review HTML
 
 Resolve text annotations against a document and render a highlighted review page:
@@ -195,7 +191,6 @@ result = render_review_html(
 html = result.html
 ```
 
-
 ## Exporting HTML
 
 Render a parsed document to styled HTML:
@@ -213,8 +208,6 @@ declared point dimensions next to browser-rendered sizes. HTML rendering clamps
 negative paragraph indents so text stays inside the page or table-cell content
 edge. Source cell margins are available on `CellStyleInfo.padding_*_pt` and are
 rendered as table-cell padding.
-
-
 ## Visualizing the models
 
 Install the visualization extra first:

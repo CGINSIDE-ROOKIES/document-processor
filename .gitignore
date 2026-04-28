@@ -3,6 +3,9 @@ results/
 document-spec-docs
 .codex
 
+# macOS Finder
+.DS_Store
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -210,3 +213,19 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# PDF local development artifacts
+# `__pycache__/` is already ignored globally above, but keep this section so
+# PDF-specific generated files have an obvious home when they grow.
+out/
+src/document_processor/pdf/__pycache__/
+
+# docs for local development
+docs
+pdf-docir-pipeline.ipynb
+pdf-preview-context.svg
+graphify-out/
+.graphify_python
+
+# local experimental scripts
+scripts
