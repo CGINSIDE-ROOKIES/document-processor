@@ -805,6 +805,66 @@ def _paragraph_bbox_or_content(paragraph: ParagraphIR) -> PdfBoundingBox | None:
     return _paragraph_bbox(paragraph) or _bbox_union([_content_node_bbox(node) for node in paragraph.content])
 
 
+_COLUMN_GRID_MATCH_TOLERANCE_PT = 12.0
+
+
+def _column_layout_from_bboxes(
+    left_column_bbox: PdfBoundingBox,
+    right_column_bbox: PdfBoundingBox,
+) -> ColumnLayoutInfo | None:
+    gap_pt = max(right_column_bbox.left_pt - left_column_bbox.right_pt, 0.0)
+    left_width = max(left_column_bbox.right_pt - left_column_bbox.left_pt, 0.0)
+    right_width = max(right_column_bbox.right_pt - right_column_bbox.left_pt, 0.0)
+    if gap_pt <= 0.0 or left_width <= 0.0 or right_width <= 0.0:
+        return None
+    return ColumnLayoutInfo(
+        count=2,
+        gap_pt=gap_pt,
+        widths_pt=[left_width, right_width],
+        equal_width=abs(left_width - right_width) <= 1.0,
+    )
+
+
+def _collect_column_grid_layouts(preview_context: PdfPreviewContext) -> list[tuple[PdfBoundingBox, PdfBoundingBox, ColumnLayoutInfo]]:
+    grids: list[tuple[PdfBoundingBox, PdfBoundingBox, ColumnLayoutInfo]] = []
+    page_numbers = sorted({region.page_number for region in preview_context.layout_regions})
+    for page_number in page_numbers:
+        page_regions = _page_regions_for_page(preview_context, page_number)
+        left_column_bbox = _bbox_union(
+            [region.bounding_box for region in page_regions if region.region_type == "left-column"]
+        )
+        right_column_bbox = _bbox_union(
+            [region.bounding_box for region in page_regions if region.region_type == "right-column"]
+        )
+        if left_column_bbox is None or right_column_bbox is None:
+            continue
+        layout = _column_layout_from_bboxes(left_column_bbox, right_column_bbox)
+        if layout is not None:
+            grids.append((left_column_bbox, right_column_bbox, layout))
+    return grids
+
+
+def _matching_column_grid_layout(
+    column_bbox: PdfBoundingBox,
+    *,
+    role: str,
+    grids: list[tuple[PdfBoundingBox, PdfBoundingBox, ColumnLayoutInfo]],
+) -> ColumnLayoutInfo | None:
+    column_width = _bbox_width(column_bbox) or 0.0
+    best: tuple[float, ColumnLayoutInfo] | None = None
+    for left_bbox, right_bbox, layout in grids:
+        reference_bbox = left_bbox if role == "left" else right_bbox
+        reference_width = _bbox_width(reference_bbox) or 0.0
+        left_delta = abs(column_bbox.left_pt - reference_bbox.left_pt)
+        width_delta = abs(column_width - reference_width)
+        if left_delta > _COLUMN_GRID_MATCH_TOLERANCE_PT or width_delta > _COLUMN_GRID_MATCH_TOLERANCE_PT:
+            continue
+        score = left_delta + width_delta
+        if best is None or score < best[0]:
+            best = (score, layout)
+    return best[1].model_copy(deep=True) if best is not None else None
+
+
 def _apply_region_driven_layout(
     doc_ir: DocIR,
     *,
@@ -817,6 +877,8 @@ def _apply_region_driven_layout(
     """
     if not doc_ir.pages:
         return
+
+    column_grid_layouts = _collect_column_grid_layouts(preview_context)
 
     for page in doc_ir.pages:
         page_regions = _page_regions_for_page(preview_context, page.page_number)
@@ -834,21 +896,16 @@ def _apply_region_driven_layout(
                 if region.region_type == "right-column"
             ]
         )
-        if left_column_bbox is None or right_column_bbox is None:
+        if left_column_bbox is not None and right_column_bbox is not None:
+            layout = _column_layout_from_bboxes(left_column_bbox, right_column_bbox)
+        elif left_column_bbox is not None:
+            layout = _matching_column_grid_layout(left_column_bbox, role="left", grids=column_grid_layouts)
+        elif right_column_bbox is not None:
+            layout = _matching_column_grid_layout(right_column_bbox, role="right", grids=column_grid_layouts)
+        else:
+            layout = None
+        if layout is None:
             continue
-
-        gap_pt = max(right_column_bbox.left_pt - left_column_bbox.right_pt, 0.0)
-        left_width = max(left_column_bbox.right_pt - left_column_bbox.left_pt, 0.0)
-        right_width = max(right_column_bbox.right_pt - right_column_bbox.left_pt, 0.0)
-        if gap_pt <= 0.0 or left_width <= 0.0 or right_width <= 0.0:
-            continue
-
-        layout = ColumnLayoutInfo(
-            count=2,
-            gap_pt=gap_pt,
-            widths_pt=[left_width, right_width],
-            equal_width=abs(left_width - right_width) <= 1.0,
-        )
 
         for paragraph in [p for p in doc_ir.paragraphs if p.page_number == page.page_number]:
             bbox = _paragraph_bbox_or_content(paragraph)

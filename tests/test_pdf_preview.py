@@ -138,6 +138,72 @@ class PdfPreviewTests(unittest.TestCase):
             (None, None, None, None),
         )
 
+    def test_enrich_pdf_doc_ir_reuses_known_column_grid_for_single_sided_column_region(self) -> None:
+        raw_document = {
+            "file name": "sample.pdf",
+            "number of pages": 2,
+            "pages": [
+                {"page number": 1, "width pt": 600, "height pt": 800},
+                {"page number": 2, "width pt": 600, "height pt": 800},
+            ],
+            "layout regions": [
+                {
+                    "region id": "p1-left",
+                    "region type": "left-column",
+                    "page number": 1,
+                    "bounding box": [72, 300, 286, 740],
+                },
+                {
+                    "region id": "p1-right",
+                    "region type": "right-column",
+                    "page number": 1,
+                    "bounding box": [308, 300, 522, 740],
+                },
+                {
+                    "region id": "p2-left",
+                    "region type": "left-column",
+                    "page number": 2,
+                    "bounding box": [72, 250, 287, 740],
+                },
+            ],
+            "kids": [
+                {
+                    "type": "paragraph",
+                    "content": "Left column page one",
+                    "page number": 1,
+                    "reading order index": 1,
+                    "bounding box": [72, 600, 286, 720],
+                },
+                {
+                    "type": "paragraph",
+                    "content": "Right column page one",
+                    "page number": 1,
+                    "reading order index": 2,
+                    "bounding box": [308, 600, 522, 720],
+                },
+                {
+                    "type": "paragraph",
+                    "content": "Left column page two",
+                    "page number": 2,
+                    "reading order index": 3,
+                    "bounding box": [72, 620, 287, 720],
+                },
+            ],
+        }
+
+        doc = build_doc_ir_from_odl_result(raw_document, source_path="sample.pdf")
+        context = build_pdf_preview_context(raw_document)
+
+        enrich_pdf_doc_ir(doc, preview_context=context)
+
+        page_two_paragraph = next(paragraph for paragraph in doc.paragraphs if paragraph.page_number == 2)
+        self.assertIsNotNone(page_two_paragraph.para_style)
+        self.assertIsNotNone(page_two_paragraph.para_style.column_layout)
+        self.assertEqual(page_two_paragraph.para_style.column_layout.count, 2)
+        self.assertEqual(page_two_paragraph.para_style.column_layout.column_index, 0)
+        self.assertEqual(page_two_paragraph.para_style.column_layout.widths_pt, [214.0, 214.0])
+        self.assertEqual(page_two_paragraph.para_style.column_layout.gap_pt, 22.0)
+
     def test_enrich_pdf_doc_ir_keeps_consecutive_image_strips_as_separate_paragraphs(self) -> None:
         raw_document = {
             "file name": "sample.pdf",
