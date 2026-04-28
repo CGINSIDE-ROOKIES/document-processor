@@ -433,12 +433,29 @@ class DocIR(BaseModel, Generic[T]):
         source_name = get_source_name(source)
         resolved_source_path = source_name
 
-        if resolved_doc_type in {"hwp", "pdf"}:
-            suffix = ".hwp" if resolved_doc_type == "hwp" else ".pdf"
-            with TemporarySourcePath(source, suffix=suffix) as source_path:
+        if resolved_doc_type == "pdf":
+            with TemporarySourcePath(source, suffix=".pdf") as source_path:
                 doc_ir = build_doc_ir_from_file(
                     source_path,
-                    doc_type=resolved_doc_type,
+                    doc_type="pdf",
+                    skip_empty=skip_empty,
+                    include_tables=include_tables,
+                    source_path=resolved_source_path,
+                    metadata=metadata,
+                    doc_id=doc_id,
+                    doc_cls=cls,
+                    **doc_kwargs,
+                )
+            doc_ir.source_doc_type = resolved_doc_type
+            if resolved_source_path is not None:
+                doc_ir.source_path = resolved_source_path
+            return doc_ir.ensure_node_identity()
+
+        if resolved_doc_type == "hwp":
+            with TemporarySourcePath(source, suffix=".hwp") as source_path:
+                doc_ir = build_doc_ir_from_file(
+                    source_path,
+                    doc_type="hwp",
                     skip_empty=skip_empty,
                     include_tables=include_tables,
                     source_path=resolved_source_path,
@@ -449,7 +466,7 @@ class DocIR(BaseModel, Generic[T]):
                 )
                 style_map = extract_styles(
                     source_path,
-                    doc_type=resolved_doc_type,
+                    doc_type="hwp",
                     include_tables=include_tables,
                 )
         else:
@@ -508,10 +525,6 @@ class DocIR(BaseModel, Generic[T]):
 
     def to_html(self, *, title: str | None = None, debug_layout: bool = False) -> str:
         """Render this document IR as styled HTML."""
-        if (self.source_doc_type or "").lower() == "pdf":
-            from .pdf.preview.render import render_pdf_preview_html
-            return render_pdf_preview_html(self, title=title)
-
         from .render_prep import prepare_doc_ir_for_html
         from .html_exporter import render_html_document
 

@@ -615,7 +615,7 @@ def _render_table(
     *,
     debug_layout: bool = False,
 ) -> str:
-    render_table_grid = bool(table.table_style and table.table_style.preview_grid)
+    render_table_grid = bool(table.table_style and table.table_style.render_grid)
     attrs = [f'style="{_table_css(table, para_style)}"']
     if debug_layout:
         attrs.append(f'data-node-id="{escape(table.node_id or "", quote=True)}"')

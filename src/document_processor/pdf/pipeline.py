@@ -22,13 +22,16 @@ def parse_pdf_to_doc_ir(
     doc_cls: type[DocIR] | None = None,
     **doc_kwargs: Any,
 ) -> DocIR:
-    return _parse_pdf_to_doc_ir_with_preview(
+    doc_ir, preview_context = _parse_pdf_to_doc_ir_with_preview(
         path,
         config=config,
         doc_id=doc_id,
         doc_cls=doc_cls,
         **doc_kwargs,
-    )[0]
+    )
+    from .preview.normalize import enrich_pdf_doc_ir
+
+    return enrich_pdf_doc_ir(doc_ir, preview_context=preview_context)
 
 
 def _parse_pdf_to_doc_ir_with_preview(

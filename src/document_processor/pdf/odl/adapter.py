@@ -151,7 +151,7 @@ def _table_style_from_node(node: dict[str, Any]) -> TableStyleInfo | None:
         col_count=coerce_int(node.get("number of columns")) or 0,
         width_pt=width_pt,
         height_pt=height_pt,
-        preview_grid=True,
+        render_grid=True,
     )
     return style if style.model_dump(exclude_defaults=True, exclude_none=True) else None
 
@@ -806,7 +806,7 @@ def _build_strip_table_paragraph(
             col_count=max(col_count, 1),
             width_pt=max(group_bbox.right_pt - group_bbox.left_pt, 0.0),
             height_pt=max(group_bbox.top_pt - group_bbox.bottom_pt, 0.0),
-            preview_grid=False,
+            render_grid=False,
         ),
         cells=cells,
     )

@@ -12,7 +12,7 @@ SRC_ROOT = THIS_DIR.parent / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from document_processor import DocIR, ParaStyleInfo, ParagraphIR, StyleMap
+from document_processor import DocIR, ParaStyleInfo, ParagraphIR, RunIR
 from document_processor.pdf import export_pdf_local_outputs
 from document_processor.pdf.odl import (
     build_doc_ir_from_odl_result,
@@ -27,17 +27,61 @@ from document_processor.pdf.odl.adapter import _pdf_node_kwargs
 
 
 class PdfPipelineTests(unittest.TestCase):
-    def test_docir_from_file_pdf_uses_common_builder_and_style_path_for_file_object(self) -> None:
+    def test_parse_pdf_to_doc_ir_applies_preview_context_before_returning_doc(self) -> None:
+        doc = DocIR(doc_id="sample", source_doc_type="pdf")
+        preview_context = PdfPreviewContext()
+
+        with patch(
+            "document_processor.pdf.pipeline._parse_pdf_to_doc_ir_with_preview",
+            return_value=(doc, preview_context),
+        ), patch("document_processor.pdf.preview.normalize.enrich_pdf_doc_ir") as enrich_pdf:
+            enrich_pdf.return_value = doc
+            result = parse_pdf_to_doc_ir("sample.pdf")
+
+        self.assertIs(result, doc)
+        enrich_pdf.assert_called_once_with(doc, preview_context=preview_context)
+
+    def test_pdf_docir_to_html_uses_common_html_renderer(self) -> None:
+        doc = DocIR(
+            doc_id="sample",
+            source_doc_type="pdf",
+            paragraphs=[
+                ParagraphIR(
+                    **_pdf_node_kwargs("paragraph", "s1.p1"),
+                    content=[RunIR(**_pdf_node_kwargs("run", "s1.p1.r1"), text="PDF body")],
+                )
+            ],
+        )
+
+        with patch(
+            "document_processor.pdf.preview.normalize.enrich_pdf_doc_ir",
+        ) as enrich_pdf, patch(
+            "document_processor.html_exporter.render_html_document",
+            return_value="<html>common</html>",
+        ) as render_html:
+            html = doc.to_html(title="Preview", debug_layout=True)
+
+        self.assertEqual(html, "<html>common</html>")
+        enrich_pdf.assert_not_called()
+        render_html.assert_called_once()
+        self.assertEqual(render_html.call_args.args[0].source_doc_type, "pdf")
+        self.assertEqual(render_html.call_args.kwargs["title"], "Preview")
+        self.assertTrue(render_html.call_args.kwargs["debug_layout"])
+
+    def test_docir_from_file_pdf_uses_common_builder_without_duplicate_style_extraction(self) -> None:
         built_doc = DocIR(
             doc_id="sample",
             source_path="sample.pdf",
             source_doc_type="pdf",
-            paragraphs=[ParagraphIR(**_pdf_node_kwargs("paragraph", "s1.p1"))],
+            paragraphs=[
+                ParagraphIR(
+                    **_pdf_node_kwargs("paragraph", "s1.p1"),
+                    para_style=ParaStyleInfo(align="center"),
+                )
+            ],
         )
-        style_map = StyleMap(paragraphs={"s1.p1": ParaStyleInfo(align="center")})
         with patch("document_processor.core.document_ir_parser.build_doc_ir_from_file", return_value=built_doc) as build_doc, patch(
             "document_processor.core.style_extractor.extract_styles",
-            return_value=style_map,
         ) as extract_styles:
             result = DocIR.from_file(BytesIO(b"%PDF-1.7\n%fake"), doc_type="pdf")
 
@@ -47,8 +91,7 @@ class PdfPipelineTests(unittest.TestCase):
         parsed_path = build_doc.call_args.args[0]
         self.assertTrue(str(parsed_path).endswith(".pdf"))
         self.assertEqual(build_doc.call_args.kwargs["doc_type"], "pdf")
-        extract_styles.assert_called_once()
-        self.assertEqual(extract_styles.call_args.kwargs["doc_type"], "pdf")
+        extract_styles.assert_not_called()
 
     def test_docir_from_file_pdf_to_html_renders_preview_content(self) -> None:
         raw_document = {
@@ -247,7 +290,7 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertEqual(doc.paragraphs[3].tables[0].native_anchor.debug_path, "s1.p4.r1.tbl1")
         self.assertEqual(doc.paragraphs[3].tables[0].bbox.left_pt, 200.0)
         self.assertIsNone(doc.paragraphs[3].tables[0].meta)
-        self.assertTrue(doc.paragraphs[3].tables[0].table_style.preview_grid)
+        self.assertTrue(doc.paragraphs[3].tables[0].table_style.render_grid)
         self.assertEqual(doc.paragraphs[3].tables[0].cells[0].native_anchor.debug_path, "s1.p4.r1.tbl1.tr1.tc1")
         self.assertEqual(doc.paragraphs[3].tables[0].cells[0].bbox.left_pt, 210.0)
         self.assertIsNone(doc.paragraphs[3].tables[0].cells[0].meta)

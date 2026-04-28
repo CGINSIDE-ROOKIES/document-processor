@@ -21,9 +21,8 @@ from document_processor.pdf.enhancement import (
     infer_cell_borders_from_rendered_page,
 )
 from document_processor.pdf.meta import PdfBoundingBox
-from document_processor.pdf.preview import prepare_pdf_for_html
+from document_processor.pdf.preview import enrich_pdf_doc_ir
 from document_processor.pdf.preview.models import PdfPreviewContext
-from document_processor.pdf.preview.render import render_pdf_preview_html
 from document_processor.style_types import CellStyleInfo, TableStyleInfo
 from document_processor.pdf.odl.adapter import _pdf_node_kwargs
 
@@ -103,7 +102,7 @@ class PdfEnrichmentTests(unittest.TestCase):
                         content=[
                             TableIR(
                                 **_pdf_node_kwargs("table", "p1.tbl1"),
-                                table_style=TableStyleInfo(preview_grid=True),
+                                table_style=TableStyleInfo(render_grid=True),
                                 cells=[
                                     TableCellIR(
                                         **_pdf_node_kwargs("cell", "p1.tbl1.tr1.tc1"),
@@ -152,7 +151,7 @@ class PdfEnrichmentTests(unittest.TestCase):
                         content=[
                             TableIR(
                                 **_pdf_node_kwargs("table", "p1.tbl1"),
-                                table_style=TableStyleInfo(preview_grid=True),
+                                table_style=TableStyleInfo(render_grid=True),
                                 cells=[
                                     TableCellIR(
                                         **_pdf_node_kwargs("cell", "p1.tbl1.tr1.tc1"),
@@ -219,7 +218,7 @@ class PdfEnrichmentTests(unittest.TestCase):
                         content=[
                             TableIR(
                                 **_pdf_node_kwargs("table", "p1.tbl1"),
-                                table_style=TableStyleInfo(preview_grid=True),
+                                table_style=TableStyleInfo(render_grid=True),
                                 cells=[
                                     TableCellIR(
                                         **_pdf_node_kwargs("cell", "p1.tbl1.tr1.tc1"),
@@ -249,69 +248,23 @@ class PdfEnrichmentTests(unittest.TestCase):
         self.assertIsNotNone(cell_style)
         self.assertEqual(cell_style.background, "#dfe6f7")
 
-    def test_prepare_pdf_for_html_enriches_pdf_tables_by_default(self) -> None:
+    def test_enrich_pdf_doc_ir_enriches_pdf_tables_by_default(self) -> None:
         doc = DocIR(source_doc_type="pdf", source_path="/tmp/example.pdf")
 
         with patch("document_processor.pdf.preview.normalize.enrich_pdf_table_borders") as enrich_borders, patch(
             "document_processor.pdf.preview.normalize.enrich_pdf_table_backgrounds"
         ) as enrich_backgrounds:
-            prepare_pdf_for_html(doc)
+            enrich_pdf_doc_ir(doc)
 
         enrich_borders.assert_called_once_with(doc)
         enrich_backgrounds.assert_called_once_with(doc)
 
-    def test_render_pdf_preview_html_accepts_explicit_preview_context(self) -> None:
+    def test_docir_to_html_routes_pdf_through_common_renderer(self) -> None:
         doc = DocIR(source_doc_type="pdf", source_path="/tmp/example.pdf")
-        attached_context = PdfPreviewContext()
 
-        with patch("document_processor.pdf.preview.render.prepare_pdf_for_html") as prepare_pdf, patch(
-            "document_processor.pdf.preview.render.render_html_document"
-        ) as render_html:
-            prepare_pdf.side_effect = lambda prepared_doc, preview_context=None: prepared_doc
-            render_html.return_value = "<html>preview</html>"
-
-            html = render_pdf_preview_html(doc, preview_context=attached_context)
+        with patch("document_processor.html_exporter.render_html_document", return_value="<html>preview</html>") as render_html:
+            html = doc.to_html()
 
         self.assertEqual(html, "<html>preview</html>")
-        prepare_pdf.assert_called_once()
-        self.assertEqual(
-            prepare_pdf.call_args.kwargs["preview_context"].model_dump(),
-            attached_context.model_dump(),
-        )
-
-    def test_docir_to_html_routes_pdf_without_attached_preview_context_through_preview_renderer(self) -> None:
-        doc = DocIR(source_doc_type="pdf", source_path="/tmp/example.pdf")
-
-        with patch("document_processor.pdf.preview.render.render_pdf_preview_html") as render_preview:
-            render_preview.return_value = "<html>preview</html>"
-            doc.to_html()
-
-        render_preview.assert_called_once_with(doc, title=None)
-
-    def test_docir_to_html_routes_pdf_without_source_path_through_preview_renderer(self) -> None:
-        doc = DocIR(source_doc_type="pdf")
-
-        with patch("document_processor.pdf.preview.render.render_pdf_preview_html") as render_preview:
-            render_preview.return_value = "<html>preview</html>"
-            doc.to_html()
-
-        render_preview.assert_called_once_with(doc, title=None)
-
-    def test_render_pdf_preview_html_does_not_restore_preview_context_from_doc_meta(self) -> None:
-        doc = DocIR(
-            source_doc_type="pdf",
-            source_path="/tmp/example.pdf",
-            pages=[PageInfo(page_number=1, width_pt=200, height_pt=120)],
-            paragraphs=[ParagraphIR(**_pdf_node_kwargs("paragraph", "s1.p1"), page_number=1, text="Preview body")],
-        )
-
-        with patch("document_processor.pdf.preview.render.prepare_pdf_for_html") as prepare_pdf, patch(
-            "document_processor.pdf.preview.render.render_html_document",
-            return_value="<html>body</html>",
-        ) as render_html:
-            prepare_pdf.side_effect = lambda prepared_doc, preview_context=None: prepared_doc
-            html = render_pdf_preview_html(doc, title="Preview")
-
-        self.assertIn("body", html)
         render_html.assert_called_once()
-        self.assertIsNone(prepare_pdf.call_args.kwargs["preview_context"])
+        self.assertEqual(render_html.call_args.args[0].source_doc_type, "pdf")

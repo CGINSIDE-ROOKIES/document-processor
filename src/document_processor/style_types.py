@@ -84,7 +84,7 @@ class TableStyleInfo(BaseModel):
     col_count: int = 0
     width_pt: float | None = None
     height_pt: float | None = None
-    preview_grid: bool = False
+    render_grid: bool = False
 
 
 class StyleMap(BaseModel):

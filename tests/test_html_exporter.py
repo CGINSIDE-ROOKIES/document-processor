@@ -256,7 +256,7 @@ class HtmlExporterTests(unittest.TestCase):
         self.assertIn("margin-left:0", html)
         self.assertIn("margin-right:auto", html)
 
-    def test_export_html_renders_pdf_table_grid_when_table_style_requests_preview_grid(self) -> None:
+    def test_export_html_renders_table_grid_when_table_style_requests_render_grid(self) -> None:
         doc = DocIR(
             source_doc_type="pdf",
             paragraphs=[
@@ -265,7 +265,7 @@ class HtmlExporterTests(unittest.TestCase):
                     content=[
                         TableIR(
                             **_pdf_node_kwargs("table", "s1.p1.r1.tbl1"),
-                            table_style=TableStyleInfo(preview_grid=True),
+                            table_style=TableStyleInfo(render_grid=True),
                             cells=[
                                 TableCellIR(
                                     **_pdf_node_kwargs("cell", "s1.p1.r1.tbl1.tr1.tc1"),

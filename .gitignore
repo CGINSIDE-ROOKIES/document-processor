@@ -222,6 +222,8 @@ src/document_processor/pdf/__pycache__/
 
 # docs for local development
 docs
+pdf-docir-pipeline.ipynb
+pdf-preview-context.svg
 graphify-out/
 .graphify_python
 

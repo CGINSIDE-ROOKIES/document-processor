@@ -23,8 +23,7 @@ from document_processor.pdf.preview.models import (
     PdfPreviewVisualBlockCandidate,
     PdfPreviewVisualPrimitive,
 )
-from document_processor.pdf.preview.normalize import prepare_pdf_for_html
-from document_processor.pdf.preview.render import render_pdf_html, render_pdf_preview_html
+from document_processor.pdf.preview.normalize import enrich_pdf_doc_ir
 
 
 class PdfPreviewTests(unittest.TestCase):
@@ -106,7 +105,7 @@ class PdfPreviewTests(unittest.TestCase):
 
         self.assertEqual(candidates, [candidate])
 
-    def test_prepare_pdf_for_html_preserves_missing_page_margins_when_pdf_margin_metadata_missing(self) -> None:
+    def test_enrich_pdf_doc_ir_preserves_missing_page_margins_when_pdf_margin_metadata_missing(self) -> None:
         raw_document = {
             "file name": "sample.pdf",
             "number of pages": 1,
@@ -126,7 +125,7 @@ class PdfPreviewTests(unittest.TestCase):
         doc = build_doc_ir_from_odl_result(raw_document, source_path="sample.pdf")
         context = build_pdf_preview_context(raw_document)
 
-        prepare_pdf_for_html(doc, preview_context=context)
+        enrich_pdf_doc_ir(doc, preview_context=context)
 
         self.assertEqual(len(doc.pages), 1)
         self.assertEqual(
@@ -139,7 +138,7 @@ class PdfPreviewTests(unittest.TestCase):
             (None, None, None, None),
         )
 
-    def test_prepare_pdf_for_html_keeps_consecutive_image_strips_as_separate_paragraphs(self) -> None:
+    def test_enrich_pdf_doc_ir_keeps_consecutive_image_strips_as_separate_paragraphs(self) -> None:
         raw_document = {
             "file name": "sample.pdf",
             "number of pages": 1,
@@ -184,7 +183,7 @@ class PdfPreviewTests(unittest.TestCase):
         doc = build_doc_ir_from_odl_result(raw_document, source_path="sample.pdf")
         context = build_pdf_preview_context(raw_document)
 
-        prepare_pdf_for_html(doc, preview_context=context)
+        enrich_pdf_doc_ir(doc, preview_context=context)
 
         self.assertEqual(len(doc.paragraphs), 4)
         self.assertIn("Figure caption", [paragraph.text.strip() for paragraph in doc.paragraphs])
@@ -1548,31 +1547,7 @@ class PdfPreviewTests(unittest.TestCase):
         self.assertEqual(open_frames[0].primitive_draw_orders, [600, 601, 602])
         self.assertEqual({candidate.candidate_type for candidate in candidates}, {"open_frame"})
 
-    def test_render_pdf_html_matches_render_pdf_preview_html_for_minimal_input(self) -> None:
-        raw_document = {
-            "file name": "sample.pdf",
-            "number of pages": 1,
-            "pages": [{"page number": 1, "width pt": 200, "height pt": 120}],
-            "kids": [
-                {
-                    "type": "paragraph",
-                    "content": "Hello preview",
-                    "page number": 1,
-                    "bounding box": [10, 20, 80, 36],
-                }
-            ],
-        }
-
-        doc = build_doc_ir_from_odl_result(raw_document, source_path="sample.pdf")
-        context = build_pdf_preview_context(raw_document)
-        expected_html = render_pdf_preview_html(doc, preview_context=context, title="Preview")
-
-        with patch("document_processor.pdf.pipeline._parse_pdf_to_doc_ir_with_preview", return_value=(doc, context)):
-            actual_html = render_pdf_html("sample.pdf", title="Preview")
-
-        self.assertEqual(actual_html, expected_html)
-
-    def test_render_pdf_preview_html_skips_candidate_overlay_when_it_matches_table_bbox(self) -> None:
+    def test_enrich_pdf_doc_ir_skips_candidate_overlay_when_it_matches_table_bbox(self) -> None:
         raw_document = {
             "file name": "sample.pdf",
             "number of pages": 1,
@@ -1633,13 +1608,14 @@ class PdfPreviewTests(unittest.TestCase):
             )
         )
 
-        html = render_pdf_preview_html(doc, preview_context=context, title="Preview")
+        enrich_pdf_doc_ir(doc, preview_context=context)
+        html = doc.to_html(title="Preview")
 
         self.assertIn("A1", html)
         self.assertIn("B1", html)
         self.assertNotIn("pdf-preview-candidate--axis_box", html)
 
-    def test_render_pdf_preview_html_promotes_single_candidate_to_layout_table_and_keeps_leftover_flow(self) -> None:
+    def test_enrich_pdf_doc_ir_promotes_single_candidate_to_layout_table_and_keeps_leftover_flow(self) -> None:
         raw_document = {
             "file name": "sample.pdf",
             "number of pages": 1,
@@ -1677,7 +1653,8 @@ class PdfPreviewTests(unittest.TestCase):
             )
         )
 
-        html = render_pdf_preview_html(doc, preview_context=context, title="Preview")
+        enrich_pdf_doc_ir(doc, preview_context=context)
+        html = doc.to_html(title="Preview")
 
         self.assertEqual(html.count("<table"), 1)
         self.assertIn("width:100.0pt", html)
@@ -1688,7 +1665,7 @@ class PdfPreviewTests(unittest.TestCase):
         self.assertNotIn("pdf-preview-candidate--axis_box", html)
         self.assertNotIn("pdf-preview-page-candidates", html)
 
-    def test_render_pdf_preview_html_promotes_aligned_candidates_to_multicell_layout_table(self) -> None:
+    def test_enrich_pdf_doc_ir_promotes_aligned_candidates_to_multicell_layout_table(self) -> None:
         raw_document = {
             "file name": "sample.pdf",
             "number of pages": 1,
@@ -1736,7 +1713,8 @@ class PdfPreviewTests(unittest.TestCase):
             ]
         )
 
-        html = render_pdf_preview_html(doc, preview_context=context, title="Preview")
+        enrich_pdf_doc_ir(doc, preview_context=context)
+        html = doc.to_html(title="Preview")
 
         self.assertEqual(html.count("<table"), 1)
         self.assertEqual(html.count("<td"), 2)

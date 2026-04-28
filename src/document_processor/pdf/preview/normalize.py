@@ -744,7 +744,7 @@ def _build_layout_table_paragraph_for_group(
             width_pt=max(group_bbox.right_pt - group_bbox.left_pt, 0.0),
             # 도식용 layout table은 원본에 있던 박스 cell만 선을 그린다.
             # 전체 grid를 켜면 빈 filler cell에도 선이 생겨 PDF보다 지저분해진다.
-            preview_grid=False,
+            render_grid=False,
         ),
         cells=cells,
     )
@@ -810,7 +810,7 @@ def _apply_region_driven_layout(
     *,
     preview_context: PdfPreviewContext,
 ) -> None:
-    """ODL left-column/right-column을 paragraph.column_layout에 반영한다.
+    """ODL left-column/right-column을 paragraph.para_style.column_layout에 반영한다.
 
     페이지를 나누지 않고, 같은 페이지 안의 2단 편집을 HTML 렌더러가
     좌/우 flow로 렌더할 수 있도록 `column_index`만 붙인다.
@@ -1132,7 +1132,7 @@ def _layout_row_paragraph(
             col_count=len(cells),
             width_pt=_bbox_width(row_bbox),
             height_pt=_bbox_height(row_bbox),
-            preview_grid=False,
+            render_grid=False,
         ),
         cells=cells,
     )
@@ -1325,12 +1325,12 @@ def _apply_bbox_style_hints(doc_ir: DocIR) -> None:
 
 # ---------- public surface ----------
 
-def prepare_pdf_for_html(
+def enrich_pdf_doc_ir(
     doc_ir: DocIR,
     *,
     preview_context: PdfPreviewContext | None = None,
 ) -> DocIR:
-    """PDF DocIR를 공통 HTML 렌더러에 넘기기 전에 preview용으로 보정한다.
+    """PDF 원천 정보에서 얻은 layout/style hint를 공통 DocIR에 반영한다.
 
     호출 순서가 중요하다. 먼저 visual block을 TableIR로 승격하고, spread page를
     나눈 뒤, 남은 page 안에서 column/layout-row 보정을 적용한다.

@@ -1896,12 +1896,6 @@ def extract_styles_docx(
     return style_map
 
 
-def _parse_pdf_to_doc_ir_with_preview(source):
-    from ..pdf.pipeline import _parse_pdf_to_doc_ir_with_preview as parse_with_preview
-
-    return parse_with_preview(source)
-
-
 def _collect_style_map_from_doc_ir(doc_ir) -> StyleMap:
     from ..models import _node_debug_path
 
@@ -1932,16 +1926,14 @@ def _collect_style_map_from_doc_ir(doc_ir) -> StyleMap:
 
 
 def extract_styles_pdf(source: str | Path | bytes) -> StyleMap:
-    from ..pdf.preview.normalize import _apply_preview_table_geometry
+    from ..pdf import parse_pdf_to_doc_ir
 
     if isinstance(source, (str, Path)):
-        doc_ir, preview_context = _parse_pdf_to_doc_ir_with_preview(source)
-        _apply_preview_table_geometry(doc_ir, preview_context=preview_context)
+        doc_ir = parse_pdf_to_doc_ir(source)
         return _collect_style_map_from_doc_ir(doc_ir)
 
     with TemporarySourcePath(source, suffix=".pdf") as source_path:
-        doc_ir, preview_context = _parse_pdf_to_doc_ir_with_preview(source_path)
-        _apply_preview_table_geometry(doc_ir, preview_context=preview_context)
+        doc_ir = parse_pdf_to_doc_ir(source_path)
         return _collect_style_map_from_doc_ir(doc_ir)
 
 

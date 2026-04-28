@@ -19,7 +19,6 @@ class PdfPreviewModuleApiTests(unittest.TestCase):
             "document_processor.pdf.preview.shared",
             "document_processor.pdf.preview.context",
             "document_processor.pdf.preview.normalize",
-            "document_processor.pdf.preview.render",
         ):
             module = importlib.import_module(module_name)
             self.assertIsNotNone(module)
@@ -27,10 +26,7 @@ class PdfPreviewModuleApiTests(unittest.TestCase):
     def test_preview_root_exports_minimal_public_api(self) -> None:
         module = importlib.import_module("document_processor.pdf.preview")
         expected_exports = {
-            "prepare_pdf_for_html",
-            "render_pdf_html",
-            "render_pdf_preview_html",
-            "render_pdf_preview_html_from_file",
+            "enrich_pdf_doc_ir",
         }
         forbidden_exports = {
             "PdfLayoutRegion",
@@ -39,6 +35,8 @@ class PdfPreviewModuleApiTests(unittest.TestCase):
             "PdfPreviewTableContext",
             "PdfPreviewVisualPrimitive",
             "build_pdf_preview_context",
+            "render_pdf_preview_html",
+            "prepare_pdf_for_html",
         }
 
         self.assertEqual(set(getattr(module, "__all__", [])), expected_exports)

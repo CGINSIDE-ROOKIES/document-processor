@@ -1,18 +1,13 @@
-"""PDF HTML preview 진입점.
+"""PDF HTML preview 보정 레이어.
 
-이 패키지는 PDF를 DocIR로 만든 뒤 HTML preview에 맞게 약간 보정하는
-전용 레이어다. 공통 HTML 렌더러는 그대로 쓰고, PDF에서만 얻을 수 있는
-ODL layout region, bbox, pdfium 시각 primitive 같은 힌트를 여기서 해석한다.
+PDF parse 단계가 이 레이어를 사용해 DocIR에 layout hint를 반영한다.
+일반 HTML 출력은 최종 DocIR의 `to_html()`이 공통 렌더러로 처리한다.
 """
 
 from __future__ import annotations
 
-from .normalize import prepare_pdf_for_html
-from .render import render_pdf_html, render_pdf_preview_html, render_pdf_preview_html_from_file
+from .normalize import enrich_pdf_doc_ir
 
 __all__ = [
-    "prepare_pdf_for_html",
-    "render_pdf_html",
-    "render_pdf_preview_html",
-    "render_pdf_preview_html_from_file",
+    "enrich_pdf_doc_ir",
 ]
