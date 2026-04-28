@@ -1,6 +1,6 @@
 # document-processor PDF
 
-Installable local-mode PDF parser for `document-processor`.
+PDF parser for `document-processor`.
 
 ```python
 from document_processor import DocIR
@@ -8,16 +8,10 @@ from document_processor import DocIR
 doc = DocIR.from_file("/path/to/file.pdf", doc_type="pdf")
 ```
 
-PDF support is available as an optional local-mode extra:
-
-```bash
-pip install "document-processor[pdf-local]"
-```
-
 The PDF package focuses on:
 
 - canonical PDF -> `DocIR` conversion
-- PDF HTML preview rendering
+- shared `DocIR.to_html()` rendering
 - OpenDataLoader local output export
 - table/style fidelity improvements on top of shared `DocIR`
 
@@ -52,17 +46,9 @@ doc = DocIR.from_file("/path/to/file.pdf", doc_type="pdf")
 html = doc.to_html(title="PDF Preview")
 ```
 
-For PDF documents, `DocIR.to_html()` automatically takes the higher-fidelity PDF
-preview path when `source_path` is available.
-
-That means the HTML path can reflect PDF-only preview hints such as:
-
-- `layout regions`
-- `reading order index`
-- raw table geometry
-
-If a PDF `DocIR` has no usable `source_path`, `to_html()` falls back to the shared
-canonical HTML renderer.
+PDF-specific extraction evidence is consumed during parsing/enrichment and written
+back into `DocIR`. `DocIR.to_html()` then uses the same shared HTML renderer as
+other document types.
 
 
 ## PDF Local Outputs
@@ -91,13 +77,13 @@ This is useful when:
 
 ## PDF Notes
 
-PDF uses a dedicated pipeline:
+PDF uses a dedicated parse/enrich pipeline:
 
-- `probe -> triage -> ODL -> adapter -> DocIR`
+- `probe -> triage -> ODL -> dotted-rule preprocessing -> adapter -> preview context -> DocIR enrichment`
 
-When HTML is requested, the PDF path adds one more preview step:
+HTML rendering stays on the shared path:
 
-- `DocIR -> pdf.preview.normalize/render -> shared html exporter`
+- `DocIR -> shared html exporter`
 
 The adapter preserves and normalizes:
 
@@ -107,20 +93,15 @@ The adapter preserves and normalizes:
 - run style fields such as font family, size, color, underline, strikethrough
 - first-class DocIR page numbers and bounding boxes copied from ODL geometry
 
-The preview path additionally uses raw ODL-derived hints such as:
+The enrichment path additionally uses raw ODL/pdfium-derived hints such as:
 
 - `layout regions[]`
 - `grid row boundaries`
 - `grid column boundaries`
 - visual block candidates
 
-The core `DocIR` model stays shared. Current PDF-specific state is split into:
-
-- canonical structure in `DocIR`
-- style-projectable results in `StyleMap`
-- preview-only layout hints in the runtime `PdfPreviewContext`
-
-The preview renderer uses explicit runtime preview context. Preview layout hints are not persisted in `DocIR.meta`.
+The core `DocIR` model stays shared. PDF-specific intermediate state is consumed
+before rendering and projected into common DocIR/style fields where possible.
 
 
 ## Preview Fidelity Options
@@ -146,9 +127,9 @@ html = doc.to_html(title="Preview Fidelity")
 Recommended split:
 
 - default `DocIR.from_file(..., doc_type="pdf")`
-  - canonical / chunking / RAG-safe path
+  - canonical parsing plus PDF layout/style enrichment
 - `DocIR.to_html()`
-  - preview-oriented HTML path for parsed PDFs
+  - shared HTML rendering path
 - `keep_line_breaks`, `preserve_whitespace`
   - preview-fidelity options only
 

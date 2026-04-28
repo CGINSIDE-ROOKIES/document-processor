@@ -11,6 +11,7 @@ requires-python = ">=3.13"
 dependencies = [
     "jpype1>=1.6.0",
     "pydantic>=2.12.0",
+    "pypdfium2>=5.6.0,<6.0.0",
     "python-docx>=1.2.0",
 ]
 
@@ -18,22 +19,12 @@ dependencies = [
 viz = [
     "erdantic>=1.0.0",
 ]
-# Keep the PDF extra small: Java/ODL stays vendored, and `pypdfium2` covers
-# probe plus optional table-border enrichment.
-pdf-local = [
-    "pypdfium2>=5.6.0,<6.0.0",
-]
-# Preserve the shorter `pdf` extra as an alias for local-mode PDF support.
-pdf = [
-    "pypdfium2>=5.6.0,<6.0.0",
-]
 
 [project.scripts]
 document-processor-diagram = "document_processor.diagram:main"
 
 [dependency-groups]
 dev = [
-    "ipykernel>=6.29.5",
     "pytest>=9.0.3",
 ]
 
@@ -41,6 +32,6 @@ dev = [
 packages = ["src/document_processor"]
 artifacts = [
     "src/document_processor/core/vendor/**/*.jar",
-    # PDF local mode depends on the vendored ODL CLI JAR at runtime.
+    # PDF parsing depends on the vendored ODL CLI JAR at runtime.
     "src/document_processor/pdf/odl/vendor/**/*.jar",
 ]
