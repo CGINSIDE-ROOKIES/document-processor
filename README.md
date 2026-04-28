@@ -53,7 +53,7 @@ The package covers:
 - style extraction (fonts, colors, alignment, spacing, borders, ...)
 - structural IR creation
 - embedded image extraction for `docx` and `hwpx`
-- stateless text editing with native file write-back
+- stateless text, structural, and style editing with native file write-back
 - annotation resolution and review HTML rendering
 
 ## Custom metadata
@@ -88,6 +88,9 @@ for file_ in files:
 
 Parsed image binaries are stored once on `DocIR.assets`, and paragraph-like nodes keep ordered
 `content` entries so text, tables, and images can be rendered in source order.
+Image dimensions render to HTML. Floating placement metadata is represented on
+`ImageIR.placement` when present, but wrapping/absolute placement is not fully
+projected to HTML yet.
 
 ```python
 from document_processor import DocIR
@@ -108,13 +111,14 @@ editable text without generated numbering; `read_document(...)` also returns
 
 ## Editing documents
 
-The stateless edit API lets you apply text and structural edits to documents.
+The stateless edit API lets you apply text, structural, and style edits to documents.
 Edits are validated before application, and results can be returned as an
 updated `DocIR`, written back to the native file format, or returned as bytes.
 
 ```python
 from document_processor import (
     DocumentInput,
+    StyleEdit,
     StructuralEdit,
     TextEdit,
     apply_document_edits,
@@ -138,8 +142,8 @@ result = apply_document_edits(
 Related helpers:
 
 - `get_document_context()` &mdash; fetch surrounding paragraphs for target IDs
-- `list_editable_targets()` &mdash; enumerate safe paragraph, run, cell, and table targets
-- `validate_document_edits()` &mdash; validate text replacements, insert/remove operations, and table edits
+- `list_editable_targets()` &mdash; enumerate safe paragraph, run, cell, table, and image targets
+- `validate_document_edits()` &mdash; validate text replacements, insert/remove operations, table edits, and style edits
 
 Structural edits use the same stable `node_id` targets:
 
@@ -162,6 +166,33 @@ Inserted DOCX/HWPX tables receive basic visible table defaults: non-zero
 geometry, cell padding, and a black grid. HWPX table inserts are written as
 inline objects (`treatAsChar="1"`), and inserted rows/columns inherit nearby
 row/cell properties when possible.
+
+Style edits use a flat DTO designed for LLM tool schemas:
+
+```python
+result = apply_document_edits(
+    document=document,
+    edits=[
+        StyleEdit(
+            target_kind="run",
+            target_id=preview.paragraphs[0].runs[0].node_id,
+            bold=True,
+            color="#445566",
+            font_size_pt=16,
+        ),
+    ],
+    return_doc_ir=True,
+)
+```
+
+`StyleEdit` can target runs, paragraphs, cells, tables, and images. Cell style
+edits include background, alignment, padding, borders, and dimensions. Cell
+`width_pt` is applied as column geometry and cell `height_pt` as row geometry.
+Border fields accept CSS-style values such as `"1px solid #445566"` and
+native-style values such as `"1pt single #445566"`.
+Table style edits cover floating placement fields; image style edits include
+dimensions and floating placement fields for native DOCX/HWPX write-back.
+
 
 ## Annotations and review HTML
 

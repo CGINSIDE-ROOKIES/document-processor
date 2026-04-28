@@ -286,6 +286,12 @@ def _cell_padding_css(style: CellStyleInfo | None) -> str:
     return f"padding:{top:.1f}pt {right:.1f}pt {bottom:.1f}pt {left:.1f}pt"
 
 
+def _css_border(value: str | None) -> str | None:
+    if not value:
+        return None
+    return re.sub(r"(?<=\s)single(?=\s)", "solid", value.strip(), flags=re.IGNORECASE)
+
+  
 def _cell_css(style: CellStyleInfo | None, *, render_table_grid: bool = False) -> str:
     parts: list[str] = ["box-sizing:border-box"]
     fallback_border = "1px solid #4a4f57" if render_table_grid else "none"
@@ -305,10 +311,10 @@ def _cell_css(style: CellStyleInfo | None, *, render_table_grid: bool = False) -
         if height_pt is not None:
             parts.append(f"height:{height_pt:.1f}pt")
 
-        parts.append(f"border-top:{style.border_top or fallback_border}")
-        parts.append(f"border-bottom:{style.border_bottom or fallback_border}")
-        parts.append(f"border-left:{style.border_left or fallback_border}")
-        parts.append(f"border-right:{style.border_right or fallback_border}")
+        parts.append(f"border-top:{_css_border(style.border_top) or fallback_border}")
+        parts.append(f"border-bottom:{_css_border(style.border_bottom) or fallback_border}")
+        parts.append(f"border-left:{_css_border(style.border_left) or fallback_border}")
+        parts.append(f"border-right:{_css_border(style.border_right) or fallback_border}")
 
         diagonal_background = _cell_diagonal_background(style)
         if diagonal_background:

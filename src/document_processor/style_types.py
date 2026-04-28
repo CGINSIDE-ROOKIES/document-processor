@@ -77,6 +77,27 @@ class CellStyleInfo(BaseModel):
     colspan: int = 1
 
 
+class ObjectPlacementInfo(BaseModel):
+    """Format-agnostic object placement metadata for floating tables and images."""
+
+    mode: str | None = None
+    wrap: str | None = None
+    text_flow: str | None = None
+    x_relative_to: str | None = None
+    y_relative_to: str | None = None
+    x_align: str | None = None
+    y_align: str | None = None
+    x_offset_pt: float | None = None
+    y_offset_pt: float | None = None
+    margin_top_pt: float | None = None
+    margin_right_pt: float | None = None
+    margin_bottom_pt: float | None = None
+    margin_left_pt: float | None = None
+    allow_overlap: bool | None = None
+    flow_with_text: bool | None = None
+    z_order: int | None = None
+
+
 class TableStyleInfo(BaseModel):
     """Table-level metadata."""
 
@@ -84,6 +105,7 @@ class TableStyleInfo(BaseModel):
     col_count: int = 0
     width_pt: float | None = None
     height_pt: float | None = None
+    placement: ObjectPlacementInfo | None = None
     render_grid: bool = False
 
 
@@ -99,6 +121,7 @@ class StyleMap(BaseModel):
 __all__ = [
     "ColumnLayoutInfo",
     "ListItemInfo",
+    "ObjectPlacementInfo",
     "RunStyleInfo",
     "ParaStyleInfo",
     "CellStyleInfo",

@@ -16,6 +16,7 @@ from document_processor import (  # noqa: E402
     DocIR,
     DocumentInput,
     EditableTarget,
+    StyleEdit,
     StructuralEdit,
     TargetKind,
     TextAnnotation,
@@ -92,9 +93,19 @@ def default_comprehensive_output_path(source_path: Path, output_dir: Path) -> Pa
     return output_dir / f"{source_path.stem}_comprehensive_edit{suffix}"
 
 
+def default_style_output_path(source_path: Path, output_dir: Path, source_doc_type: str) -> Path:
+    suffix = ".hwpx" if source_doc_type == "hwp" else source_path.suffix or ".out"
+    return output_dir / f"{source_path.stem}_style_edit{suffix}"
+
+
 def default_bytes_output_filename(source_path: Path, *, marker: str = "manual_edit_bytes") -> str:
     suffix = source_path.suffix or ".bin"
     return f"{source_path.stem}_{marker}{suffix}"
+
+
+def default_style_bytes_output_filename(source_path: Path, source_doc_type: str) -> str:
+    suffix = ".hwpx" if source_doc_type == "hwp" else source_path.suffix or ".bin"
+    return f"{source_path.stem}_style_edit_bytes{suffix}"
 
 
 def output_doc_type_for_name(output_name: str | Path | None, source_doc_type: str) -> str:
@@ -378,6 +389,23 @@ def iter_doc_ir_tables(doc: DocIR) -> Any:
         yield from iter_paragraph_tables(paragraph)
 
 
+def iter_doc_ir_paragraph_nodes(doc: DocIR) -> Any:
+    yield from iter_paragraph_node_tree(doc.paragraphs)
+
+
+def iter_paragraph_node_tree(paragraphs) -> Any:
+    for paragraph in paragraphs:
+        yield paragraph
+        for table in paragraph.tables:
+            for cell in table.cells:
+                yield from iter_paragraph_node_tree(cell.paragraphs)
+
+
+def iter_doc_ir_images(doc: DocIR) -> Any:
+    for paragraph in iter_doc_ir_paragraph_nodes(doc):
+        yield from paragraph.images
+
+
 def iter_paragraph_tables(paragraph) -> Any:
     for table in paragraph.tables:
         yield table
@@ -409,6 +437,30 @@ def find_doc_ir_cell_table(doc: DocIR, cell_id: str) -> tuple[Any, Any] | None:
         for cell in table.cells:
             if cell.node_id == cell_id:
                 return table, cell
+    return None
+
+
+def find_doc_ir_node(doc: DocIR, target_kind: str, target_id: str) -> Any | None:
+    if target_kind == "paragraph":
+        for paragraph in iter_doc_ir_paragraph_nodes(doc):
+            if paragraph.node_id == target_id:
+                return paragraph
+    elif target_kind == "run":
+        for paragraph in iter_doc_ir_paragraph_nodes(doc):
+            for run in paragraph.runs:
+                if run.node_id == target_id:
+                    return run
+    elif target_kind == "cell":
+        table_and_cell = find_doc_ir_cell_table(doc, target_id)
+        return table_and_cell[1] if table_and_cell is not None else None
+    elif target_kind == "table":
+        for table in iter_doc_ir_tables(doc):
+            if table.node_id == target_id:
+                return table
+    elif target_kind == "image":
+        for image in iter_doc_ir_images(doc):
+            if image.node_id == target_id:
+                return image
     return None
 
 
@@ -588,10 +640,125 @@ def build_structural_operations(
     return operations, expected_markers, table_summary
 
 
+def select_first_style_target(document: DocumentInput, target_kind: TargetKind) -> EditableTarget | None:
+    result = list_editable_targets(
+        document=document,
+        target_kinds=[target_kind],
+        only_writable=True,
+        include_child_runs=False,
+        max_targets=None,
+    )
+    targets = [target for target in result.targets if target.target_id]
+    if target_kind == "run":
+        targets = [target for target in targets if target.current_text.strip()]
+    return targets[0] if targets else None
+
+
+def build_style_edits(
+    *,
+    document: DocumentInput,
+    source_doc_type: str,
+) -> tuple[list[StyleEdit], list[dict[str, Any]], list[str]]:
+    edits: list[StyleEdit] = []
+    selected_targets: list[dict[str, Any]] = []
+    skipped: list[str] = []
+
+    def add_target(target: EditableTarget | None, edit_kwargs: dict[str, Any]) -> None:
+        if target is None:
+            return
+        edit = StyleEdit(
+            target_kind=target.target_kind,  # type: ignore[arg-type]
+            target_id=target.target_id,
+            **edit_kwargs,
+        )
+        edits.append(edit)
+        selected_targets.append(target.model_dump(mode="json"))
+
+    add_target(
+        select_first_style_target(document, "run"),
+        {
+            "bold": True,
+            "color": "#445566",
+            "font_size_pt": 32,
+            "reason": "Manual run style smoke check.",
+        },
+    )
+    add_target(
+        select_first_style_target(document, "paragraph"),
+        {
+            "paragraph_align": "right",
+            "left_indent_pt": 0,
+            "reason": "Manual paragraph style smoke check.",
+        },
+    )
+
+    cell_target = select_first_style_target(document, "cell")
+    add_target(
+        cell_target,
+        {
+            "background": "#FFF2CC",
+            "vertical_align": "bottom",
+            "horizontal_align": "right",
+            "width_pt": 50,
+            "height_pt": 100,
+            "padding_left_pt": 6,
+            "padding_right_pt": 6,
+            "border_top": "1pt single #445566",
+            "border_right": "1pt single #445566",
+            "border_bottom": "1pt single #445566",
+            "border_left": "1pt single #445566",
+            "reason": "Manual cell style smoke check.",
+        },
+    )
+
+    image_placement = {
+        "width_pt": 144,
+        "reason": "Manual image size style smoke check.",
+    }
+    add_target(select_first_style_target(document, "image"), image_placement)
+
+    if not any(edit.target_kind == "cell" for edit in edits):
+        skipped.append("No table cell target was available for cell style testing.")
+    if not any(edit.target_kind == "image" for edit in edits):
+        skipped.append("No image target was available for floating image style testing.")
+
+    return edits, selected_targets, skipped
+
+
+def summarize_style_target_state(doc: DocIR, edit: StyleEdit) -> dict[str, Any]:
+    node = find_doc_ir_node(doc, edit.target_kind, edit.target_id)
+    if node is None:
+        return {"target_kind": edit.target_kind, "target_id": edit.target_id, "missing": True}
+    if edit.target_kind == "run":
+        style = node.run_style.model_dump(mode="json", exclude_none=True) if node.run_style is not None else None
+        return {"target_kind": edit.target_kind, "target_id": edit.target_id, "text": node.text, "style": style}
+    if edit.target_kind == "paragraph":
+        style = node.para_style.model_dump(mode="json", exclude_none=True) if node.para_style is not None else None
+        return {"target_kind": edit.target_kind, "target_id": edit.target_id, "text": node.text, "style": style}
+    if edit.target_kind == "cell":
+        style = node.cell_style.model_dump(mode="json", exclude_none=True) if node.cell_style is not None else None
+        return {"target_kind": edit.target_kind, "target_id": edit.target_id, "text": node.text, "style": style}
+    if edit.target_kind == "table":
+        style = node.table_style.model_dump(mode="json", exclude_none=True) if node.table_style is not None else None
+        return {"target_kind": edit.target_kind, "target_id": edit.target_id, "style": style}
+    if edit.target_kind == "image":
+        placement = node.placement.model_dump(mode="json", exclude_none=True) if node.placement is not None else None
+        return {
+            "target_kind": edit.target_kind,
+            "target_id": edit.target_id,
+            "display_width_pt": node.display_width_pt,
+            "display_height_pt": node.display_height_pt,
+            "placement": placement,
+        }
+    return {"target_kind": edit.target_kind, "target_id": edit.target_id}
+
+
 def operation_summary(result) -> dict[str, Any]:
     return {
         "ok": result.ok,
+        "edits_applied": result.edits_applied,
         "operations_applied": result.operations_applied,
+        "styles_applied": result.styles_applied,
         "modified_target_ids": result.modified_target_ids,
         "created_target_ids": result.created_target_ids,
         "removed_target_ids": result.removed_target_ids,
@@ -790,6 +957,111 @@ def run_comprehensive_edit_suite(
     }
 
 
+def run_style_edit_suite(
+    *,
+    source_path: Path,
+    source_doc_type: str,
+    document: DocumentInput,
+    output_dir: Path,
+) -> dict[str, Any]:
+    style_edits, selected_targets, skipped = build_style_edits(
+        document=document,
+        source_doc_type=source_doc_type,
+    )
+    if not style_edits:
+        return {
+            "skipped": True,
+            "reason": "No compatible style targets were found for this source document.",
+            "skipped_capabilities": skipped,
+            "operations": [],
+            "selected_targets": [],
+        }
+
+    validation = validate_document_edits(document=document, edits=style_edits)
+    require_validation_ok("validate_document_edits style", validation)
+
+    suites: dict[str, Any] = {}
+    output_specs = {
+        "native_file": {
+            "output_path": default_style_output_path(source_path, output_dir, source_doc_type),
+            "output_filename": None,
+            "source_document": document,
+        },
+        "bytes": {
+            "output_path": None,
+            "output_filename": default_style_bytes_output_filename(source_path, source_doc_type),
+            "source_document": DocumentInput(
+                source_bytes=source_path.read_bytes(),
+                source_doc_type=source_doc_type,  # type: ignore[arg-type]
+                source_name=source_path.name,
+            ),
+        },
+    }
+
+    for suite_name, spec in output_specs.items():
+        result = apply_document_edits(
+            document=spec["source_document"],
+            edits=style_edits,
+            output_path=None if spec["output_path"] is None else str(spec["output_path"]),
+            output_filename=spec["output_filename"],
+            return_doc_ir=True,
+        )
+        require_result_ok(f"apply_document_edits style {suite_name}", result)
+        if result.styles_applied != len(style_edits):
+            raise RuntimeError(
+                f"Style {suite_name} applied {result.styles_applied} style edit(s), expected {len(style_edits)}."
+            )
+        if result.updated_doc_ir is None:
+            raise RuntimeError(f"Style {suite_name} edit did not return updated_doc_ir.")
+
+        if suite_name == "bytes":
+            if result.output_bytes is None:
+                raise RuntimeError("Style bytes edit did not return output_bytes.")
+            saved_output_path = output_dir / (result.output_filename or spec["output_filename"])
+            saved_output_path.write_bytes(result.output_bytes)
+        else:
+            saved_output_path = Path(result.output_path or spec["output_path"])
+            if not saved_output_path.exists():
+                raise RuntimeError(f"Style edited output file was not created: {saved_output_path}")
+
+        reparsed = parse_output_doc_ir(
+            result.output_bytes if suite_name == "bytes" else saved_output_path,
+            output_name=result.output_filename or saved_output_path,
+            source_doc_type=source_doc_type,
+        )
+        html_output = write_doc_html(
+            doc=reparsed,
+            output_path=output_dir / f"{source_path.stem}_style_edit{'_bytes' if suite_name == 'bytes' else ''}.html",
+            title=f"Style Edit ({suite_name}): {saved_output_path.name}",
+        )
+
+        suites[suite_name] = {
+            **operation_summary(result),
+            "output_path": str(saved_output_path),
+            "output_filename": result.output_filename,
+            "output_bytes": None if result.output_bytes is None else len(result.output_bytes),
+            "html_output": html_output,
+            "preview_style_targets": [
+                summarize_style_target_state(result.updated_doc_ir, edit)
+                for edit in style_edits
+            ],
+            "reparsed_style_targets": [
+                summarize_style_target_state(reparsed, edit)
+                for edit in style_edits
+            ],
+        }
+
+    return {
+        "skipped": False,
+        "operations": [edit.model_dump(mode="json") for edit in style_edits],
+        "validation": validation.model_dump(mode="json"),
+        "selected_targets": selected_targets,
+        "skipped_capabilities": skipped,
+        "native_file": suites["native_file"],
+        "bytes": suites["bytes"],
+    }
+
+
 def run_manual_file_flow(
     *,
     source_path: Path,
@@ -820,10 +1092,11 @@ def run_manual_file_flow(
     summary_path = output_dir / f"{source_path.stem}_summary.json"
     source_doc_ir = DocIR.from_file(source_path, doc_type=source_doc_type)  # type: ignore[arg-type]
     source_doc_ir.ensure_node_identity()
+    resolved_source_doc_type = source_doc_ir.source_doc_type or source_doc_type
     cached_document = DocumentInput(
         doc_ir=source_doc_ir,
         source_path=str(source_path),
-        source_doc_type=source_doc_ir.source_doc_type or source_doc_type,  # type: ignore[arg-type]
+        source_doc_type=resolved_source_doc_type,  # type: ignore[arg-type]
     )
     edit_target, candidates = select_edit_target(
         document=cached_document,
@@ -857,6 +1130,12 @@ def run_manual_file_flow(
         structural_run_text=structural_run_text,
         structural_cell_text=structural_cell_text,
     )
+    style_edit_suite = run_style_edit_suite(
+        source_path=source_path,
+        source_doc_type=resolved_source_doc_type,
+        document=cached_document,
+        output_dir=output_dir,
+    )
 
     summary = {
         "ok": True,
@@ -869,6 +1148,10 @@ def run_manual_file_flow(
             "comprehensive_bytes_output": comprehensive_edit_suite["bytes"]["output_path"],
             "comprehensive_html": comprehensive_edit_suite["native_file"]["html_output"],
             "comprehensive_bytes_html": comprehensive_edit_suite["bytes"]["html_output"],
+            "style_output": None if style_edit_suite["skipped"] else style_edit_suite["native_file"]["output_path"],
+            "style_bytes_output": None if style_edit_suite["skipped"] else style_edit_suite["bytes"]["output_path"],
+            "style_html": None if style_edit_suite["skipped"] else style_edit_suite["native_file"]["html_output"],
+            "style_bytes_html": None if style_edit_suite["skipped"] else style_edit_suite["bytes"]["html_output"],
             "comprehensive_review_html_full": comprehensive_edit_suite["native_file"]["annotation_suite"]["full_target"][
                 "review_html"
             ],
@@ -904,6 +1187,7 @@ def run_manual_file_flow(
             "initial_annotation": initial_annotation_target.model_dump(mode="json"),
         },
         "comprehensive_edit_suite": comprehensive_edit_suite,
+        "style_edit_suite": style_edit_suite,
     }
     write_json(summary_path, summary)
     return summary
@@ -911,7 +1195,10 @@ def run_manual_file_flow(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run the comprehensive mixed edit + annotation manual flow on one existing DOCX/HWPX/HWP file.",
+        description=(
+            "Run the comprehensive mixed edit, style edit, and annotation manual flow "
+            "on one existing DOCX/HWPX/HWP file."
+        ),
     )
     parser.add_argument(
         "source_path",
@@ -1048,11 +1335,19 @@ def main() -> int:
     )
 
     print("Manual file flow completed.")
+    print("Source file is left unchanged; inspect the generated output paths below.")
     print(f"Source: {summary['source']['path']}")
     print(f"Comprehensive edited output: {summary['paths']['comprehensive_output']}")
     print(f"Comprehensive bytes output: {summary['paths']['comprehensive_bytes_output']}")
     print(f"Comprehensive HTML: {summary['paths']['comprehensive_html']}")
     print(f"Comprehensive bytes HTML: {summary['paths']['comprehensive_bytes_html']}")
+    if summary["style_edit_suite"]["skipped"]:
+        print(f"Style edit suite skipped: {summary['style_edit_suite']['reason']}")
+    else:
+        print(f"Style edited output: {summary['paths']['style_output']}")
+        print(f"Style bytes output: {summary['paths']['style_bytes_output']}")
+        print(f"Style HTML: {summary['paths']['style_html']}")
+        print(f"Style bytes HTML: {summary['paths']['style_bytes_html']}")
     print(f"Comprehensive review HTML full: {summary['paths']['comprehensive_review_html_full']}")
     print(f"Comprehensive review HTML selected: {summary['paths']['comprehensive_review_html_selected']}")
     print(f"Comprehensive bytes review HTML full: {summary['paths']['comprehensive_bytes_review_html_full']}")
@@ -1071,13 +1366,26 @@ def main() -> int:
         "Comprehensive modified target ids: "
         f"{', '.join(summary['comprehensive_edit_suite']['native_file']['modified_target_ids'])}"
     )
+    if not summary["style_edit_suite"]["skipped"]:
+        print(
+            "Style modified target ids: "
+            f"{', '.join(summary['style_edit_suite']['native_file']['modified_target_ids'])}"
+        )
+        print(
+            "Style edits applied: "
+            f"{summary['style_edit_suite']['native_file']['styles_applied']}"
+        )
     print(
-        "Suite: one mixed text+structural comprehensive edit path with native/bytes exports "
-        "plus HTML and post-edit annotation exports"
+        "Suite: mixed text+structural comprehensive edit path, style edit path, native/bytes exports, "
+        "HTML exports, and post-edit annotation exports"
     )
     warnings = summary["comprehensive_edit_suite"]["native_file"]["warnings"]
     if warnings:
         print(f"Warnings: {'; '.join(warnings)}")
+    if not summary["style_edit_suite"]["skipped"]:
+        style_warnings = summary["style_edit_suite"]["native_file"]["warnings"]
+        if style_warnings:
+            print(f"Style warnings: {'; '.join(style_warnings)}")
     return 0
 
 

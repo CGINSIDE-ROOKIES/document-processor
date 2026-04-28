@@ -11,7 +11,7 @@ from typing import Any, BinaryIO, Generic, Literal, TypeAlias, TypeVar
 from pydantic import BaseModel, Field, computed_field
 
 from .io_utils import TemporarySourcePath, coerce_source_to_supported_value, get_source_name, infer_doc_type
-from .style_types import CellStyleInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
+from .style_types import CellStyleInfo, ObjectPlacementInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
 
 T = TypeVar("T", bound=BaseModel)
 NodeKind: TypeAlias = Literal["paragraph", "run", "image", "table", "cell"]
@@ -181,6 +181,7 @@ class ImageIR(BaseModel, Generic[T]):
     bbox: BoundingBox | None = None
     display_width_pt: float | None = None
     display_height_pt: float | None = None
+    placement: ObjectPlacementInfo | None = None
     native_anchor: NativeAnchor | None = None
 
     def model_post_init(self, __context: Any) -> None:

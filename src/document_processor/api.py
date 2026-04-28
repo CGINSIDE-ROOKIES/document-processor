@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from .api_types import (
     ReadDocumentResult,
     ResolvedTextAnnotation,
     ReviewHtmlResult,
+    StyleEdit,
     StructuralEdit,
     TargetKind,
     TextAnnotation,
@@ -29,12 +31,13 @@ from .edit_engine import (
     EditValidationError,
     _EditEngineResult,
     _apply_document_edits_to_source,
+    _apply_style_edits_to_source,
     _apply_text_edits_to_source,
     _build_doc_ir_index,
     _iter_doc_ir_paragraphs,
 )
 from .io_utils import SourceDocType, infer_doc_type
-from .models import DocIR, NativeAnchor, ParagraphIR, RunIR, TableCellIR, TableIR, _anchored_node_id
+from .models import DocIR, ImageIR, NativeAnchor, ParagraphIR, RunIR, TableCellIR, TableIR, _anchored_node_id
 
 _WRITEBACK_SOURCE_TYPES = {"docx", "hwpx", "hwp"}
 
@@ -81,6 +84,12 @@ class _ResolvedTextAnnotation:
 @dataclass(frozen=True)
 class _ResolvedStructuralEdit:
     operation: StructuralEdit
+    identity: _TargetIdentity
+
+
+@dataclass(frozen=True)
+class _ResolvedStyleEdit:
+    edit: StyleEdit
     identity: _TargetIdentity
 
 
@@ -133,6 +142,7 @@ def get_document_context(
     paragraphs = list(_iter_doc_ir_paragraphs(resolved.doc.paragraphs))
     paragraph_indices = {paragraph.node_id: offset for offset, paragraph in enumerate(paragraphs)}
     run_to_paragraph = {run.node_id: paragraph for paragraph in paragraphs for run in paragraph.runs}
+    image_to_paragraph = {image.node_id: paragraph for paragraph in paragraphs for image in paragraph.images}
     cell_to_anchor_paragraph = {
         cell.node_id: cell.paragraphs[0]
         for cell in _iter_doc_ir_cells(resolved.doc.paragraphs)
@@ -156,6 +166,8 @@ def get_document_context(
             anchor_index = paragraph_indices[node_id]
         elif node_id in run_to_paragraph:
             anchor_index = paragraph_indices[run_to_paragraph[node_id].node_id]
+        elif node_id in image_to_paragraph:
+            anchor_index = paragraph_indices[image_to_paragraph[node_id].node_id]
         elif node_id in cell_to_anchor_paragraph:
             anchor_index = paragraph_indices[cell_to_anchor_paragraph[node_id].node_id]
         elif node_id in table_to_anchor_paragraph:
@@ -249,7 +261,7 @@ def validate_document_edits(
     *,
     document: DocumentInput | None = None,
     source_path: str | None = None,
-    edits: list[DocumentEdit],
+    edits: Sequence[DocumentEdit],
 ) -> EditValidationResult:
     resolved = _resolve_document_args(document=document, source_path=source_path)
     return _validate_document_edits_for_doc(
@@ -263,7 +275,7 @@ def apply_document_edits(
     *,
     document: DocumentInput | None = None,
     source_path: str | None = None,
-    edits: list[DocumentEdit],
+    edits: Sequence[DocumentEdit],
     dry_run: bool = False,
     output_path: str | None = None,
     output_filename: str | None = None,
@@ -299,6 +311,7 @@ def apply_document_edits(
                 updated_doc_ir=preview_result.updated_doc_ir if return_doc_ir else None,
                 edits_applied=0,
                 operations_applied=0,
+                styles_applied=0,
                 modified_target_ids=preview_result.modified_target_ids,
                 created_target_ids=preview_result.created_target_ids,
                 removed_target_ids=preview_result.removed_target_ids,
@@ -339,6 +352,7 @@ def apply_document_edits(
         updated_doc_ir=preview_result.updated_doc_ir if (return_doc_ir or not resolved.has_native_source) else None,
         edits_applied=preview_result.edits_applied,
         operations_applied=internal_result.operations_applied or preview_result.operations_applied,
+        styles_applied=internal_result.styles_applied or preview_result.styles_applied,
         modified_target_ids=preview_result.modified_target_ids,
         created_target_ids=preview_result.created_target_ids,
         removed_target_ids=preview_result.removed_target_ids,
@@ -465,6 +479,8 @@ def _build_target_identity_index(doc: DocIR) -> _TargetIdentityIndex:
         _register_target_identity(by_identifier, identity)
         for run in paragraph.runs:
             register_run(run, paragraph)
+        for image in paragraph.images:
+            register_image(image, paragraph)
         for table in paragraph.tables:
             register_table(table)
 
@@ -473,6 +489,15 @@ def _build_target_identity_index(doc: DocIR) -> _TargetIdentityIndex:
             kind="run",
             node_id=run.node_id,
             native_anchor=run.native_anchor,
+            parent_paragraph_id=paragraph.node_id,
+        )
+        _register_target_identity(by_identifier, identity)
+
+    def register_image(image: ImageIR, paragraph: ParagraphIR) -> None:
+        identity = _TargetIdentity(
+            kind="image",
+            node_id=image.node_id,
+            native_anchor=image.native_anchor,
             parent_paragraph_id=paragraph.node_id,
         )
         _register_target_identity(by_identifier, identity)
@@ -576,9 +601,42 @@ def _resolve_structural_edits_for_doc(
     return resolved, issues
 
 
+def _resolve_style_edits_for_doc(
+    doc: DocIR,
+    edits: list[StyleEdit],
+) -> tuple[list[_ResolvedStyleEdit], list[EditValidationIssue]]:
+    identity_index = _build_target_identity_index(doc)
+    resolved: list[_ResolvedStyleEdit] = []
+    issues: list[EditValidationIssue] = []
+    for edit in edits:
+        identity = identity_index.by_identifier.get(edit.target_id)
+        if identity is None:
+            issues.append(
+                EditValidationIssue(
+                    code="target_not_found",
+                    target_kind=edit.target_kind,
+                    target_id=edit.target_id,
+                    message=f"Target does not exist: {edit.target_id}.",
+                )
+            )
+            continue
+        if identity.kind != edit.target_kind:
+            issues.append(
+                EditValidationIssue(
+                    code="target_kind_mismatch",
+                    target_kind=edit.target_kind,
+                    target_id=edit.target_id,
+                    message=f"{edit.target_id} is a {identity.kind} target, not a {edit.target_kind} target.",
+                )
+            )
+            continue
+        resolved.append(_ResolvedStyleEdit(edit=edit, identity=identity))
+    return resolved, issues
+
+
 def _validate_document_apply_request(
     resolved: _ResolvedDocument,
-    edits: list[DocumentEdit],
+    edits: Sequence[DocumentEdit],
     *,
     output_path: str | None,
     output_filename: str | None,
@@ -633,6 +691,7 @@ def _extend_unique(values: list[str], additions: list[str]) -> None:
 def _merge_engine_result(target: _EditEngineResult, step: _EditEngineResult) -> None:
     target.edits_applied += step.edits_applied
     target.operations_applied += step.operations_applied
+    target.styles_applied += step.styles_applied
     _extend_unique(target.modified_target_ids, step.modified_target_ids)
     _extend_unique(target.created_target_ids, step.created_target_ids)
     _extend_unique(target.removed_target_ids, step.removed_target_ids)
@@ -654,9 +713,16 @@ def _canonical_structural_edit_for_doc(doc: DocIR, edit: StructuralEdit, *, nati
     return _to_canonical_structural_edit(resolved_operations[0], native=native)
 
 
+def _canonical_style_edit_for_doc(doc: DocIR, edit: StyleEdit, *, native: bool) -> StyleEdit:
+    resolved_edits, issues = _resolve_style_edits_for_doc(doc, [edit])
+    if issues:
+        raise _issue_to_exception(issues[0])
+    return _to_canonical_style_edit(resolved_edits[0], native=native)
+
+
 def _apply_mixed_edits_to_doc_ir(
     doc: DocIR,
-    edits: list[DocumentEdit],
+    edits: Sequence[DocumentEdit],
     *,
     doc_type: SourceDocType = "auto",
     source_name: str | None = None,
@@ -674,9 +740,17 @@ def _apply_mixed_edits_to_doc_ir(
                 doc_type=current_doc.source_doc_type or doc_type,
                 source_name=source_name,
             )
-        else:
+        elif isinstance(edit, StructuralEdit):
             canonical_edit = _canonical_structural_edit_for_doc(current_doc, edit, native=False)
             step = _apply_document_edits_to_source(
+                current_doc,
+                [canonical_edit],
+                doc_type=current_doc.source_doc_type or doc_type,
+                source_name=source_name,
+            )
+        else:
+            canonical_edit = _canonical_style_edit_for_doc(current_doc, edit, native=False)
+            step = _apply_style_edits_to_source(
                 current_doc,
                 [canonical_edit],
                 doc_type=current_doc.source_doc_type or doc_type,
@@ -693,7 +767,7 @@ def _apply_mixed_edits_to_doc_ir(
 
 def _apply_mixed_edits_to_native_source(
     resolved: _ResolvedDocument,
-    edits: list[DocumentEdit],
+    edits: Sequence[DocumentEdit],
     *,
     output_path: str | None,
     output_filename: str | None,
@@ -730,7 +804,7 @@ def _apply_mixed_edits_to_native_source(
                 doc_type=mapping_doc.source_doc_type or current_doc_type,
                 source_name=current_source_name,
             )
-        else:
+        elif isinstance(edit, StructuralEdit):
             native_edit = _canonical_structural_edit_for_doc(mapping_doc, edit, native=True)
             step = _apply_document_edits_to_source(
                 current_bytes,
@@ -741,6 +815,20 @@ def _apply_mixed_edits_to_native_source(
             preview = _apply_document_edits_to_source(
                 mapping_doc,
                 [_canonical_structural_edit_for_doc(mapping_doc, edit, native=False)],
+                doc_type=mapping_doc.source_doc_type or current_doc_type,
+                source_name=current_source_name,
+            )
+        else:
+            native_edit = _canonical_style_edit_for_doc(mapping_doc, edit, native=True)
+            step = _apply_style_edits_to_source(
+                current_bytes,
+                [native_edit],
+                doc_type=current_doc_type,
+                source_name=current_source_name,
+            )
+            preview = _apply_style_edits_to_source(
+                mapping_doc,
+                [_canonical_style_edit_for_doc(mapping_doc, edit, native=False)],
                 doc_type=mapping_doc.source_doc_type or current_doc_type,
                 source_name=current_source_name,
             )
@@ -818,7 +906,7 @@ def _validate_text_edits_for_doc(
 
 def _validate_document_edits_for_doc(
     doc: DocIR,
-    edits: list[DocumentEdit],
+    edits: Sequence[DocumentEdit],
     *,
     include_writeback_support: bool,
 ) -> EditValidationResult:
@@ -1318,18 +1406,31 @@ def _collect_editable_targets(
         for cell in _iter_doc_ir_cells(doc.paragraphs)
         for paragraph in cell.paragraphs
     }
+    cell_to_table = {
+        cell.node_id: table
+        for table in _iter_doc_ir_tables(doc.paragraphs)
+        for cell in table.cells
+    }
     emitted_cell_ids: set[str] = set()
     for paragraph in _iter_doc_ir_paragraphs(doc.paragraphs):
         parent_cell = paragraph_to_cell.get(paragraph.node_id)
         if parent_cell is not None and parent_cell.node_id not in emitted_cell_ids:
             cell_requested = exact_target_ids is None or parent_cell.node_id in exact_target_ids
             cell_writable, cell_writable_reason = _cell_writable(parent_cell)
+            parent_table = cell_to_table.get(parent_cell.node_id)
+            cell_style = parent_cell.cell_style
             if "cell" in target_kinds and cell_requested:
                 if not only_writable or cell_writable:
                     results.append(
                         EditableTarget(
                             target_kind="cell",
                             target_id=parent_cell.node_id,
+                            parent_paragraph_id=paragraph.node_id,
+                            parent_table_id=parent_table.node_id if parent_table is not None else None,
+                            row_index=parent_cell.row_index,
+                            column_index=parent_cell.col_index,
+                            rowspan=max(cell_style.rowspan, 1) if cell_style is not None else 1,
+                            colspan=max(cell_style.colspan, 1) if cell_style is not None else 1,
                             current_text=parent_cell.text,
                             page_number=paragraph.page_number,
                             native_anchor=parent_cell.native_anchor,
@@ -1385,9 +1486,27 @@ def _collect_editable_targets(
                             target_kind="table",
                             target_id=table.node_id,
                             parent_paragraph_id=paragraph.node_id,
+                            row_count=table.row_count,
+                            column_count=table.col_count,
                             current_text=table.markdown,
                             page_number=paragraph.page_number,
                             native_anchor=table.native_anchor,
+                            writable=True,
+                        )
+                    )
+
+        if "image" in target_kinds:
+            for image in paragraph.images:
+                image_requested = exact_target_ids is None or image.node_id in exact_target_ids
+                if image_requested:
+                    results.append(
+                        EditableTarget(
+                            target_kind="image",
+                            target_id=image.node_id,
+                            parent_paragraph_id=paragraph.node_id,
+                            current_text=image.alt_text or image.title or "",
+                            page_number=paragraph.page_number,
+                            native_anchor=image.native_anchor,
                             writable=True,
                         )
                     )
@@ -1439,6 +1558,12 @@ def _to_canonical_structural_edit(resolved_operation: _ResolvedStructuralEdit, *
     operation = resolved_operation.operation
     target_id = _native_identifier_for_identity(resolved_operation.identity) if native else resolved_operation.identity.node_id
     return operation.model_copy(update={"target_id": target_id})
+
+
+def _to_canonical_style_edit(resolved_edit: _ResolvedStyleEdit, *, native: bool) -> StyleEdit:
+    edit = resolved_edit.edit
+    target_id = _native_identifier_for_identity(resolved_edit.identity) if native else resolved_edit.identity.node_id
+    return edit.model_copy(update={"target_id": target_id})
 
 
 def _to_render_annotation(resolved_annotation: _ResolvedTextAnnotation) -> _Annotation:
@@ -1526,6 +1651,7 @@ __all__ = [
     "ReadDocumentResult",
     "ResolvedTextAnnotation",
     "ReviewHtmlResult",
+    "StyleEdit",
     "StructuralEdit",
     "TargetKind",
     "TextAnnotation",
