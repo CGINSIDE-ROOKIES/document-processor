@@ -78,11 +78,13 @@ Supported document types:
 - `docx`
 - `hwpx`
 - `hwp`
+- `pdf`
 
 Notes:
 
 - `doc_type="auto"` infers the type from the filename or bytes.
-- `pdf` is currently not implemented.
+- `pdf` uses the `document_processor.pdf` parsing pipeline. Bytes and binary
+  file objects are materialized to a temporary PDF path internally.
 - For `.hwp`, the package converts through HWPX internally before building `DocIR`.
 
 #### `DocIR.from_mapping(mapping, *, style_map=None, source_path=None, source_doc_type=None, metadata=None, doc_id=None, **doc_kwargs) -> DocIR`
@@ -737,7 +739,8 @@ Return the generated diagram object.
 
 ## Current Limits
 
-- `pdf` parsing is not implemented.
+- PDF parsing is implemented through the `document_processor.pdf` pipeline, but
+  native PDF write-back is not supported.
 - Exact text paragraph edits are blocked when the paragraph contains tables or images.
 - Native write-back is limited to same-format `docx`, `hwpx`, and `hwp -> hwpx`.
 - Annotation matching is exact-string based within the selected paragraph or run.

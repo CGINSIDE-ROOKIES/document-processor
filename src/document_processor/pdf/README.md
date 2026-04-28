@@ -8,12 +8,19 @@ from document_processor import DocIR
 doc = DocIR.from_file("/path/to/file.pdf", doc_type="pdf")
 ```
 
+`DocIR.from_file` accepts PDF paths, bytes, and binary file objects. The lower
+level `parse_pdf_to_doc_ir` helper accepts filesystem paths.
+
 The PDF package focuses on:
 
 - canonical PDF -> `DocIR` conversion
 - shared `DocIR.to_html()` rendering
 - OpenDataLoader local output export
 - table/style fidelity improvements on top of shared `DocIR`
+
+PDF native write-back is not supported by `apply_document_edits`; use the
+parsed `DocIR` for inspection, HTML rendering, downstream processing, or
+in-memory edits.
 
 
 ## Canonical PDF Parsing

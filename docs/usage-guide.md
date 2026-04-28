@@ -712,9 +712,10 @@ print(doc.paragraphs[0].meta)
 
 ## 12. Current Limits
 
-- `pdf` parsing is not implemented.
-- External PDF parsers should build `DocIR` with stable `node_id` values as described in
-  [PDF Parser DocIR Integration](pdf-parser-docir-integration.md).
+- PDF parsing is implemented through the `document_processor.pdf` pipeline, but
+  native PDF write-back is not supported.
+- External PDF parsers can also build `DocIR` with stable `node_id` values as
+  described in [PDF Parser DocIR Integration](pdf-parser-docir-integration.md).
 - Native write-back is same-format only for `docx`, `hwpx`, and `hwp -> hwpx`.
 - Exact text paragraph edits are rejected when the paragraph contains tables or images.
 - Annotation selection is exact-text based; use `occurrence_index` when the same substring repeats in a target.

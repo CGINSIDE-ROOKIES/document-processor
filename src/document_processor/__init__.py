@@ -57,6 +57,7 @@ from .style_types import (
     CellStyleInfo,
     ColumnLayoutInfo,
     ListItemInfo,
+    ObjectPlacementInfo,
     ParaStyleInfo,
     RunStyleInfo,
     StyleMap,

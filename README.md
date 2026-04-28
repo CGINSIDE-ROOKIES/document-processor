@@ -1,6 +1,6 @@
 # document-processor
 
-Batteries-included structural document IR parser for `hwp`, `hwpx`, and `docx`.
+Batteries-included structural document IR parser for `hwp`, `hwpx`, `docx`, and `pdf`.
 Provides a unified Pydantic-based data model for document structure, styles, and
 content, along with APIs for parsing, editing, annotation, and HTML export.
 
@@ -8,11 +8,7 @@ content, along with APIs for parsing, editing, annotation, and HTML export.
 
 Additional docs:
 
-- [Usage Guide](docs/usage-guide.md)
-- [API Reference](docs/api-reference.md)
-- [PDF Parser DocIR Integration](docs/pdf-parser-docir-integration.md)
-- [Removed Legacy Edit API](docs/removed-legacy-edit-api.md)
-- [Removed Legacy Annotation API](docs/removed-legacy-annotation-api.md)
+- [PDF parser README](src/document_processor/pdf/README.md)
 
 ## Installation
 
@@ -33,6 +29,10 @@ uv pip install -e /path/to/document-processor
 | `pydantic`    | IR models and validation           |
 | `python-docx` | DOCX parsing and native write-back |
 | `jpype1`      | HWP conversion via Java interop    |
+| `pypdfium2`   | PDF probing and preview enrichment |
+
+PDF parsing also uses the vendored OpenDataLoader CLI JAR included under
+`src/document_processor/pdf/odl/vendor`.
 
 ## Quick start
 
@@ -49,12 +49,19 @@ html = doc.to_html(title="Preview")
 
 The package covers:
 
-- document parsing (DOCX, HWPX, HWP)
+- document parsing (DOCX, HWPX, HWP, PDF)
 - style extraction (fonts, colors, alignment, spacing, borders, ...)
 - structural IR creation
-- embedded image extraction for `docx` and `hwpx`
+- embedded image extraction for `docx`, `hwpx`, and parser-provided PDF assets
+- canonical PDF parsing and local OpenDataLoader artifact export
 - stateless text, structural, and style editing with native file write-back
 - annotation resolution and review HTML rendering
+
+PDF parsing uses the same high-level entry point:
+
+```python
+doc = DocIR.from_file("/path/to/file.pdf", doc_type="pdf")
+```
 
 ## Custom metadata
 
@@ -114,6 +121,9 @@ editable text without generated numbering; `read_document(...)` also returns
 The stateless edit API lets you apply text, structural, and style edits to documents.
 Edits are validated before application, and results can be returned as an
 updated `DocIR`, written back to the native file format, or returned as bytes.
+Native write-back is supported for DOCX, HWPX, and HWP-to-HWPX output. PDF
+sources can be parsed, inspected, rendered to HTML, and edited in memory via
+`DocumentInput(doc_ir=doc)`, but they are not written back as PDF files.
 
 ```python
 from document_processor import (

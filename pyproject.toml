@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "document-processor"
 version = "0.1.0"
-description = "Batteries-included structural document IR parser for HWP, HWPX, and DOCX."
+description = "Batteries-included structural document IR parser for HWP, HWPX, DOCX, and PDF."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
