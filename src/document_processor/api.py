@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -260,7 +261,7 @@ def validate_document_edits(
     *,
     document: DocumentInput | None = None,
     source_path: str | None = None,
-    edits: list[DocumentEdit],
+    edits: Sequence[DocumentEdit],
 ) -> EditValidationResult:
     resolved = _resolve_document_args(document=document, source_path=source_path)
     return _validate_document_edits_for_doc(
@@ -274,7 +275,7 @@ def apply_document_edits(
     *,
     document: DocumentInput | None = None,
     source_path: str | None = None,
-    edits: list[DocumentEdit],
+    edits: Sequence[DocumentEdit],
     dry_run: bool = False,
     output_path: str | None = None,
     output_filename: str | None = None,
@@ -635,7 +636,7 @@ def _resolve_style_edits_for_doc(
 
 def _validate_document_apply_request(
     resolved: _ResolvedDocument,
-    edits: list[DocumentEdit],
+    edits: Sequence[DocumentEdit],
     *,
     output_path: str | None,
     output_filename: str | None,
@@ -721,7 +722,7 @@ def _canonical_style_edit_for_doc(doc: DocIR, edit: StyleEdit, *, native: bool) 
 
 def _apply_mixed_edits_to_doc_ir(
     doc: DocIR,
-    edits: list[DocumentEdit],
+    edits: Sequence[DocumentEdit],
     *,
     doc_type: SourceDocType = "auto",
     source_name: str | None = None,
@@ -766,7 +767,7 @@ def _apply_mixed_edits_to_doc_ir(
 
 def _apply_mixed_edits_to_native_source(
     resolved: _ResolvedDocument,
-    edits: list[DocumentEdit],
+    edits: Sequence[DocumentEdit],
     *,
     output_path: str | None,
     output_filename: str | None,
@@ -905,7 +906,7 @@ def _validate_text_edits_for_doc(
 
 def _validate_document_edits_for_doc(
     doc: DocIR,
-    edits: list[DocumentEdit],
+    edits: Sequence[DocumentEdit],
     *,
     include_writeback_support: bool,
 ) -> EditValidationResult:

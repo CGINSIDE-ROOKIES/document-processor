@@ -1,8 +1,9 @@
 # API Reference
 
-This document describes the public Python API exported by `document_processor`.
+This document describes the main public Python APIs exported by
+`document_processor`.
 
-## Package Surface
+## Common Imports
 
 Import directly from the package root:
 
@@ -28,6 +29,9 @@ from document_processor import (
     validate_text_annotations,
 )
 ```
+
+The package root also exports the IR models, style models, result DTOs, target
+kind aliases, diagram helpers, and `build_doc_ir_from_mapping`.
 
 ## Core IR Models
 
@@ -465,14 +469,31 @@ Response fields:
 
 For native write-back, the API resolves public `node_id` targets through each
 node's current `native_anchor.structural_path`. Mixed batches are applied in
-list order. After structural edits, returned `updated_doc_ir` preserves existing
-`node_id` values and refreshes native anchors to the new physical document paths.
+list order. When `updated_doc_ir` is requested or returned, existing `node_id`
+values are preserved after structural edits and native anchors are refreshed to
+the new physical document paths.
 
 Behavior by input type:
 
 - `DocumentInput(doc_ir=...)`: returns `updated_doc_ir`; no native file output is produced.
 - `DocumentInput(source_path=...)`: writes to `output_path` or a default sibling `*_edited.*` file.
-- `DocumentInput(source_bytes=...)`: returns `output_bytes` and `output_filename`.
+- `DocumentInput(source_bytes=...)`: returns `output_bytes` and `output_filename`;
+  it does not write a filesystem path.
+
+Output options:
+
+- `output_path` and `output_filename` are mutually exclusive.
+- `output_filename` must be a filename only, not a directory path.
+- Output options require a native `source_path` or `source_bytes`; DocIR-only
+  edits cannot produce native document files.
+- For bytes-backed input, use `output_filename` to name the returned bytes.
+  `output_path` is only written for path-backed input.
+- Path-backed edits normalize output suffixes to the native output format
+  (`.docx` for DOCX, `.hwpx` for HWP/HWPX) and include a warning when the
+  requested suffix is adjusted.
+- `dry_run=True` validates and previews edits without native output. Applied
+  counters are returned as `0`; preview target id lists and warnings are still
+  populated, and `updated_doc_ir` is included only when `return_doc_ir=True`.
 
 Native write-back is currently supported for `docx`, `hwpx`, and `hwp`.
 For `.hwp`, edited output is written as `.hwpx`.
@@ -605,9 +626,14 @@ Native write-back notes:
   `width_pt`/`height_pt` on the relevant cell targets instead. Use
   `list_editable_targets(target_kinds=["cell"])` to get each cell's table id,
   row index, column index, and span metadata.
-- In native DOCX/HWPX write-back, a cell `width_pt` edit updates the target
-  cell's logical column where the format stores width as column/grid geometry;
-  a cell `height_pt` edit updates the target row where height is row geometry.
+- In both `updated_doc_ir` previews and native DOCX/HWPX write-back, a cell
+  `width_pt` edit updates the target cell's logical column, and a cell
+  `height_pt` edit updates the target row. Other cell style fields apply only
+  to the targeted cell.
+- Cell border fields accept CSS-style values such as `"1px solid #445566"` and
+  native-style values such as `"1pt single #445566"`. HTML rendering normalizes
+  `single` to CSS `solid`; DOCX/HWPX write-back maps border values to native
+  border records.
 
 ### `TextAnnotation`
 

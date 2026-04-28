@@ -374,6 +374,50 @@ class EditorApiTests(unittest.TestCase):
         self.assertEqual(updated_run.run_style.color, "#112233")
         self.assertEqual(updated_run.run_style.size_pt, 14)
 
+    def test_apply_document_edits_broadcasts_doc_ir_cell_dimensions(self) -> None:
+        doc = DocIR.from_mapping(
+            {
+                "s1.p1.r1.tbl1.tr1.tc1.p1.r1": "A1",
+                "s1.p1.r1.tbl1.tr1.tc2.p1.r1": "A2",
+                "s1.p1.r1.tbl1.tr2.tc1.p1.r1": "B1",
+                "s1.p1.r1.tbl1.tr2.tc2.p1.r1": "B2",
+            },
+            source_doc_type="docx",
+        )
+        table = doc.paragraphs[0].tables[0]
+        target_cell = table.cells[0]
+
+        result = apply_document_edits(
+            document=DocumentInput(doc_ir=doc),
+            edits=[
+                StyleEdit(
+                    target_kind="cell",
+                    target_id=target_cell.node_id,
+                    background="#FFF2CC",
+                    width_pt=100,
+                    height_pt=50,
+                )
+            ],
+            return_doc_ir=True,
+        )
+
+        self.assertTrue(result.ok, result.validation.issues)
+        updated_table = result.updated_doc_ir.paragraphs[0].tables[0]
+        cells = {(cell.row_index, cell.col_index): cell for cell in updated_table.cells}
+
+        self.assertEqual(cells[(1, 1)].cell_style.background, "#FFF2CC")
+        self.assertIsNone(cells[(1, 2)].cell_style.background)
+        self.assertIsNone(cells[(2, 1)].cell_style.background)
+        self.assertIsNone(cells[(2, 2)].cell_style)
+
+        self.assertEqual(cells[(1, 1)].cell_style.width_pt, 100)
+        self.assertEqual(cells[(2, 1)].cell_style.width_pt, 100)
+        self.assertIsNone(cells[(1, 2)].cell_style.width_pt)
+
+        self.assertEqual(cells[(1, 1)].cell_style.height_pt, 50)
+        self.assertEqual(cells[(1, 2)].cell_style.height_pt, 50)
+        self.assertIsNone(cells[(2, 1)].cell_style.height_pt)
+
     def test_apply_document_edits_writes_docx_run_style(self) -> None:
         source_bytes = self._build_sample_docx_bytes()
         doc = DocIR.from_file(source_bytes, doc_type="docx")

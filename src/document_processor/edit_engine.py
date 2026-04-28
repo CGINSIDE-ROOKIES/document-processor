@@ -1059,6 +1059,8 @@ _CELL_STYLE_FIELDS = {
     "border_bottom",
     "border_left",
 }
+_CELL_DIMENSION_FIELDS = {"width_pt", "height_pt"}
+_CELL_DIRECT_STYLE_FIELDS = _CELL_STYLE_FIELDS - _CELL_DIMENSION_FIELDS
 _PLACEMENT_FIELD_MAP = {
     "placement_mode": "mode",
     "wrap": "wrap",
@@ -1117,6 +1119,32 @@ def _style_target_kind_for_doc_ir_index(index: _StructuralDocIrIndex, target_id:
     return None
 
 
+def _cell_style_span(cell: TableCellIR, attr: str) -> int:
+    style = cell.cell_style
+    value = getattr(style, attr, 1) if style is not None else 1
+    return max(value or 1, 1)
+
+
+def _cell_covers_column(cell: TableCellIR, col_index: int) -> bool:
+    return cell.col_index <= col_index < cell.col_index + _cell_style_span(cell, "colspan")
+
+
+def _cell_covers_row(cell: TableCellIR, row_index: int) -> bool:
+    return cell.row_index <= row_index < cell.row_index + _cell_style_span(cell, "rowspan")
+
+
+def _apply_cell_style_fields(cell: TableCellIR, edit: StyleEdit, fields: set[str]) -> None:
+    style = cell.cell_style or CellStyleInfo()
+    for field_name in fields:
+        if field_name in edit.clear_fields:
+            _set_or_clear_field(style, field_name, None, clear=True)
+            continue
+        value = getattr(edit, field_name)
+        if value is not None:
+            setattr(style, field_name, value)
+    cell.cell_style = style
+
+
 def _apply_style_edit_to_doc_ir_index(index: _StructuralDocIrIndex, edit: StyleEdit, result: _EditEngineResult) -> None:
     actual_kind = _style_target_kind_for_doc_ir_index(index, edit.target_id)
     if actual_kind is None:
@@ -1158,16 +1186,21 @@ def _apply_style_edit_to_doc_ir_index(index: _StructuralDocIrIndex, edit: StyleE
                 setattr(style, attr, value)
         paragraph.para_style = style
     elif edit.target_kind == "cell":
-        cell = index.cells[edit.target_id].node
-        style = cell.cell_style or CellStyleInfo()
-        for field_name in _CELL_STYLE_FIELDS:
-            if field_name in edit.clear_fields:
-                _set_or_clear_field(style, field_name, None, clear=True)
-                continue
-            value = getattr(edit, field_name)
-            if value is not None:
-                setattr(style, field_name, value)
-        cell.cell_style = style
+        location = index.cells[edit.target_id]
+        cell = location.node
+        _apply_cell_style_fields(cell, edit, _CELL_DIRECT_STYLE_FIELDS)
+
+        if "width_pt" in _style_edit_supplied_fields(edit):
+            for table_cell in location.table.cells:
+                if _cell_covers_column(table_cell, cell.col_index):
+                    _apply_cell_style_fields(table_cell, edit, {"width_pt"})
+                    _append_unique(result.modified_target_ids, table_cell.node_id)
+
+        if "height_pt" in _style_edit_supplied_fields(edit):
+            for table_cell in location.table.cells:
+                if _cell_covers_row(table_cell, cell.row_index):
+                    _apply_cell_style_fields(table_cell, edit, {"height_pt"})
+                    _append_unique(result.modified_target_ids, table_cell.node_id)
     elif edit.target_kind == "table":
         table = index.tables[edit.target_id].node
         style = table.table_style or TableStyleInfo(row_count=table.row_count, col_count=table.col_count)

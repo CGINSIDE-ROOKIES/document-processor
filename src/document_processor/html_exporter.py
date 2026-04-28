@@ -226,6 +226,12 @@ def _cell_padding_css(style: CellStyleInfo | None) -> str:
     return f"padding:{top:.1f}pt {right:.1f}pt {bottom:.1f}pt {left:.1f}pt"
 
 
+def _css_border(value: str | None) -> str:
+    if not value:
+        return "none"
+    return re.sub(r"(?<=\s)single(?=\s)", "solid", value.strip(), flags=re.IGNORECASE)
+
+
 def _cell_css(style: CellStyleInfo | None) -> str:
     parts: list[str] = ["box-sizing:border-box"]
     if style is not None:
@@ -241,10 +247,10 @@ def _cell_css(style: CellStyleInfo | None) -> str:
             parts.append(f"width:{width_pt:.1f}pt")
         if height_pt is not None:
             parts.append(f"height:{height_pt:.1f}pt")
-        parts.append(f"border-top:{style.border_top or 'none'}")
-        parts.append(f"border-bottom:{style.border_bottom or 'none'}")
-        parts.append(f"border-left:{style.border_left or 'none'}")
-        parts.append(f"border-right:{style.border_right or 'none'}")
+        parts.append(f"border-top:{_css_border(style.border_top)}")
+        parts.append(f"border-bottom:{_css_border(style.border_bottom)}")
+        parts.append(f"border-left:{_css_border(style.border_left)}")
+        parts.append(f"border-right:{_css_border(style.border_right)}")
         diagonal_background = _cell_diagonal_background(style)
         if diagonal_background:
             parts.append(f"background-image:url({diagonal_background})")

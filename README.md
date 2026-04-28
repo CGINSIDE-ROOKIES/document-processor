@@ -188,9 +188,13 @@ result = apply_document_edits(
 )
 ```
 
-`StyleEdit` can target runs, paragraphs, cells, tables, and images. Table/image
-style edits include dimensions and floating placement fields for native DOCX/HWPX
-write-back.
+`StyleEdit` can target runs, paragraphs, cells, tables, and images. Cell style
+edits include background, alignment, padding, borders, and dimensions. Cell
+`width_pt` is applied as column geometry and cell `height_pt` as row geometry.
+Border fields accept CSS-style values such as `"1px solid #445566"` and
+native-style values such as `"1pt single #445566"`.
+Table style edits cover floating placement fields; image style edits include
+dimensions and floating placement fields for native DOCX/HWPX write-back.
 
 
 ## Annotations and review HTML

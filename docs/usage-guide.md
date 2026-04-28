@@ -313,6 +313,21 @@ print(result.output_path)
 print(result.output_bytes)
 ```
 
+Output behavior depends on the input source:
+
+- `DocumentInput(doc_ir=...)` returns an edited `DocIR` only; it cannot write a
+  native DOCX/HWPX file because there is no original package to patch.
+- `DocumentInput(source_path=...)` writes to `output_path`, `output_filename`,
+  or a default sibling `*_edited.*` file.
+- `DocumentInput(source_bytes=...)` returns `output_bytes` and
+  `output_filename`; it does not write a filesystem path.
+- `output_path` and `output_filename` are mutually exclusive, and
+  `output_filename` must be a filename only.
+- For bytes-backed input, use `output_filename` to name the returned bytes.
+  `output_path` is only written for path-backed input.
+- HWP inputs are written back as HWPX. `dry_run=True` validates and previews the
+  edit batch without producing native output.
+
 ### Cell text edits
 
 Use `target_kind="cell"` to replace all editable text in a table cell. Multi-paragraph
@@ -354,6 +369,10 @@ print(result.modified_target_ids)
 
 Use `StructuralEdit` for insert/remove operations and table shape changes. These
 operations still target stable `node_id` values.
+
+`TextEdit(target_kind="cell")` preserves the existing paragraph count inside a
+cell. `StructuralEdit(operation="set_cell_text")` is the API to rebuild a cell's
+paragraphs from newline-separated text.
 
 Inserted tables are not bare XML shells. Native DOCX/HWPX write-back gives new
 tables a visible black grid, cell padding, and non-zero geometry. HWPX tables
@@ -458,6 +477,12 @@ result = apply_document_edits(
             horizontal_align="center",
             padding_left_pt=6,
             padding_right_pt=6,
+            width_pt=120,
+            height_pt=36,
+            border_top="1pt single #445566",
+            border_right="1pt single #445566",
+            border_bottom="1pt single #445566",
+            border_left="1pt single #445566",
         ),
         StyleEdit(
             target_kind="table",
@@ -512,9 +537,13 @@ preserves dimensions more completely than floating placement/wrapping metadata.
 Table style edits do not accept `width_pt` or `height_pt`. Use cell style edits
 for table geometry.
 
-For native DOCX/HWPX write-back, a cell `width_pt` edit updates the target
-cell's logical column where the format stores width as column/grid geometry.
-A cell `height_pt` edit updates the target row where height is row geometry.
+For both `updated_doc_ir` previews and native DOCX/HWPX write-back, a cell
+`width_pt` edit updates the target cell's logical column, and a cell
+`height_pt` edit updates the target row. Other cell style fields such as
+background, padding, borders, and alignment apply only to the targeted cell.
+Border values may use CSS-style strings such as `"1px solid #445566"` or
+native-style strings such as `"1pt single #445566"`; HTML rendering normalizes
+`single` to CSS `solid`.
 
 ## 6. Inspect Context Before Editing
 

@@ -72,7 +72,7 @@ class HtmlExporterTests(unittest.TestCase):
                                         height_pt=36.0,
                                         border_top="1px solid #000",
                                         border_bottom="1px solid #000",
-                                        border_left="1px solid #000",
+                                        border_left="5pt single #000",
                                         border_right="1px solid #000",
                                         colspan=2,
                                     ),
@@ -106,6 +106,7 @@ class HtmlExporterTests(unittest.TestCase):
         self.assertIn("width:240.0pt", html)
         self.assertIn("width:120.0pt", html)
         self.assertIn("height:36.0pt", html)
+        self.assertIn("border-left:5pt solid #000", html)
         self.assertIn("margin-left:0", html)
         self.assertIn("margin-right:auto", html)
 
