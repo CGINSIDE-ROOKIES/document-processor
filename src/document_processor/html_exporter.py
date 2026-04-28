@@ -51,8 +51,55 @@ def _column_group_css(style: ColumnLayoutInfo) -> str:
     return ";".join(parts)
 
 
+def _column_grid_css(layout: ColumnLayoutInfo) -> str:
+    parts = [
+        "display:grid",
+        "grid-template-columns:minmax(0,1fr) minmax(0,1fr)",
+        "align-items:start",
+        "break-inside:auto",
+    ]
+    gap_pt = _non_negative_pt(layout.gap_pt)
+    if gap_pt is not None:
+        parts.append(f"column-gap:{gap_pt:.1f}pt")
+        parts.append(f"gap:0 {gap_pt:.1f}pt")
+    return ";".join(parts)
+
+
+def _indexed_columns(paragraphs: list[ParagraphIR]) -> tuple[list[ParagraphIR], list[ParagraphIR]] | None:
+    left_paragraphs: list[ParagraphIR] = []
+    right_paragraphs: list[ParagraphIR] = []
+    for paragraph in paragraphs:
+        column_layout = _paragraph_column_style(paragraph)
+        column_index = column_layout.column_index if column_layout is not None else None
+        if column_index == 0:
+            left_paragraphs.append(paragraph)
+        elif column_index == 1:
+            right_paragraphs.append(paragraph)
+        else:
+            return None
+
+    if not left_paragraphs or not right_paragraphs:
+        return None
+    return left_paragraphs, right_paragraphs
+
+
+def _html_attrs(
+    *,
+    style: str | None = None,
+    extra_attrs: list[str] | None = None,
+) -> str:
+    attrs: list[str] = []
+    if style:
+        attrs.append(f'style="{style}"')
+    if extra_attrs:
+        attrs.extend(extra_attrs)
+    return " ".join(attrs)
+
+
 def _run_css(style: RunStyleInfo) -> str:
     parts: list[str] = []
+    if style.font_family:
+        parts.append(f"font-family:{style.font_family}")
     if style.color:
         parts.append(f"color:{style.color}")
     size_pt = _non_negative_pt(style.size_pt)
@@ -95,10 +142,13 @@ def _style_wrap(html: str, style: RunStyleInfo | None) -> str:
 def _escape_whitespace(html: str) -> str:
     html = html.replace("\t", "&nbsp;&nbsp;&nbsp;&nbsp;")
     html = re.sub(r"  +", lambda m: "&nbsp;" * len(m.group(0)), html)
+    html = html.replace("\n", "<br>")
     return html
 
 
 def _wrap_run(run: RunIR) -> str:
+    if run.run_style is not None and run.run_style.hidden:
+        return ""
     html = escape(run.text)
     if not html:
         return ""
@@ -106,12 +156,17 @@ def _wrap_run(run: RunIR) -> str:
     return _style_wrap(html, run.run_style)
 
 
-def _render_image(doc_ir: DocIR, image: ImageIR) -> str:
+def _render_image(doc_ir: DocIR, image: ImageIR, *, block: bool = False) -> str:
     asset = doc_ir.assets.get(image.image_id)
     if asset is None:
         return ""
 
-    style_parts = ["max-width:100%", "vertical-align:middle"]
+    style_parts = ["max-width:100%"]
+    if block:
+        style_parts.append("display:block")
+    else:
+        style_parts.append("vertical-align:middle")
+
     display_width_pt = _non_negative_pt(image.display_width_pt)
     display_height_pt = _non_negative_pt(image.display_height_pt)
     if display_width_pt is not None:
@@ -121,12 +176,14 @@ def _render_image(doc_ir: DocIR, image: ImageIR) -> str:
     elif image.display_width_pt is None:
         style_parts.append("height:auto")
 
-    attrs = [
-        f'src="{escape(asset.as_data_url(), quote=True)}"',
-        f'alt="{escape(image.alt_text or asset.filename or "")}"',
-        f'style="{";".join(style_parts)}"',
-    ]
-    return f"<img {' '.join(attrs)} />"
+    attrs = _html_attrs(
+        style=";".join(style_parts),
+        extra_attrs=[
+            f'src="{escape(asset.as_data_url(), quote=True)}"',
+            f'alt="{escape(image.alt_text or asset.filename or "")}"',
+        ],
+    )
+    return f"<img {attrs} />"
 
 
 def _paragraph_indent_values(style: ParaStyleInfo | None) -> tuple[float | None, float | None, float | None]:
@@ -184,14 +241,17 @@ def _flush_paragraph(
     content = "".join(run_fragments)
     if not content.strip():
         content = "&nbsp;"
+
     list_marker = _list_marker_html(para_style)
     if list_marker:
         content = f"{list_marker}{content}"
+
+    tag = para_style.render_tag if para_style is not None and para_style.render_tag else "p"
     attrs = [f'style="{_paragraph_css(para_style)}"']
     if debug_layout and node_id:
         attrs.append(f'data-node-id="{escape(node_id, quote=True)}"')
         attrs.append(f'data-debug-label="{escape(_paragraph_debug_label(debug_path or node_id, para_style), quote=True)}"')
-    return f"<p {' '.join(attrs)}>{content}</p>"
+    return f"<{tag} {' '.join(attrs)}>{content}</{tag}>"
 
 
 def _paragraph_debug_label(debug_path: str, style: ParaStyleInfo | None) -> str:
@@ -226,14 +286,16 @@ def _cell_padding_css(style: CellStyleInfo | None) -> str:
     return f"padding:{top:.1f}pt {right:.1f}pt {bottom:.1f}pt {left:.1f}pt"
 
 
-def _css_border(value: str | None) -> str:
+def _css_border(value: str | None) -> str | None:
     if not value:
-        return "none"
+        return None
     return re.sub(r"(?<=\s)single(?=\s)", "solid", value.strip(), flags=re.IGNORECASE)
 
-
-def _cell_css(style: CellStyleInfo | None) -> str:
+  
+def _cell_css(style: CellStyleInfo | None, *, render_table_grid: bool = False) -> str:
     parts: list[str] = ["box-sizing:border-box"]
+    fallback_border = "1px solid #4a4f57" if render_table_grid else "none"
+
     if style is not None:
         if style.background:
             parts.append(f"background-color:{style.background}")
@@ -241,16 +303,19 @@ def _cell_css(style: CellStyleInfo | None) -> str:
             parts.append(f"vertical-align:{_css_vertical_align(style.vertical_align)}")
         if style.horizontal_align:
             parts.append(f"text-align:{style.horizontal_align}")
+
         width_pt = _non_negative_pt(style.width_pt)
         height_pt = _non_negative_pt(style.height_pt)
         if width_pt is not None:
             parts.append(f"width:{width_pt:.1f}pt")
         if height_pt is not None:
             parts.append(f"height:{height_pt:.1f}pt")
-        parts.append(f"border-top:{_css_border(style.border_top)}")
-        parts.append(f"border-bottom:{_css_border(style.border_bottom)}")
-        parts.append(f"border-left:{_css_border(style.border_left)}")
-        parts.append(f"border-right:{_css_border(style.border_right)}")
+
+        parts.append(f"border-top:{_css_border(style.border_top) or fallback_border}")
+        parts.append(f"border-bottom:{_css_border(style.border_bottom) or fallback_border}")
+        parts.append(f"border-left:{_css_border(style.border_left) or fallback_border}")
+        parts.append(f"border-right:{_css_border(style.border_right) or fallback_border}")
+
         diagonal_background = _cell_diagonal_background(style)
         if diagonal_background:
             parts.append(f"background-image:url({diagonal_background})")
@@ -259,12 +324,13 @@ def _cell_css(style: CellStyleInfo | None) -> str:
     else:
         parts.extend(
             [
-                "border-top:none",
-                "border-bottom:none",
-                "border-left:none",
-                "border-right:none",
+                f"border-top:{fallback_border}",
+                f"border-bottom:{fallback_border}",
+                f"border-left:{fallback_border}",
+                f"border-right:{fallback_border}",
             ]
         )
+
     parts.append(_cell_padding_css(style))
     return ";".join(parts)
 
@@ -513,8 +579,14 @@ def _cell_debug_label(cell: TableCellIR) -> str:
     return f"cell {_node_debug_path(cell)}: {_pt_label(width_pt)} x {_pt_label(height_pt)}"
 
 
-def _render_cell(doc_ir: DocIR, cell: TableCellIR, *, debug_layout: bool = False) -> str:
-    attrs = [f'style="{_cell_css(cell.cell_style)}"']
+def _render_cell(
+    doc_ir: DocIR,
+    cell: TableCellIR,
+    *,
+    debug_layout: bool = False,
+    render_table_grid: bool = False,
+) -> str:
+    attrs = [f'style="{_cell_css(cell.cell_style, render_table_grid=render_table_grid)}"']
     if debug_layout:
         attrs.append(f'data-node-id="{escape(cell.node_id or "", quote=True)}"')
         attrs.append(f'data-debug-label="{escape(_cell_debug_label(cell), quote=True)}"')
@@ -549,6 +621,7 @@ def _render_table(
     *,
     debug_layout: bool = False,
 ) -> str:
+    render_table_grid = bool(table.table_style and table.table_style.render_grid)
     attrs = [f'style="{_table_css(table, para_style)}"']
     if debug_layout:
         attrs.append(f'data-node-id="{escape(table.node_id or "", quote=True)}"')
@@ -571,7 +644,7 @@ def _render_table(
 
             cell = cells_by_pos.get((row, col))
             if cell is None:
-                lines.append('    <td style="box-sizing:border-box;padding:0;border:none">&nbsp;</td>')
+                lines.append(f'    <td style="{_cell_css(None, render_table_grid=render_table_grid)}">&nbsp;</td>')
                 continue
 
             if cell.cell_style is not None:
@@ -587,7 +660,9 @@ def _render_table(
                         continue
                     covered.add((covered_row, covered_col))
 
-            lines.append(f"    {_render_cell(doc_ir, cell, debug_layout=debug_layout)}")
+            lines.append(
+                f"    {_render_cell(doc_ir, cell, debug_layout=debug_layout, render_table_grid=render_table_grid)}"
+            )
         lines.append("  </tr>")
     lines.append("</table>")
     return "\n".join(lines)
@@ -614,12 +689,37 @@ def _render_column_group(
     *,
     debug_layout: bool = False,
 ) -> str:
-    if not paragraphs or _paragraph_column_style(paragraphs[0]) is None:
-        return ""
-
     column_style = _paragraph_column_style(paragraphs[0])
     if column_style is None:
         return ""
+
+    indexed_columns = _indexed_columns(paragraphs) if column_style.count == 2 else None
+    if indexed_columns is not None:
+        left_paragraphs, right_paragraphs = indexed_columns
+        attrs = [
+            'class="document-column-group document-column-group--indexed"',
+            'data-column-mode="indexed"',
+            f'data-column-count="{max(column_style.count or 1, 1)}"',
+            f'style="{_column_grid_css(column_style)}"',
+        ]
+        if debug_layout:
+            attrs.append(f'data-debug-label="{escape(_column_group_debug_label(column_style, paragraphs), quote=True)}"')
+
+        left_html = "\n\n".join(
+            _render_paragraph(doc_ir, paragraph, debug_layout=debug_layout)
+            for paragraph in left_paragraphs
+        )
+        right_html = "\n\n".join(
+            _render_paragraph(doc_ir, paragraph, debug_layout=debug_layout)
+            for paragraph in right_paragraphs
+        )
+        return (
+            f"<div {' '.join(attrs)}>"
+            f'<div class="document-column" data-column-index="1">{left_html or "&nbsp;"}</div>'
+            f'<div class="document-column" data-column-index="2">{right_html or "&nbsp;"}</div>'
+            "</div>"
+        )
+
     attrs = [
         'class="document-column-group"',
         f'data-column-count="{max(column_style.count or 1, 1)}"',
@@ -806,6 +906,53 @@ def _debug_layout_script() -> str:
   }
 })();
 </script>"""
+
+
+def _render_html_document_shell(*, title: str, body: str) -> str:
+    return f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{escape(title)}</title>
+<style>
+  body {{
+    max-width: 1100px;
+    margin: 2em auto;
+    padding: 0 1rem;
+    line-height: 1.6;
+    color: #1a1a1a;
+    font-family: serif;
+    background:#f5f5f2;
+  }}
+  p {{
+    margin: 0 0 0.45em 0;
+  }}
+  table {{
+    border-collapse: collapse;
+    margin: 8px 0 12px 0;
+  }}
+  td p {{
+    line-height: 1.0;
+  }}
+  img {{
+    max-width: 100%;
+    height: auto;
+  }}
+  .document-unpaged {{
+    max-width: 900px;
+    margin: 0 auto;
+  }}
+  .document-column-group {{
+    margin: 0 0 0.45em 0;
+  }}
+</style>
+</head>
+<body>
+{body}
+</body>
+</html>
+"""
 
 
 def render_html_document(doc_ir: DocIR, *, title: str | None = None, debug_layout: bool = False) -> str:

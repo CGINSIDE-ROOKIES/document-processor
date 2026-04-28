@@ -1,4 +1,4 @@
-"""Direct DOCX/HWPX file parsing into structural document IR."""
+"""Direct DOCX/HWPX/PDF file parsing into structural document IR."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from ..hwpx import HwpxDocument
 
 
-DocType = Literal["hwp", "hwpx", "docx"]
+DocType = Literal["hwp", "hwpx", "docx", "pdf"]
 
 _REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 _DOCX_EMBED_ATTR = f"{{{_REL_NS}}}embed"
@@ -1245,6 +1245,18 @@ def build_doc_ir_from_file(
     **doc_kwargs: Any,
 ) -> DocIR:
     """Build document IR directly from a document source."""
+    if doc_type == "pdf":
+        from ..pdf import parse_pdf_to_doc_ir
+
+        if not isinstance(source, (str, Path)):
+            raise TypeError("PDF parsing currently requires a filesystem path.")
+        return parse_pdf_to_doc_ir(
+            source,
+            doc_id=doc_id,
+            doc_cls=doc_cls,
+            **doc_kwargs,
+        )
+
     if doc_type == "docx":
         return _build_docx_doc_ir(
             source,

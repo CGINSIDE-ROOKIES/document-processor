@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 class RunStyleInfo(BaseModel):
     """Text-level formatting for a single run."""
 
+    font_family: str | None = None
     bold: bool = False
     italic: bool = False
     underline: bool = False
@@ -17,12 +18,14 @@ class RunStyleInfo(BaseModel):
     color: str | None = None
     highlight: str | None = None
     size_pt: float | None = None
+    hidden: bool = False
 
 
 class ColumnLayoutInfo(BaseModel):
     """Paragraph column layout metadata."""
 
     count: int | None = None
+    column_index: int | None = None
     gap_pt: float | None = None
     widths_pt: list[float] = Field(default_factory=list)
     gaps_pt: list[float] = Field(default_factory=list)
@@ -47,6 +50,7 @@ class ParaStyleInfo(BaseModel):
     right_indent_pt: float | None = None
     first_line_indent_pt: float | None = None
     hanging_indent_pt: float | None = None
+    render_tag: str | None = None
     column_layout: ColumnLayoutInfo | None = None
     list_info: ListItemInfo | None = None
 
@@ -102,6 +106,7 @@ class TableStyleInfo(BaseModel):
     width_pt: float | None = None
     height_pt: float | None = None
     placement: ObjectPlacementInfo | None = None
+    render_grid: bool = False
 
 
 class StyleMap(BaseModel):

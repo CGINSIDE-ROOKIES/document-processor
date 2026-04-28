@@ -94,6 +94,15 @@ def _anchored_node_id(kind: NodeKind, structural_path: str) -> str:
     return _stable_node_id(kind, structural_path)
 
 
+class BoundingBox(BaseModel):
+    """Generic layout bounding box in page coordinates."""
+
+    left_pt: float
+    bottom_pt: float
+    right_pt: float
+    top_pt: float
+
+
 class RunIR(BaseModel, Generic[T]):
     """Smallest style-preserving text unit."""
 
@@ -102,6 +111,7 @@ class RunIR(BaseModel, Generic[T]):
 
     node_id: str | None = None
     text: str = ""
+    bbox: BoundingBox | None = None
     run_style: RunStyleInfo | None = None
     native_anchor: NativeAnchor | None = None
 
@@ -168,6 +178,7 @@ class ImageIR(BaseModel, Generic[T]):
     image_id: str
     alt_text: str | None = None
     title: str | None = None
+    bbox: BoundingBox | None = None
     display_width_pt: float | None = None
     display_height_pt: float | None = None
     placement: ObjectPlacementInfo | None = None
@@ -187,6 +198,7 @@ class ParagraphIR(BaseModel, Generic[T]):
     node_id: str | None = None
     text: str = ""
     page_number: int | None = None
+    bbox: BoundingBox | None = None
     para_style: ParaStyleInfo | None = None
     content: list["ParagraphContentNode"] = Field(default_factory=list)
     native_anchor: NativeAnchor | None = None
@@ -247,6 +259,7 @@ class TableCellIR(BaseModel, Generic[T]):
     row_index: int
     col_index: int
     text: str = ""
+    bbox: BoundingBox | None = None
     cell_style: CellStyleInfo | None = None
     paragraphs: list["ParagraphIR"] = Field(default_factory=list)
     native_anchor: NativeAnchor | None = None
@@ -268,6 +281,7 @@ class TableIR(BaseModel, Generic[T]):
     node_id: str | None = None
     row_count: int = 0
     col_count: int = 0
+    bbox: BoundingBox | None = None
     table_style: TableStyleInfo | None = None
     cells: list[TableCellIR] = Field(default_factory=list)
     native_anchor: NativeAnchor | None = None
@@ -417,11 +431,26 @@ class DocIR(BaseModel, Generic[T]):
         from .core.style_extractor import extract_styles
 
         resolved_doc_type = infer_doc_type(source, doc_type)  # type: ignore[arg-type]
-        if resolved_doc_type == "pdf":
-            raise NotImplementedError("PDF parsing is not implemented yet.")
-
         source_name = get_source_name(source)
         resolved_source_path = source_name
+
+        if resolved_doc_type == "pdf":
+            with TemporarySourcePath(source, suffix=".pdf") as source_path:
+                doc_ir = build_doc_ir_from_file(
+                    source_path,
+                    doc_type="pdf",
+                    skip_empty=skip_empty,
+                    include_tables=include_tables,
+                    source_path=resolved_source_path,
+                    metadata=metadata,
+                    doc_id=doc_id,
+                    doc_cls=cls,
+                    **doc_kwargs,
+                )
+            doc_ir.source_doc_type = resolved_doc_type
+            if resolved_source_path is not None:
+                doc_ir.source_path = resolved_source_path
+            return doc_ir.ensure_node_identity()
 
         if resolved_doc_type == "hwp":
             with TemporarySourcePath(source, suffix=".hwp") as source_path:
@@ -497,8 +526,10 @@ class DocIR(BaseModel, Generic[T]):
 
     def to_html(self, *, title: str | None = None, debug_layout: bool = False) -> str:
         """Render this document IR as styled HTML."""
+        from .render_prep import prepare_doc_ir_for_html
         from .html_exporter import render_html_document
 
+        prepare_doc_ir_for_html(self)
         return render_html_document(self, title=title, debug_layout=debug_layout)
 
 
@@ -628,6 +659,7 @@ def _render_table_markdown(
 
 
 __all__ = [
+    "BoundingBox",
     "DocIR",
     "ImageAsset",
     "ImageIR",
