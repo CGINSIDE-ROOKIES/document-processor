@@ -4808,8 +4808,7 @@ def _apply_hwpx_structural_operation(archive: _EditableHwpxArchive, operation: S
                 col_widths=col_widths,
                 template_row=template_row,
             )
-            insert_index = row_index if operation.position in {"after", "end"} else row_index - 1
-            table_el.insert(insert_index, new_row)
+            _insert_child_relative(table_el, rows[row_index - 1], new_row, position=operation.position)
         _renumber_hwpx_table(table_el)
         result.operations_applied += 1
         return
