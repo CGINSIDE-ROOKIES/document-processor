@@ -377,6 +377,25 @@ _HWPX_DEFAULT_CELL_MARGIN_Y = 141
 _EMU_PER_PT = 12700.0
 _TWIPS_PER_PT = 20.0
 _HWPUNIT_PER_PT = 100.0
+_CSS_PX_PER_MM = 3.78
+_HWPX_LINE_WIDTHS_MM = (
+    (0.1, "0.1 mm"),
+    (0.12, "0.12 mm"),
+    (0.15, "0.15 mm"),
+    (0.2, "0.2 mm"),
+    (0.25, "0.25 mm"),
+    (0.3, "0.3 mm"),
+    (0.4, "0.4 mm"),
+    (0.5, "0.5 mm"),
+    (0.6, "0.6 mm"),
+    (0.7, "0.7 mm"),
+    (1.0, "1.0 mm"),
+    (1.5, "1.5 mm"),
+    (2.0, "2.0 mm"),
+    (3.0, "3.0 mm"),
+    (4.0, "4.0 mm"),
+    (5.0, "5.0 mm"),
+)
 
 
 def _pt_to_twips(value: float | int | None) -> int | None:
@@ -395,6 +414,14 @@ def _pt_to_hwpunit(value: float | int | None) -> int | None:
     if value is None:
         return None
     return int(round(float(value) * _HWPUNIT_PER_PT))
+
+
+def _hwpx_line_width_value(width_mm: float) -> str:
+    _distance, width = min(
+        (abs(width_mm - candidate_mm), candidate_width)
+        for candidate_mm, candidate_width in _HWPX_LINE_WIDTHS_MM
+    )
+    return width
 
 
 @dataclass
@@ -4034,12 +4061,18 @@ def _hwpx_border_attrs(border_value: str) -> dict[str, str]:
         "dotted": "DOT",
         "single": "SOLID",
     }.get(attrs["val"], "SOLID")
-    width_match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*pt", border_value)
-    if width_match:
-        width_mm = float(width_match.group(1)) * 0.352777778
-        width = f"{width_mm:.2f} mm"
+    pt_match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*pt", border_value, flags=re.IGNORECASE)
+    px_match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*px", border_value, flags=re.IGNORECASE)
+    mm_match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*mm", border_value, flags=re.IGNORECASE)
+    if pt_match:
+        width_mm = float(pt_match.group(1)) * 0.352777778
+    elif px_match:
+        width_mm = float(px_match.group(1)) / _CSS_PX_PER_MM
+    elif mm_match:
+        width_mm = float(mm_match.group(1))
     else:
-        width = "0.12 mm"
+        width_mm = 0.12
+    width = _hwpx_line_width_value(width_mm)
     return {"type": val, "width": width, "color": f"#{attrs['color']}"}
 
 
