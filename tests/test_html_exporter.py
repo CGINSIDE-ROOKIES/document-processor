@@ -127,6 +127,43 @@ class HtmlExporterTests(unittest.TestCase):
         self.assertIn("margin-left:0", html)
         self.assertIn("margin-right:auto", html)
 
+    def test_export_html_prioritizes_native_cell_alignment_over_cell_paragraph_alignment(self) -> None:
+        doc = DocIR(source_doc_type="docx",
+            paragraphs=[
+                ParagraphIR(content=[
+                        TableIR(cells=[
+                                TableCellIR(row_index=1,
+                                    col_index=1,
+                                    cell_style=CellStyleInfo(horizontal_align="left", vertical_align="center"),
+                                    paragraphs=[
+                                        ParagraphIR(para_style=ParaStyleInfo(align="right"),
+                                            content=[RunIR(text="Explicit cell alignment")],
+                                        )
+                                    ],
+                                ),
+                                TableCellIR(row_index=2,
+                                    col_index=1,
+                                    paragraphs=[
+                                        ParagraphIR(para_style=ParaStyleInfo(align="center"),
+                                            content=[RunIR(text="Default cell alignment")],
+                                        )
+                                    ],
+                                ),
+                            ],
+                        )
+                    ],
+                )
+            ],
+        )
+
+        for rendered in (doc.to_html(), _render_review_html_for_doc(doc)):
+            self.assertIn("Explicit cell alignment", rendered)
+            self.assertIn("Default cell alignment", rendered)
+            self.assertIn("vertical-align:middle", rendered)
+            self.assertIn("text-align:left", rendered)
+            self.assertIn("text-align:center", rendered)
+            self.assertNotIn("text-align:right", rendered)
+
     def test_export_html_emits_fixed_columns_for_spanned_cell_widths(self) -> None:
         doc = DocIR(paragraphs=[
                 ParagraphIR(content=[

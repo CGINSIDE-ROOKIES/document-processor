@@ -40,6 +40,7 @@ from .io_utils import SourceDocType, infer_doc_type
 from .models import DocIR, ImageIR, NativeAnchor, ParagraphIR, RunIR, TableCellIR, TableIR, _anchored_node_id
 
 _WRITEBACK_SOURCE_TYPES = {"docx", "hwpx", "hwp"}
+_OUTPUT_FILENAME_SUFFIXES = {".docx", ".hwpx"}
 
 
 @dataclass
@@ -96,7 +97,7 @@ class _ResolvedStyleEdit:
 def read_document(
     *,
     document: DocumentInput | None = None,
-    source_path: str | None = None,
+    source_path: str | Path | None = None,
     start: int = 0,
     limit: int = 50,
     include_runs: bool = True,
@@ -126,7 +127,7 @@ def read_document(
 def get_document_context(
     *,
     document: DocumentInput | None = None,
-    source_path: str | None = None,
+    source_path: str | Path | None = None,
     target_ids: list[str] | None = None,
     before: int = 1,
     after: int = 1,
@@ -214,7 +215,7 @@ def _iter_doc_ir_tables(paragraphs: list[ParagraphIR]):
 def list_editable_targets(
     *,
     document: DocumentInput | None = None,
-    source_path: str | None = None,
+    source_path: str | Path | None = None,
     target_ids: list[str] | None = None,
     target_kinds: list[TargetKind] | None = None,
     include_child_runs: bool = False,
@@ -260,7 +261,7 @@ def list_editable_targets(
 def validate_document_edits(
     *,
     document: DocumentInput | None = None,
-    source_path: str | None = None,
+    source_path: str | Path | None = None,
     edits: Sequence[DocumentEdit],
 ) -> EditValidationResult:
     resolved = _resolve_document_args(document=document, source_path=source_path)
@@ -274,7 +275,7 @@ def validate_document_edits(
 def apply_document_edits(
     *,
     document: DocumentInput | None = None,
-    source_path: str | None = None,
+    source_path: str | Path | None = None,
     edits: Sequence[DocumentEdit],
     dry_run: bool = False,
     output_path: str | None = None,
@@ -365,7 +366,7 @@ def apply_document_edits(
 def render_review_html(
     *,
     document: DocumentInput | None = None,
-    source_path: str | None = None,
+    source_path: str | Path | None = None,
     annotations: list[TextAnnotation],
     title: str = "Review",
 ) -> ReviewHtmlResult:
@@ -391,7 +392,7 @@ def render_review_html(
 def validate_text_annotations(
     *,
     document: DocumentInput | None = None,
-    source_path: str | None = None,
+    source_path: str | Path | None = None,
     annotations: list[TextAnnotation],
 ) -> AnnotationValidationResult:
     resolved = _resolve_document_args(document=document, source_path=source_path)
@@ -402,7 +403,7 @@ def validate_text_annotations(
 def _resolve_document_args(
     *,
     document: DocumentInput | None,
-    source_path: str | None,
+    source_path: str | Path | None,
 ) -> _ResolvedDocument:
     if document is not None and source_path is not None:
         raise ValueError("Specify either document or source_path, not both.")
@@ -414,11 +415,11 @@ def _resolve_document_args(
 
 
 def _resolve_document_input(document_input: DocumentInput) -> _ResolvedDocument:
-    native_source_path = document_input.source_path
+    native_source_path = str(document_input.source_path) if document_input.source_path is not None else None
     native_source_bytes = document_input.source_bytes
     resolved_source_name = (
         document_input.source_name
-        or (Path(document_input.source_path).name if document_input.source_path is not None else None)
+        or (Path(native_source_path).name if native_source_path is not None else None)
     )
 
     if document_input.doc_ir is not None:
@@ -648,6 +649,7 @@ def _validate_document_apply_request(
     ).issues
 
     issues.extend(_validate_output_options(output_path=output_path, output_filename=output_filename))
+    issues.extend(_validate_output_filename_extension(output_filename, resolved.source_doc_type))
 
     if not resolved.has_native_source and (output_path is not None or output_filename is not None):
         issues.append(
@@ -1168,6 +1170,44 @@ def _validate_output_options(*, output_path: str | None, output_filename: str | 
                     )
                 )
     return issues
+
+
+def _validate_output_filename_extension(
+    output_filename: str | None,
+    source_doc_type: str | None,
+) -> list[EditValidationIssue]:
+    if output_filename is None:
+        return []
+
+    filename = output_filename.strip()
+    pure = Path(filename)
+    if not filename or pure.is_absolute() or pure.name != filename or filename in {".", ".."}:
+        return []
+
+    suffix = pure.suffix.lower()
+    if suffix not in _OUTPUT_FILENAME_SUFFIXES:
+        allowed = ", ".join(sorted(_OUTPUT_FILENAME_SUFFIXES))
+        return [
+            EditValidationIssue(
+                code="invalid_operation",
+                message=f"output_filename must end with a supported write-back extension: {allowed}.",
+            )
+        ]
+
+    expected_suffix = _output_suffix_for_source_doc_type(source_doc_type)
+    if expected_suffix in _OUTPUT_FILENAME_SUFFIXES and suffix != expected_suffix:
+        source_label = str(source_doc_type or "document").upper()
+        return [
+            EditValidationIssue(
+                code="invalid_operation",
+                message=(
+                    f"output_filename extension {suffix!r} does not match {source_label} write-back; "
+                    f"use {expected_suffix!r}."
+                ),
+            )
+        ]
+
+    return []
 
 
 def _issue_from_edit_exception(exc: EditValidationError) -> EditValidationIssue:

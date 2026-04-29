@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
@@ -54,7 +55,7 @@ AnnotationValidationCode = Literal[
 class DocumentInput(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
 
-    source_path: str | None = Field(default=None, description="Filesystem path to the source document.")
+    source_path: str | Path | None = Field(default=None, description="Filesystem path to the source document.")
     source_bytes: bytes | None = Field(default=None, description="Raw document bytes for stateless upload-style calls.")
     doc_ir: DocIR | None = Field(default=None, description="Pre-parsed DocIR for read/in-memory edit flows.")
     source_doc_type: SourceDocType = Field(

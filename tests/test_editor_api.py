@@ -263,6 +263,19 @@ class EditorApiTests(unittest.TestCase):
             [("Hello ", 0, 6), ("World", 6, 11)],
         )
 
+    def test_document_input_accepts_path_source_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source = Path(tmp_dir) / "sample.docx"
+            source.write_bytes(self._build_sample_docx_bytes())
+
+            result = read_document(
+                document=DocumentInput(source_path=source),
+                limit=1,
+            )
+
+        self.assertEqual(result.source_name, "sample.docx")
+        self.assertEqual(result.paragraphs[0].text, "Hello World")
+
     def test_read_document_returns_bounded_stable_ids(self) -> None:
         doc = DocIR.from_mapping(
             {
@@ -581,13 +594,55 @@ class EditorApiTests(unittest.TestCase):
 
         updated_cell = reparsed.paragraphs[0].tables[0].cells[0]
         self.assertEqual(updated_cell.cell_style.background, "#FFF2CC")
-        self.assertEqual(updated_cell.cell_style.horizontal_align, "center")
+        self.assertIsNone(updated_cell.cell_style.horizontal_align)
+        self.assertEqual(updated_cell.paragraphs[0].para_style.align, "center")
         self.assertEqual(updated_cell.cell_style.vertical_align, "center")
         self.assertAlmostEqual(updated_cell.cell_style.width_pt, 120.0)
         self.assertAlmostEqual(updated_cell.cell_style.height_pt, 50.0)
         self.assertAlmostEqual(updated_cell.cell_style.padding_left_pt, 6.0)
         self.assertAlmostEqual(updated_cell.cell_style.padding_right_pt, 6.0)
-        self.assertEqual(updated_cell.cell_style.border_top, "1px solid #445566")
+        self.assertEqual(updated_cell.cell_style.border_top, "2px solid #445566")
+
+    def test_apply_document_edits_writes_hwpx_cell_border_px_width(self) -> None:
+        from xml.etree import ElementTree as ET
+
+        source_bytes = self._build_sample_styled_table_hwpx_bytes()
+        doc = DocIR.from_file(source_bytes, doc_type="hwpx")
+        cell = doc.paragraphs[0].tables[0].cells[0]
+
+        result = apply_document_edits(
+            document=DocumentInput(
+                source_bytes=source_bytes,
+                source_name="sample.hwpx",
+            ),
+            edits=[
+                StyleEdit(
+                    target_kind="cell",
+                    target_id=cell.node_id,
+                    border_top="3px solid #445566",
+                ),
+            ],
+        )
+
+        self.assertTrue(result.ok, result.validation.issues)
+        with zipfile.ZipFile(BytesIO(result.output_bytes)) as archive:
+            header_root = ET.fromstring(archive.read("Contents/header.xml"))
+            section_root = ET.fromstring(archive.read("Contents/section0.xml"))
+
+        hh = "{http://www.hancom.co.kr/hwpml/2011/head}"
+        hp = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
+        border_fill_id = section_root.find(f".//{hp}tc").get("borderFillIDRef")
+        border_fill = next(
+            element
+            for element in header_root.findall(f".//{hh}borderFill")
+            if element.get("id") == border_fill_id
+        )
+        top_border = border_fill.find(f"{hh}topBorder")
+        self.assertEqual(top_border.get("width"), "0.7 mm")
+
+        reparsed = DocIR.from_file(result.output_bytes, doc_type="hwpx")
+        updated_cell = reparsed.paragraphs[0].tables[0].cells[0]
+        self.assertEqual(updated_cell.cell_style.border_top, "3px solid #445566")
 
     def test_apply_document_edits_writes_hwpx_table_placement_style(self) -> None:
         source_bytes = self._build_sample_table_hwpx_bytes()
@@ -846,6 +901,33 @@ class EditorApiTests(unittest.TestCase):
             self.assertEqual(Path(result.output_path).name, "sample_edited.hwpx")
             self.assertTrue(any("adjusted output path" in warning for warning in result.warnings))
             self.assertEqual(result.updated_doc_ir.paragraphs[0].text, "Hello HWPX")
+
+    def test_apply_document_edits_rejects_invalid_output_filename_extensions(self) -> None:
+        source_bytes = self._build_sample_hwpx_bytes()
+        doc = DocIR.from_file(source_bytes, doc_type="hwpx")
+        edit = TextEdit(
+            target_kind="run",
+            target_id=doc.paragraphs[0].runs[1].node_id,
+            expected_text="World",
+            new_text="HWPX",
+            reason="Rename token",
+        )
+
+        mismatched = apply_document_edits(
+            document=DocumentInput(source_bytes=source_bytes, source_name="sample.hwpx"),
+            edits=[edit],
+            output_filename="sample_edited.docx",
+        )
+        unsupported = apply_document_edits(
+            document=DocumentInput(source_bytes=source_bytes, source_name="sample.hwpx"),
+            edits=[edit],
+            output_filename="sample_edited.txt",
+        )
+
+        self.assertFalse(mismatched.ok)
+        self.assertIn("does not match", mismatched.validation.issues[0].message)
+        self.assertFalse(unsupported.ok)
+        self.assertIn("supported write-back extension", unsupported.validation.issues[0].message)
 
     def test_apply_document_edits_preserves_hwpx_namespace_prefixes_and_declaration(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

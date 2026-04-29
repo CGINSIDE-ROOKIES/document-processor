@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field, model_validator
 from .models import DocIR, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
 from .style_types import CellStyleInfo, ColumnLayoutInfo, ParaStyleInfo, RunStyleInfo
 
+_NATIVE_CELL_ALIGNMENT_DOC_TYPES = {"docx", "hwpx", "hwp"}
+
 
 def _non_negative_pt(value: float | None) -> float | None:
     if value is None:
@@ -374,6 +376,20 @@ def _paragraph_css(style: ParaStyleInfo | None) -> str:
     return ";".join(parts)
 
 
+def _uses_native_cell_alignment_defaults(doc_ir: DocIR) -> bool:
+    return (doc_ir.source_doc_type or "").lower() in _NATIVE_CELL_ALIGNMENT_DOC_TYPES
+
+
+def _paragraph_style_without_align(style: ParaStyleInfo | None) -> ParaStyleInfo | None:
+    if style is None or style.align is None:
+        return style
+    return style.model_copy(update={"align": None})
+
+
+def _cell_controls_paragraph_alignment(_doc_ir: DocIR, cell: TableCellIR) -> bool:
+    return cell.cell_style is not None and cell.cell_style.horizontal_align is not None
+
+
 def _list_marker_html(style: ParaStyleInfo | None) -> str:
     list_info = style.list_info if style is not None else None
     if list_info is None or not list_info.marker:
@@ -493,15 +509,24 @@ def _cell_padding_css(style: CellStyleInfo | None) -> str:
     return f"padding:{top:.1f}pt {right:.1f}pt {bottom:.1f}pt {left:.1f}pt"
 
 
-def _cell_css(style: CellStyleInfo | None) -> str:
+def _cell_css(
+    style: CellStyleInfo | None,
+    *,
+    default_horizontal_align: str | None = None,
+    default_vertical_align: str | None = None,
+) -> str:
     parts: list[str] = ["box-sizing:border-box"]
+    vertical_align = style.vertical_align if style is not None else None
+    horizontal_align = style.horizontal_align if style is not None else None
+    vertical_align = vertical_align or default_vertical_align
+    horizontal_align = horizontal_align or default_horizontal_align
+    if vertical_align:
+        parts.append(f"vertical-align:{_css_vertical_align(vertical_align)}")
+    if horizontal_align:
+        parts.append(f"text-align:{horizontal_align}")
     if style is not None:
         if style.background:
             parts.append(f"background-color:{style.background}")
-        if style.vertical_align:
-            parts.append(f"vertical-align:{_css_vertical_align(style.vertical_align)}")
-        if style.horizontal_align:
-            parts.append(f"text-align:{style.horizontal_align}")
         width_pt = _non_negative_pt(style.width_pt)
         height_pt = _non_negative_pt(style.height_pt)
         if width_pt is not None:
@@ -726,13 +751,19 @@ def _render_paragraph_like(
 
 def _render_cell_paragraph(
     doc_ir: DocIR,
+    cell: TableCellIR,
     paragraph: ParagraphIR,
     paragraph_annotations_by_id: dict[str, list[_ResolvedAnnotation]],
     run_annotations_by_id: dict[str, list[_ResolvedAnnotation]],
 ) -> str:
+    render_paragraph = paragraph
+    if _cell_controls_paragraph_alignment(doc_ir, cell):
+        render_paragraph = paragraph.model_copy(
+            update={"para_style": _paragraph_style_without_align(paragraph.para_style)}
+        )
     return _render_paragraph_like(
         doc_ir,
-        paragraph,
+        render_paragraph,
         paragraph_annotations_by_id.get(paragraph.node_id, []),
         paragraph_annotations_by_id,
         run_annotations_by_id,
@@ -745,9 +776,15 @@ def _render_cell(
     paragraph_annotations_by_id: dict[str, list[_ResolvedAnnotation]],
     run_annotations_by_id: dict[str, list[_ResolvedAnnotation]],
 ) -> str:
+    use_native_defaults = _uses_native_cell_alignment_defaults(doc_ir)
+    cell_css = _cell_css(
+        cell.cell_style,
+        default_horizontal_align="left" if use_native_defaults else None,
+        default_vertical_align="center" if use_native_defaults else None,
+    )
     attrs = [
         f'data-node-id="{escape(cell.node_id or "")}"',
-        f'style="{_cell_css(cell.cell_style)}"',
+        f'style="{cell_css}"',
     ]
     if cell.cell_style is not None:
         if cell.cell_style.colspan > 1:
@@ -757,7 +794,7 @@ def _render_cell(
 
     if cell.paragraphs:
         content = "".join(
-            _render_cell_paragraph(doc_ir, paragraph, paragraph_annotations_by_id, run_annotations_by_id)
+            _render_cell_paragraph(doc_ir, cell, paragraph, paragraph_annotations_by_id, run_annotations_by_id)
             for paragraph in cell.paragraphs
         )
     else:
@@ -793,7 +830,13 @@ def _render_table(
 
             cell = cells_by_pos.get((row, col))
             if cell is None:
-                lines.append('    <td style="box-sizing:border-box;padding:0;border:none">&nbsp;</td>')
+                use_native_defaults = _uses_native_cell_alignment_defaults(doc_ir)
+                cell_css = _cell_css(
+                    None,
+                    default_horizontal_align="left" if use_native_defaults else None,
+                    default_vertical_align="center" if use_native_defaults else None,
+                )
+                lines.append(f'    <td style="{cell_css}">&nbsp;</td>')
                 continue
 
             rowspan = max(cell.cell_style.rowspan, 1) if cell.cell_style is not None else 1
