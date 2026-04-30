@@ -178,6 +178,7 @@ class SemanticBlock(BaseModel):
     path: str | None = None
     kind: SemanticBlockKind
     page_number: int | None = None
+    bbox: BoundingBox | None = None
     text: str = ""
     previous_table_id: str | None = None
     next_table_id: str | None = None
@@ -614,6 +615,7 @@ def _paragraph_semantic_blocks(paragraph: ParagraphIR) -> list[SemanticBlock]:
                 path=_node_debug_path(paragraph),
                 kind="paragraph",
                 page_number=paragraph.page_number,
+                bbox=paragraph.bbox,
                 text=paragraph_text,
             )
         )
@@ -625,6 +627,7 @@ def _paragraph_semantic_blocks(paragraph: ParagraphIR) -> list[SemanticBlock]:
                 path=_node_debug_path(image),
                 kind="image",
                 page_number=paragraph.page_number,
+                bbox=image.bbox,
                 text=_image_semantic_text(image),
             )
         )
@@ -636,6 +639,7 @@ def _paragraph_semantic_blocks(paragraph: ParagraphIR) -> list[SemanticBlock]:
                 path=_node_debug_path(table),
                 kind="table",
                 page_number=_table_page_number(table, paragraph.page_number),
+                bbox=table.bbox,
                 text=table.markdown,
                 previous_table_id=table.previous_table_id,
                 next_table_id=table.next_table_id,

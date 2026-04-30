@@ -17,6 +17,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from document_processor import (
+    BoundingBox,
     CellStyleInfo,
     DocIR,
     DocumentInput,
@@ -126,14 +127,22 @@ class DocumentIRTests(unittest.TestCase):
             doc_id="doc_1",
         )
         doc_ir.paragraphs[0].page_number = 1
+        doc_ir.paragraphs[0].bbox = BoundingBox(left_pt=10, bottom_pt=20, right_pt=110, top_pt=40)
         doc_ir.paragraphs[1].page_number = 2
         table = doc_ir.paragraphs[1].tables[0]
+        table.bbox = BoundingBox(left_pt=12, bottom_pt=50, right_pt=210, top_pt=120)
         table.previous_table_id = "tbl_previous"
         table.next_table_id = "tbl_next"
         doc_ir.paragraphs.append(
             ParagraphIR(
                 page_number=3,
-                content=[ImageIR(image_id="img_1", alt_text="Sample image")],
+                content=[
+                    ImageIR(
+                        image_id="img_1",
+                        alt_text="Sample image",
+                        bbox=BoundingBox(left_pt=20, bottom_pt=30, right_pt=80, top_pt=90),
+                    )
+                ],
             )
         )
         doc_ir.ensure_node_identity()
@@ -146,16 +155,20 @@ class DocumentIRTests(unittest.TestCase):
         self.assertEqual([block.kind for block in semantic.blocks], ["paragraph", "table", "image"])
         self.assertEqual(semantic.blocks[0].text, "Hello World")
         self.assertEqual(semantic.blocks[0].page_number, 1)
+        self.assertEqual(semantic.blocks[0].bbox.left_pt, 10)
         self.assertEqual(semantic.blocks[1].id, table.node_id)
         self.assertEqual(semantic.blocks[1].path, table.native_anchor.debug_path)
+        self.assertEqual(semantic.blocks[1].bbox.right_pt, 210)
         self.assertIn("| col1 | col2 |", semantic.blocks[1].text)
         self.assertIn("| A1 | B1 |", semantic.blocks[1].text)
         self.assertEqual(semantic.blocks[1].previous_table_id, "tbl_previous")
         self.assertEqual(semantic.blocks[1].next_table_id, "tbl_next")
         self.assertEqual(semantic.blocks[2].text, "Sample image")
+        self.assertEqual(semantic.blocks[2].bbox.top_pt, 90)
 
         semantic_dict = doc_ir.to_semantic(format="dict")
         self.assertIsInstance(semantic_dict, dict)
+        self.assertEqual(semantic_dict["blocks"][0]["bbox"]["bottom_pt"], 20)
         self.assertNotIn("previous_table_id", semantic_dict["blocks"][0])
         self.assertEqual(semantic_dict["blocks"][1]["next_table_id"], "tbl_next")
 
