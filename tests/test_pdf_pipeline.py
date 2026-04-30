@@ -14,6 +14,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from document_processor import DocIR, ParaStyleInfo, ParagraphIR, RunIR
 from document_processor.pdf import export_pdf_local_outputs
+from document_processor.pdf.config import PdfParseConfig
 from document_processor.pdf.odl import (
     build_doc_ir_from_odl_result,
     convert_pdf_local,
@@ -27,6 +28,111 @@ from document_processor.pdf.odl.adapter import _pdf_node_kwargs
 
 
 class PdfPipelineTests(unittest.TestCase):
+    def test_pdf_parse_config_does_not_expose_raster_border_enrichment(self) -> None:
+        self.assertNotIn("infer_table_borders", PdfParseConfig.model_fields)
+        self.assertNotIn("table_border_dpi", PdfParseConfig.model_fields)
+
+    def test_build_doc_ir_from_odl_result_prefers_explicit_table_cell_border_css(self) -> None:
+        raw_document = {
+            "file name": "sample.pdf",
+            "kids": [
+                {
+                    "type": "table",
+                    "page number": 1,
+                    "bounding box": [10, 10, 110, 90],
+                    "number of rows": 1,
+                    "number of columns": 1,
+                    "rows": [
+                        {
+                            "cells": [
+                                {
+                                    "type": "table cell",
+                                    "page number": 1,
+                                    "row number": 1,
+                                    "column number": 1,
+                                    "bounding box": [10, 10, 110, 90],
+                                    "has top border": True,
+                                    "has bottom border": True,
+                                    "border top": "1.5px dotted #123456",
+                                    "kids": [{"type": "paragraph", "content": "A1", "page number": 1}],
+                                }
+                            ]
+                        }
+                    ],
+                }
+            ],
+        }
+
+        doc = build_doc_ir_from_odl_result(raw_document, source_path="sample.pdf")
+
+        style = doc.paragraphs[0].tables[0].cells[0].cell_style
+        self.assertEqual(style.border_top, "1.5px dotted #123456")
+        self.assertEqual(style.border_bottom, "1px solid")
+
+    def test_build_doc_ir_from_odl_result_maps_table_continuation_ids_to_docir_table_ids(self) -> None:
+        raw_document = {
+            "file name": "sample.pdf",
+            "kids": [
+                {
+                    "type": "table",
+                    "id": 7,
+                    "page number": 1,
+                    "bounding box": [10, 10, 110, 90],
+                    "number of rows": 1,
+                    "number of columns": 1,
+                    "next table id": 11,
+                    "rows": [
+                        {
+                            "cells": [
+                                {
+                                    "type": "table cell",
+                                    "page number": 1,
+                                    "row number": 1,
+                                    "column number": 1,
+                                    "bounding box": [10, 10, 110, 90],
+                                    "kids": [{"type": "paragraph", "content": "A1", "page number": 1}],
+                                }
+                            ]
+                        }
+                    ],
+                },
+                {
+                    "type": "table",
+                    "id": 11,
+                    "page number": 2,
+                    "bounding box": [10, 10, 110, 90],
+                    "number of rows": 1,
+                    "number of columns": 1,
+                    "previous table id": 7,
+                    "rows": [
+                        {
+                            "cells": [
+                                {
+                                    "type": "table cell",
+                                    "page number": 2,
+                                    "row number": 1,
+                                    "column number": 1,
+                                    "bounding box": [10, 10, 110, 90],
+                                    "kids": [{"type": "paragraph", "content": "B1", "page number": 2}],
+                                }
+                            ]
+                        }
+                    ],
+                },
+            ],
+        }
+
+        doc = build_doc_ir_from_odl_result(raw_document, source_path="sample.pdf")
+
+        first_table = doc.paragraphs[0].tables[0]
+        second_table = doc.paragraphs[1].tables[0]
+        self.assertEqual(first_table.next_table_id, second_table.node_id)
+        self.assertIsNone(first_table.previous_table_id)
+        self.assertEqual(second_table.previous_table_id, first_table.node_id)
+        self.assertIsNone(second_table.next_table_id)
+        self.assertNotEqual(first_table.next_table_id, "11")
+        self.assertNotEqual(second_table.previous_table_id, "7")
+
     def test_parse_pdf_to_doc_ir_applies_preview_context_before_returning_doc(self) -> None:
         doc = DocIR(doc_id="sample", source_doc_type="pdf")
         preview_context = PdfPreviewContext()

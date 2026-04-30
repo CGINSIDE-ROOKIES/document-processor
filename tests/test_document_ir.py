@@ -8,6 +8,8 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
+from pydantic import ValidationError
+
 THIS_DIR = Path(__file__).resolve().parent
 SRC_ROOT = THIS_DIR.parent / "src"
 if str(SRC_ROOT) not in sys.path:
@@ -108,6 +110,12 @@ class DocumentIRTests(unittest.TestCase):
         self.assertIn("RunIR", str(content_annotation))
         self.assertIn("ImageIR", str(content_annotation))
         self.assertIn("TableIR", str(content_annotation))
+
+    def test_table_ir_rejects_self_referential_continuation_ids(self) -> None:
+        with self.assertRaises(ValidationError):
+            TableIR(node_id="tbl_a", previous_table_id="tbl_a")
+        with self.assertRaises(ValidationError):
+            TableIR(node_id="tbl_a", next_table_id="tbl_a")
 
     def test_from_file_docx_path_and_file_object(self) -> None:
         from docx import Document

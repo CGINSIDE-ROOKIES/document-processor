@@ -36,8 +36,6 @@ class PdfParseConfig(BaseModel):
 
     triage: PdfTriageConfig = Field(default_factory=PdfTriageConfig)
     odl: OdlPdfConfig = Field(default_factory=OdlPdfConfig)
-    infer_table_borders: bool = False
-    table_border_dpi: int = 144
 
 
 __all__ = [

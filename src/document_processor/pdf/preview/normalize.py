@@ -16,23 +16,9 @@ from typing import Any
 
 from ...models import DocIR, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
 from ...style_types import CellStyleInfo, ColumnLayoutInfo, ParaStyleInfo, TableStyleInfo
-from ..odl.adapter import _pdf_node_kwargs
-
-
-def _paragraph_column_layout(paragraph: ParagraphIR) -> ColumnLayoutInfo | None:
-    return paragraph.para_style.column_layout if paragraph.para_style is not None else None
-
-
-def _set_paragraph_column_layout(paragraph: ParagraphIR, layout: ColumnLayoutInfo | None) -> None:
-    if layout is None:
-        if paragraph.para_style is not None:
-            paragraph.para_style.column_layout = None
-        return
-    if paragraph.para_style is None:
-        paragraph.para_style = ParaStyleInfo()
-    paragraph.para_style.column_layout = layout
-from ..enhancement import enrich_pdf_table_backgrounds, enrich_pdf_table_borders
+from ..enhancement import enrich_pdf_table_backgrounds
 from ..meta import PdfBoundingBox
+from ..odl.adapter import _pdf_node_kwargs
 from .models import (
     PdfLayoutRegion,
     PdfPreviewContext,
@@ -54,6 +40,20 @@ from .shared import (
     _bbox_touches_or_near,
     _shared_bbox_distance,
 )
+
+
+def _paragraph_column_layout(paragraph: ParagraphIR) -> ColumnLayoutInfo | None:
+    return paragraph.para_style.column_layout if paragraph.para_style is not None else None
+
+
+def _set_paragraph_column_layout(paragraph: ParagraphIR, layout: ColumnLayoutInfo | None) -> None:
+    if layout is None:
+        if paragraph.para_style is not None:
+            paragraph.para_style.column_layout = None
+        return
+    if paragraph.para_style is None:
+        paragraph.para_style = ParaStyleInfo()
+    paragraph.para_style.column_layout = layout
 
 
 # ---------- bbox / region helpers ----------
@@ -1399,7 +1399,6 @@ def enrich_pdf_doc_ir(
 
     # Raster-based refinement stays here so the shared HTML renderer remains
     # unaware of PDF-specific extraction quirks.
-    enrich_pdf_table_borders(doc_ir)
     enrich_pdf_table_backgrounds(doc_ir)
     if preview_context is not None:
         _promote_visual_boxes_for_doc(doc_ir, preview_context=preview_context)

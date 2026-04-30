@@ -53,6 +53,14 @@ class _OdlNodeGeometry:
     bounding_box: PdfBoundingBox | None = None
 
 
+@dataclass(frozen=True)
+class _OdlTableContinuationLink:
+    paragraph_index: int
+    raw_table_id: str
+    previous_raw_table_id: str | None = None
+    next_raw_table_id: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # Style extraction helpers
 # These functions map raw ODL node fields into format-agnostic DocIR style
@@ -172,6 +180,13 @@ def _page_number_from_node(node: dict[str, Any]) -> int | None:
     return coerce_int(node.get("page number"))
 
 
+def _raw_table_id(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 def _node_geometry(node: dict[str, Any]) -> _OdlNodeGeometry | None:
     geometry = _OdlNodeGeometry(
         page_number=_page_number_from_node(node),
@@ -207,12 +222,15 @@ def _coarse_border_css_from_node(
     bool_key: str,
     legacy_key: str,
 ) -> str | None:
+    explicit = _border_css(node.get(legacy_key))
+    if explicit:
+        return explicit
     has_border = _coerce_bool(node.get(bool_key))
     if has_border is True:
         return "1px solid"
     if has_border is False:
         return None
-    return _border_css(node.get(legacy_key))
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1092,6 +1110,55 @@ def _canonicalize_table_unit_ids(table: TableIR, *, unit_id: str) -> None:
         cell.recompute_text()
 
 
+def _record_table_continuation_link(
+    records: list[_OdlTableContinuationLink],
+    node: dict[str, Any],
+    *,
+    paragraph_index: int,
+) -> None:
+    raw_table_id = _raw_table_id(node.get("id"))
+    if raw_table_id is None:
+        return
+    records.append(
+        _OdlTableContinuationLink(
+            paragraph_index=paragraph_index,
+            raw_table_id=raw_table_id,
+            previous_raw_table_id=_raw_table_id(node.get("previous table id")),
+            next_raw_table_id=_raw_table_id(node.get("next table id")),
+        )
+    )
+
+
+def _apply_table_continuation_links(
+    paragraphs: list[ParagraphIR],
+    records: list[_OdlTableContinuationLink],
+) -> None:
+    raw_to_docir_table_id: dict[str, str] = {}
+    record_tables: list[tuple[_OdlTableContinuationLink, TableIR]] = []
+    for record in records:
+        if record.paragraph_index >= len(paragraphs):
+            continue
+        tables = paragraphs[record.paragraph_index].tables
+        if not tables:
+            continue
+        table = tables[0]
+        record_tables.append((record, table))
+        if table.node_id is not None:
+            raw_to_docir_table_id[record.raw_table_id] = table.node_id
+
+    for record, table in record_tables:
+        table.previous_table_id = (
+            raw_to_docir_table_id.get(record.previous_raw_table_id)
+            if record.previous_raw_table_id is not None
+            else None
+        )
+        table.next_table_id = (
+            raw_to_docir_table_id.get(record.next_raw_table_id)
+            if record.next_raw_table_id is not None
+            else None
+        )
+
+
 def build_doc_ir_from_odl_result(
     raw_document: dict[str, Any],
     *,
@@ -1111,6 +1178,7 @@ def build_doc_ir_from_odl_result(
 
     assets: dict[str, ImageAsset] = {}
     paragraphs: list[ParagraphIR] = []
+    table_continuation_links: list[_OdlTableContinuationLink] = []
 
     order = 0
     for node in raw_document.get("kids", []):
@@ -1119,6 +1187,7 @@ def build_doc_ir_from_odl_result(
         if node_type == "table":
             order += 1
             node_geometry = _node_geometry(node)
+            paragraph_index = len(paragraphs)
             paragraphs.append(
                 ParagraphIR(
                     **_pdf_node_kwargs("paragraph", unit_id),
@@ -1134,6 +1203,11 @@ def build_doc_ir_from_odl_result(
                                         )
                     ],
                 )
+            )
+            _record_table_continuation_link(
+                table_continuation_links,
+                node,
+                paragraph_index=paragraph_index,
             )
             continue
         if node_type == "image":
@@ -1170,6 +1244,7 @@ def build_doc_ir_from_odl_result(
                 if child.get("type") == "table":
                     order += 1
                     child_geometry = _node_geometry(child)
+                    paragraph_index = len(paragraphs)
                     paragraphs.append(
                         ParagraphIR(
                             **_pdf_node_kwargs("paragraph", child_unit_id),
@@ -1185,6 +1260,11 @@ def build_doc_ir_from_odl_result(
                                                         )
                             ],
                         )
+                    )
+                    _record_table_continuation_link(
+                        table_continuation_links,
+                        child,
+                        paragraph_index=paragraph_index,
                     )
                     continue
                 if child.get("type") == "list":
@@ -1215,6 +1295,7 @@ def build_doc_ir_from_odl_result(
     if resolved_doc_id and "." in resolved_doc_id:
         resolved_doc_id = Path(resolved_doc_id).stem
     canonical_paragraphs = _canonicalize_top_level_paragraphs(paragraphs)
+    _apply_table_continuation_links(canonical_paragraphs, table_continuation_links)
     return resolved_doc_cls(
         doc_id=resolved_doc_id,
         source_path=resolved_source_path,

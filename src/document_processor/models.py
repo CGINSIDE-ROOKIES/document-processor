@@ -8,7 +8,7 @@ import hashlib
 from pathlib import Path
 from typing import Any, BinaryIO, Generic, Literal, TypeAlias, TypeVar
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field, computed_field, model_validator
 
 from .io_utils import TemporarySourcePath, coerce_source_to_supported_value, get_source_name, infer_doc_type
 from .style_types import CellStyleInfo, ObjectPlacementInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
@@ -279,6 +279,8 @@ class TableIR(BaseModel, Generic[T]):
     meta: T | None = None
 
     node_id: str | None = None
+    previous_table_id: str | None = None
+    next_table_id: str | None = None
     row_count: int = 0
     col_count: int = 0
     bbox: BoundingBox | None = None
@@ -289,6 +291,13 @@ class TableIR(BaseModel, Generic[T]):
     def model_post_init(self, __context: Any) -> None:
         if self.node_id is None and self.native_anchor is not None:
             self.node_id = _stable_node_id("table", _node_anchor_path(self))
+
+    @model_validator(mode="after")
+    def _validate_continuation_ids(self):
+        for field_name in ("previous_table_id", "next_table_id"):
+            if self.node_id is not None and getattr(self, field_name) == self.node_id:
+                raise ValueError(f"{field_name} cannot reference the same table")
+        return self
 
     @computed_field
     def markdown(self) -> str:
