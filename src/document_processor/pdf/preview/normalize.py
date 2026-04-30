@@ -1093,12 +1093,53 @@ def _vertical_overlap_ratio(left: PdfBoundingBox, right: PdfBoundingBox) -> floa
     return overlap / smaller_height
 
 
-def _is_layout_row_candidate(paragraph: ParagraphIR) -> bool:
-    """가로 row로 묶을 수 있는 block paragraph인지 본다.
+_LAYOUT_ROW_ARROW_CONNECTORS = frozenset(
+    {
+        "->",
+        "<-",
+        "→",
+        "←",
+        "↑",
+        "↓",
+        "↔",
+        "↕",
+        "➡",
+        "⬅",
+        "⬆",
+        "⬇",
+        "➜",
+        "➝",
+        "➔",
+        "⇒",
+        "⇐",
+        "⇧",
+        "⇩",
+        "⇔",
+        "ð",
+        "ï",
+        "",
+    }
+)
+
+
+def _is_layout_row_block_candidate(paragraph: ParagraphIR) -> bool:
+    """가로 row의 기준이 될 수 있는 block paragraph인지 본다.
 
     일반 텍스트 오탐을 줄이기 위해 현재는 ImageIR/TableIR 포함 paragraph만 허용한다.
     """
     return any(isinstance(node, (ImageIR, TableIR)) for node in paragraph.content)
+
+
+def _is_arrow_connector_paragraph(paragraph: ParagraphIR) -> bool:
+    return (
+        paragraph.text.strip() in _LAYOUT_ROW_ARROW_CONNECTORS
+        and bool(paragraph.content)
+        and all(isinstance(node, RunIR) for node in paragraph.content)
+    )
+
+
+def _is_layout_row_candidate(paragraph: ParagraphIR) -> bool:
+    return _is_layout_row_block_candidate(paragraph) or _is_arrow_connector_paragraph(paragraph)
 
 
 def _same_layout_row(left: ParagraphIR, right: ParagraphIR) -> bool:
@@ -1226,7 +1267,7 @@ def _promote_layout_rows_for_doc(doc_ir: DocIR) -> None:
         replacements: dict[int, ParagraphIR] = {}
 
         for seed in page_paragraphs:
-            if id(seed) in grouped_ids or not _is_layout_row_candidate(seed):
+            if id(seed) in grouped_ids or not _is_layout_row_block_candidate(seed):
                 continue
             seed_layout = _column_layout_identity(seed)
             row = [
@@ -1239,6 +1280,8 @@ def _promote_layout_rows_for_doc(doc_ir: DocIR) -> None:
                 and _same_layout_row(seed, candidate)
             ]
             if not row:
+                continue
+            if not any(_is_layout_row_block_candidate(candidate) for candidate in row):
                 continue
 
             row_index += 1

@@ -675,6 +675,97 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertEqual(len(doc.paragraphs[0].runs), 1)
         self.assertEqual(doc.paragraphs[0].runs[0].text, "64\n65\n66 68 69390")
 
+    def test_build_doc_ir_from_odl_result_keeps_soft_visual_wraps_as_spaces(self) -> None:
+        raw_document = {
+            "file name": "sample.pdf",
+            "number of pages": 1,
+            "kids": [
+                {
+                    "type": "paragraph",
+                    "content": "First line Second line",
+                    "page number": 1,
+                    "font": "Base Font",
+                    "font size": 12,
+                    "spans": [
+                        {
+                            "type": "text chunk",
+                            "content": "First line",
+                            "page number": 1,
+                            "bounding box": [10, 80, 58, 92],
+                        },
+                        {
+                            "type": "text chunk",
+                            "content": "Second line",
+                            "page number": 1,
+                            "bounding box": [10, 62, 72, 74],
+                        },
+                    ],
+                }
+            ],
+        }
+
+        doc = build_doc_ir_from_odl_result(raw_document, source_path="sample.pdf")
+        html = doc.to_html()
+
+        self.assertEqual(doc.paragraphs[0].text, "First line Second line")
+        self.assertEqual([run.text for run in doc.paragraphs[0].runs], ["First line", " Second line"])
+        self.assertNotIn("<br>Second line", html)
+
+    def test_build_doc_ir_from_odl_result_expands_explicit_wide_space_spans(self) -> None:
+        raw_document = {
+            "file name": "sample.pdf",
+            "number of pages": 1,
+            "kids": [
+                {
+                    "type": "paragraph",
+                    "content": "금 원정(\\ )",
+                    "page number": 1,
+                    "font": "Base Font",
+                    "font size": 12,
+                    "spans": [
+                        {
+                            "type": "text chunk",
+                            "content": "금",
+                            "page number": 1,
+                            "bounding box": [10, 80, 20, 92],
+                        },
+                        {
+                            "type": "text chunk",
+                            "content": " ",
+                            "page number": 1,
+                            "bounding box": [20, 80, 80, 92],
+                        },
+                        {
+                            "type": "text chunk",
+                            "content": "원정(\\",
+                            "page number": 1,
+                            "bounding box": [80, 80, 112, 92],
+                        },
+                        {
+                            "type": "text chunk",
+                            "content": " ",
+                            "page number": 1,
+                            "bounding box": [112, 80, 172, 92],
+                        },
+                        {
+                            "type": "text chunk",
+                            "content": ")",
+                            "page number": 1,
+                            "bounding box": [172, 80, 176, 92],
+                        },
+                    ],
+                }
+            ],
+        }
+
+        doc = build_doc_ir_from_odl_result(raw_document, source_path="sample.pdf")
+        html = doc.to_html()
+
+        self.assertEqual(doc.paragraphs[0].text, "금          원정(\\          )")
+        self.assertEqual([run.text for run in doc.paragraphs[0].runs], ["금", "          ", "원정(\\", "          ", ")"])
+        self.assertNotIn("text-decoration:underline", html)
+        self.assertIn("&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;", html)
+
     def test_parse_pdf_to_doc_ir_uses_probe_for_page_sizes_and_filters_scan_pages(self) -> None:
         profile = PdfProfile(
             page_count=3,
