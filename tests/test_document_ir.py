@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -116,6 +117,50 @@ class DocumentIRTests(unittest.TestCase):
             TableIR(node_id="tbl_a", previous_table_id="tbl_a")
         with self.assertRaises(ValidationError):
             TableIR(node_id="tbl_a", next_table_id="tbl_a")
+
+    def test_to_semantic_returns_model_dict_and_json_with_markdown_tables(self) -> None:
+        doc_ir = build_doc_ir_from_mapping(
+            self._sample_mapping(),
+            source_path="sample.pdf",
+            source_doc_type="pdf",
+            doc_id="doc_1",
+        )
+        doc_ir.paragraphs[0].page_number = 1
+        doc_ir.paragraphs[1].page_number = 2
+        table = doc_ir.paragraphs[1].tables[0]
+        table.previous_table_id = "tbl_previous"
+        table.next_table_id = "tbl_next"
+        doc_ir.paragraphs.append(
+            ParagraphIR(
+                page_number=3,
+                content=[ImageIR(image_id="img_1", alt_text="Sample image")],
+            )
+        )
+        doc_ir.ensure_node_identity()
+
+        semantic = doc_ir.to_semantic()
+
+        self.assertEqual(semantic.doc_id, "doc_1")
+        self.assertEqual(semantic.source_path, "sample.pdf")
+        self.assertEqual(semantic.source_doc_type, "pdf")
+        self.assertEqual([block.kind for block in semantic.blocks], ["paragraph", "table", "image"])
+        self.assertEqual(semantic.blocks[0].text, "Hello World")
+        self.assertEqual(semantic.blocks[0].page_number, 1)
+        self.assertEqual(semantic.blocks[1].id, table.node_id)
+        self.assertEqual(semantic.blocks[1].path, table.native_anchor.debug_path)
+        self.assertIn("| col1 | col2 |", semantic.blocks[1].text)
+        self.assertIn("| A1 | B1 |", semantic.blocks[1].text)
+        self.assertEqual(semantic.blocks[1].previous_table_id, "tbl_previous")
+        self.assertEqual(semantic.blocks[1].next_table_id, "tbl_next")
+        self.assertEqual(semantic.blocks[2].text, "Sample image")
+
+        semantic_dict = doc_ir.to_semantic(format="dict")
+        self.assertIsInstance(semantic_dict, dict)
+        self.assertNotIn("previous_table_id", semantic_dict["blocks"][0])
+        self.assertEqual(semantic_dict["blocks"][1]["next_table_id"], "tbl_next")
+
+        semantic_json = doc_ir.to_semantic(format="json", indent=2)
+        self.assertEqual(json.loads(semantic_json)["blocks"][1]["previous_table_id"], "tbl_previous")
 
     def test_from_file_docx_path_and_file_object(self) -> None:
         from docx import Document

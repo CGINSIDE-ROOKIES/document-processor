@@ -50,6 +50,8 @@ from .models import (
     ParagraphContentNode,
     ParagraphIR,
     RunIR,
+    SemanticBlock,
+    SemanticDocument,
     TableCellIR,
     TableIR,
 )
@@ -101,6 +103,8 @@ __all__ = [
     "ReviewHtmlResult",
     "RunIR",
     "RunStyleInfo",
+    "SemanticBlock",
+    "SemanticDocument",
     "StructuralEdit",
     "StructuralOperationKind",
     "StyleMap",

@@ -15,6 +15,8 @@ from .style_types import CellStyleInfo, ObjectPlacementInfo, ParaStyleInfo, RunS
 
 T = TypeVar("T", bound=BaseModel)
 NodeKind: TypeAlias = Literal["paragraph", "run", "image", "table", "cell"]
+SemanticBlockKind: TypeAlias = Literal["paragraph", "table", "image"]
+SemanticFormat: TypeAlias = Literal["model", "dict", "json"]
 
 
 _NODE_ID_PREFIXES: dict[NodeKind, str] = {
@@ -167,6 +169,27 @@ class PageInfo(BaseModel):
     margin_right_pt: float | None = None
     margin_top_pt: float | None = None
     margin_bottom_pt: float | None = None
+
+
+class SemanticBlock(BaseModel):
+    """Chunking/search-friendly content block."""
+
+    id: str | None = None
+    path: str | None = None
+    kind: SemanticBlockKind
+    page_number: int | None = None
+    text: str = ""
+    previous_table_id: str | None = None
+    next_table_id: str | None = None
+
+
+class SemanticDocument(BaseModel):
+    """Lightweight semantic projection of DocIR."""
+
+    doc_id: str | None = None
+    source_path: str | None = None
+    source_doc_type: str | None = None
+    blocks: list[SemanticBlock] = Field(default_factory=list)
 
 
 class ImageIR(BaseModel, Generic[T]):
@@ -328,6 +351,31 @@ class DocIR(BaseModel, Generic[T]):
     def get_image_asset(self, image_or_id: ImageIR | str) -> ImageAsset[T] | None:
         image_id = image_or_id if isinstance(image_or_id, str) else image_or_id.image_id
         return self.assets.get(image_id)
+
+    def to_semantic(
+        self,
+        *,
+        format: SemanticFormat = "model",
+        **kwargs: Any,
+    ) -> SemanticDocument | dict[str, Any] | str:
+        """Return a lightweight semantic projection for chunking/search."""
+        self.ensure_node_identity()
+        semantic = SemanticDocument(
+            doc_id=self.doc_id,
+            source_path=self.source_path,
+            source_doc_type=self.source_doc_type,
+            blocks=_semantic_blocks(self),
+        )
+
+        if format == "model":
+            return semantic
+        if format == "dict":
+            exclude_none = kwargs.pop("exclude_none", True)
+            return semantic.model_dump(mode="json", exclude_none=exclude_none, **kwargs)
+        if format == "json":
+            exclude_none = kwargs.pop("exclude_none", True)
+            return semantic.model_dump_json(exclude_none=exclude_none, **kwargs)
+        raise ValueError(f"Unsupported semantic format: {format}")
 
     def ensure_node_identity(self) -> "DocIR":
         """Populate stable node IDs and native anchors for all addressable nodes."""
@@ -549,6 +597,75 @@ TableCellIR.model_rebuild()
 TableIR.model_rebuild()
 
 
+def _semantic_blocks(doc: DocIR) -> list[SemanticBlock]:
+    blocks: list[SemanticBlock] = []
+    for paragraph in doc.paragraphs:
+        blocks.extend(_paragraph_semantic_blocks(paragraph))
+    return blocks
+
+
+def _paragraph_semantic_blocks(paragraph: ParagraphIR) -> list[SemanticBlock]:
+    blocks: list[SemanticBlock] = []
+    paragraph_text = _paragraph_text_for_semantic(paragraph)
+    if paragraph_text:
+        blocks.append(
+            SemanticBlock(
+                id=paragraph.node_id,
+                path=_node_debug_path(paragraph),
+                kind="paragraph",
+                page_number=paragraph.page_number,
+                text=paragraph_text,
+            )
+        )
+
+    for image in paragraph.images:
+        blocks.append(
+            SemanticBlock(
+                id=image.node_id,
+                path=_node_debug_path(image),
+                kind="image",
+                page_number=paragraph.page_number,
+                text=_image_semantic_text(image),
+            )
+        )
+
+    for table in paragraph.tables:
+        blocks.append(
+            SemanticBlock(
+                id=table.node_id,
+                path=_node_debug_path(table),
+                kind="table",
+                page_number=_table_page_number(table, paragraph.page_number),
+                text=table.markdown,
+                previous_table_id=table.previous_table_id,
+                next_table_id=table.next_table_id,
+            )
+        )
+
+    return blocks
+
+
+def _paragraph_text_for_semantic(paragraph: ParagraphIR) -> str:
+    run_text = "".join(run.text for run in paragraph.runs).strip()
+    if run_text:
+        return run_text
+    if not paragraph.images and not paragraph.tables:
+        return paragraph.text.strip()
+    return ""
+
+
+def _image_semantic_text(image: ImageIR) -> str:
+    return image.alt_text or image.title or f"[image:{image.image_id}]"
+
+
+def _table_page_number(table: TableIR, fallback: int | None) -> int | None:
+    for cell in table.cells:
+        for paragraph in cell.paragraphs:
+            if paragraph.page_number is not None:
+                return paragraph.page_number
+    return fallback
+
+
 def _cell_rowspan(cell: TableCellIR) -> int:
     if cell.cell_style is None or cell.cell_style.rowspan is None:
         return 1
@@ -678,6 +795,8 @@ __all__ = [
     "ParagraphContentNode",
     "ParagraphIR",
     "RunIR",
+    "SemanticBlock",
+    "SemanticDocument",
     "TableCellIR",
     "TableIR",
 ]
