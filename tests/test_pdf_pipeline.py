@@ -906,6 +906,29 @@ class PdfPipelineTests(unittest.TestCase):
 
         self.assertEqual(outputs["json"].name, "sample.json")
 
+    def test_convert_pdf_local_passes_image_pixel_size_when_configured(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            pdf_path = Path(tmp_dir) / "sample.pdf"
+            pdf_path.write_bytes(b"%PDF-1.7\n%fake")
+            output_dir = Path(tmp_dir) / "out"
+
+            def fake_run(command, **kwargs):
+                self.assertIn("--image-pixel-size", command)
+                self.assertEqual(command[command.index("--image-pixel-size") + 1], "2400")
+                output_dir.mkdir(parents=True, exist_ok=True)
+                (output_dir / "sample.json").write_text('{"ok": true}', encoding="utf-8")
+                return None
+
+            with patch("document_processor.pdf.odl.runner.subprocess.run", side_effect=fake_run):
+                outputs = convert_pdf_local(
+                    pdf_path,
+                    output_dir=output_dir,
+                    formats=["json"],
+                    config={"image_pixel_size": 2400},
+                )
+
+        self.assertEqual(outputs["json"].name, "sample.json")
+
     def test_export_pdf_local_outputs_returns_readable_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             output_dir = Path(tmp_dir) / "native"

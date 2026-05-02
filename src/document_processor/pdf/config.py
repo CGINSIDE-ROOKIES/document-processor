@@ -28,6 +28,7 @@ class OdlPdfConfig(BaseModel):
     html_page_separator: str | None = None
     image_output: str | None = None
     image_format: str | None = None
+    image_pixel_size: float | None = Field(default=None, gt=0, le=4000)
     image_dir: str | None = None
 
 

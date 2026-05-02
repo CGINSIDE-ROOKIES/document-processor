@@ -122,6 +122,7 @@ def _build_odl_command(
     _append_option(command, "--html-page-separator", config.get("html_page_separator"))
     _append_option(command, "--image-output", config.get("image_output"))
     _append_option(command, "--image-format", config.get("image_format"))
+    _append_option(command, "--image-pixel-size", config.get("image_pixel_size"))
     _append_option(command, "--image-dir", config.get("image_dir"))
     _append_option(command, "--pages", pages)
     _append_flag(
