@@ -2,12 +2,16 @@
 
 PDF parsing uses the same public `DocIR` API as DOCX/HWP/HWPX.
 
-## Parse PDF
+Start by parsing the PDF into a `DocIR`. Semantic output and HTML rendering are
+meaningful after this parsing/enrichment step has produced the document IR.
 
 ```python
 from document_processor import DocIR
 
 doc = DocIR.from_file("/path/to/file.pdf", doc_type="pdf")
+
+semantic = doc.to_semantic(format="dict")
+html = doc.to_html(title="PDF Preview")
 ```
 
 Optional PDF config is intentionally small:
@@ -27,7 +31,8 @@ doc = DocIR.from_file(
 
 ## Semantic Output
 
-Use semantic output for parsing, chunking, RAG, and downstream processing.
+Use semantic output from the parsed `DocIR` for chunking, RAG, and downstream
+processing.
 
 ```python
 semantic = doc.to_semantic(format="dict")
@@ -36,7 +41,7 @@ semantic_json = doc.to_semantic(format="json", indent=2)
 
 ## HTML Preview
 
-Use HTML output for preview rendering.
+Use HTML output from the parsed `DocIR` for preview rendering.
 
 ```python
 html = doc.to_html(title="PDF Preview")
