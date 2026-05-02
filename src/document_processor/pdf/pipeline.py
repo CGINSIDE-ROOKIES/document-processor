@@ -51,14 +51,13 @@ def _parse_pdf_to_doc_ir_with_preview(
     if profile is None:
         raise RuntimeError("PDF probe failed before ODL parsing.")
 
-    page_decisions = [
-        decide_page(page_profile, resolved_config.triage)
-        for page_profile in profile.page_profiles
-    ]
+    selected_pages = _selected_pages(resolved_config.pages, page_count=profile.page_count)
+    page_decisions = [decide_page(page_profile) for page_profile in profile.page_profiles]
     structured_pages = [
         decision.page_number
         for decision in page_decisions
         if decision.page_class == PageClass.STRUCTURED
+        and (selected_pages is None or decision.page_number in selected_pages)
     ]
 
     resolved_doc_cls = doc_cls or DocIR
@@ -66,13 +65,7 @@ def _parse_pdf_to_doc_ir_with_preview(
     if structured_pages:
         raw_document = run_odl_json(
             source_path,
-            {
-                **resolved_config.odl.model_dump(),
-                "pages": structured_pages,
-                # Prefer embedded image data for the DocIR path so ImageAsset entries
-                # can be materialized without depending on sidecar files on disk.
-                "image_output": resolved_config.odl.image_output or "embedded",
-            },
+            resolved_config.to_odl_config(pages=structured_pages, for_doc_ir=True),
         )
         preprocess_dotted_rule_splits(
             raw_document,
@@ -107,13 +100,40 @@ def _parse_pdf_to_doc_ir_with_preview(
             **doc_kwargs,
         )
 
-    _apply_probe_page_sizes(doc_ir, profile=profile)
+    _apply_probe_page_sizes(doc_ir, profile=profile, selected_pages=selected_pages)
     return doc_ir, preview_context
 
 
-def _apply_probe_page_sizes(doc_ir: DocIR, *, profile: PdfProfile) -> None:
+def _selected_pages(pages: str | list[int] | None, *, page_count: int) -> set[int] | None:
+    if pages is None:
+        return None
+    if isinstance(pages, list):
+        selected = set(pages)
+    else:
+        selected = set()
+        for part in pages.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if "-" in part:
+                start_text, end_text = part.split("-", 1)
+                start = int(start_text.strip())
+                end = int(end_text.strip())
+                if start > end:
+                    raise ValueError(f"Invalid page range: {part}")
+                selected.update(range(start, end + 1))
+            else:
+                selected.add(int(part))
+    if any(page < 1 or page > page_count for page in selected):
+        raise ValueError(f"pages must be within 1-{page_count}")
+    return selected
+
+
+def _apply_probe_page_sizes(doc_ir: DocIR, *, profile: PdfProfile, selected_pages: set[int] | None = None) -> None:
     page_map = {page.page_number: page for page in doc_ir.pages}
     for page_profile in profile.page_profiles:
+        if selected_pages is not None and page_profile.page_number not in selected_pages:
+            continue
         page = page_map.get(page_profile.page_number)
         if page is None:
             page = PageInfo(page_number=page_profile.page_number)
